@@ -1,0 +1,434 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ─── Enums ────────────────────────────────────────────────────────────────────
+
+enum Role {
+  EXPERT
+  PARENT
+  ADMIN
+}
+
+enum ExpertStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  SUSPENDED
+}
+
+enum SessionFormat {
+  ONLINE
+  IN_PERSON
+  BOTH
+}
+
+enum ServiceFormat {
+  ONLINE
+  IN_PERSON
+}
+
+enum ServiceCluster {
+  FOR_MUM
+  FOR_BABY
+  PACKAGE
+  GIFT
+}
+
+enum QualificationType {
+  LACTATION_CONSULTANT
+  BREASTFEEDING_COUNSELLOR
+  INFANT_SLEEP_CONSULTANT
+  DOULA
+  MIDWIFE
+  BABY_OSTEOPATH
+  PAEDIATRIC_NUTRITIONIST
+  EARLY_YEARS_SPECIALIST
+  POSTNATAL_PHYSIOTHERAPIST
+  PARENTING_COACH
+  OTHER
+}
+
+enum BookingStatus {
+  PENDING
+  PENDING_PAYMENT
+  CONFIRMED
+  CANCELLED
+  COMPLETED
+  REFUNDED
+}
+
+enum EntityType {
+  INDIVIDUAL
+  COMPANY
+}
+
+// ─── Phase 2 Enums ────────────────────────────────────────────────────────────
+
+// Social login providers — extend this list if more are added later
+enum OAuthProvider {
+  GOOGLE
+  APPLE
+}
+
+// Notification types — covers all booking lifecycle + expert status events
+enum NotificationType {
+  BOOKING_CONFIRMED
+  BOOKING_CANCELLED
+  BOOKING_RESCHEDULED
+  PAYMENT_RECEIVED
+  PAYMENT_REFUNDED
+  BOOKING_REMINDER
+  EXPERT_APPROVED
+  EXPERT_REJECTED
+}
+
+// ─── Models ───────────────────────────────────────────────────────────────────
+
+model User {
+  id                      Int       @id @default(autoincrement())
+  name                    String    @default("Unknown")
+  email                   String    @unique
+  password_hash           String?   // nullable — null for OAuth-only accounts (Phase 2)
+  role                    Role      @default(EXPERT)
+  created_at              DateTime  @default(now())
+  is_verified             Boolean   @default(true)
+  verification_code       String?
+  verification_expires_at DateTime?
+  reset_token             String?
+  reset_token_expires_at  DateTime?
+  phone                   String?
+  login_attempts          Int       @default(0)
+  locked_until            DateTime?
+  account_deleted         Boolean   @default(false) // GDPR erasure — personal data wiped, record kept for referential integrity
+
+  expert             Expert?
+  refreshTokens      RefreshToken[]
+  bookings_as_parent Booking[]      @relation("ParentBookings")
+
+  // GDPR legal acceptances
+  pp_acceptances PrivacyPolicyAcceptance[]
+  tc_acceptances TcAcceptance[]
+
+  // Phase 2 relations — schema ready, logic not yet implemented
+  oauth_accounts    OAuthAccount[]
+  saved_experts     SavedExpert[]  @relation("ParentSavedExperts")
+  notifications     Notification[]
+  reviews_as_parent Review[]       @relation("ParentReviews")
+}
+
+model RefreshToken {
+  id         Int      @id @default(autoincrement())
+  token      String   @unique
+  user_id    Int
+  expires_at DateTime
+  created_at DateTime @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+}
+
+// ─── Phase 2: OAuth ───────────────────────────────────────────────────────────
+// One user can link multiple OAuth providers (e.g. Google + Apple)
+// provider_id = the "sub" (Google) or "uid" (Apple) from the provider token
+model OAuthAccount {
+  id          Int           @id @default(autoincrement())
+  user_id     Int
+  provider    OAuthProvider
+  provider_id String        // unique ID from the OAuth provider
+  created_at  DateTime      @default(now())
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([provider, provider_id]) // same provider account cannot link to two users
+}
+
+model Expert {
+  id                         Int            @id @default(autoincrement())
+  user_id                    Int            @unique
+  bio                        String?
+  profile_image              String?
+  expertise                  String?        // legacy free-text field — kept for backward compat
+  stripe_account_id          String?
+  stripe_onboarding_complete Boolean        @default(false)
+  status                     ExpertStatus   @default(PENDING)
+
+  // ── Profile fields ──────────────────────────────────────────────────────────
+  summary          String?
+  position         String?
+  session_format   SessionFormat?
+  address_street   String?
+  address_city     String?
+  address_postcode String?
+  languages        String[]       @default([])
+  timezone         String         @default("Europe/Rome")
+
+  // ── Social media links (optional, shown on public profile) ──────────────────
+  instagram        String?
+  facebook         String?
+  linkedin         String?
+
+  user           User                @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  services       Service[]
+  availability   Availability[]
+  qualifications Qualification[]
+  certifications Certification[]
+  insurance      Insurance?
+  business_info  BusinessInfo?
+  blockouts      AvailabilityBlock[]
+  bookings       Booking[]           @relation("ExpertBookings")
+
+  // Phase 2 relations
+  saved_by SavedExpert[]
+  reviews  Review[]
+}
+
+model Service {
+  id               Int             @id @default(autoincrement())
+  expert_id        Int
+  title            String
+  description      String?
+  duration_minutes Int
+  price            Decimal         @db.Decimal(10, 2)
+  is_active        Boolean         @default(true)
+  format           ServiceFormat?
+  cluster          ServiceCluster?
+
+  expert   Expert    @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+  bookings Booking[]
+}
+
+model Qualification {
+  id           Int               @id @default(autoincrement())
+  expert_id    Int
+  type         QualificationType
+  custom_name  String?
+  document_url String?
+  created_at   DateTime          @default(now())
+
+  expert Expert @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+}
+
+model Certification {
+  id           Int      @id @default(autoincrement())
+  expert_id    Int
+  name         String
+  document_url String?
+  created_at   DateTime @default(now())
+
+  expert Expert @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+}
+
+model Insurance {
+  id                Int      @id @default(autoincrement())
+  expert_id         Int      @unique
+  document_url      String
+  policy_expires_at DateTime
+  created_at        DateTime @default(now())
+  updated_at        DateTime @updatedAt
+
+  expert Expert @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+}
+
+// Compliance-only — not exposed on public expert profiles
+model BusinessInfo {
+  id                 Int        @id @default(autoincrement())
+  expert_id          Int        @unique
+  entity_type        EntityType
+  legal_name         String
+  date_of_birth      DateTime?  // required for INDIVIDUAL
+  primary_address    String
+  tin                String     // Tax Identification Number (CPR, PPS, etc.)
+  vat_number         String?    // optional
+  company_reg_number String?    // required for COMPANY
+  iban               String
+  business_email     String
+  website            String
+  municipality       String?    // required for Danish experts
+  business_address   String?    // optional, only if different from primary
+  created_at         DateTime   @default(now())
+  updated_at         DateTime   @updatedAt
+
+  expert Expert @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+}
+
+model Availability {
+  id          Int    @id @default(autoincrement())
+  expert_id   Int
+  day_of_week Int
+  start_time  String
+  end_time    String
+
+  expert Expert @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+}
+
+// One-off date overrides — never modifies the recurring Availability schedule
+model AvailabilityBlock {
+  id         Int      @id @default(autoincrement())
+  expert_id  Int
+  date       DateTime @db.Date
+  start_time String?
+  end_time   String?
+  created_at DateTime @default(now())
+
+  expert Expert @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+}
+
+model Booking {
+  id                       Int           @id @default(autoincrement())
+  expert_id                Int
+  parent_id                Int
+  service_id               Int
+  scheduled_at             DateTime
+  duration_minutes         Int
+  format                   ServiceFormat
+  status                   BookingStatus @default(PENDING_PAYMENT)
+  session_link_sent        Boolean       @default(false)
+
+  // Payment fields
+  stripe_payment_intent_id String?
+  amount                   Decimal?      @db.Decimal(10, 2)
+  platform_fee             Decimal?      @db.Decimal(10, 2) // Phase 2: 20% fee stored for payment history
+  stripe_charge_id         String?       // Phase 2: needed for refund lookup and payment history
+  stripe_transfer_id       String?       // Phase 2: needed for transfer reconciliation
+
+  // Reminder emails — flags prevent duplicate sends across cron ticks / restarts
+  reminder_24h_sent  Boolean  @default(false)
+  reminder_1h_sent   Boolean  @default(false)
+
+  // Transfer — delayed payout to expert (24h after session end)
+  transfer_status   String?   // null | 'pending' | 'completed' | 'failed' | 'skipped'
+  transfer_due_at   DateTime? // scheduled_at + duration_minutes + 24h; set on payment confirmation
+  transfer_attempts Int       @default(0) // incremented on each failed Stripe attempt; capped at 5
+
+  // Cancellation
+  cancellation_reason String?
+  cancelled_at        DateTime?
+
+  // Phase 2: Rescheduling — new booking is created on reschedule, old one links forward
+  rescheduled_from_id Int?
+  rescheduled_at      DateTime?
+
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  expert  Expert  @relation("ExpertBookings", fields: [expert_id], references: [id], onDelete: Cascade)
+  parent  User    @relation("ParentBookings", fields: [parent_id], references: [id], onDelete: Cascade)
+  service Service @relation(fields: [service_id], references: [id], onDelete: Cascade)
+
+  // Phase 2: self-relation — rescheduled_from points to the original cancelled booking
+  rescheduled_from Booking?  @relation("BookingReschedule", fields: [rescheduled_from_id], references: [id])
+  rescheduled_to   Booking[] @relation("BookingReschedule")
+
+  // Phase 2: notifications triggered by this booking
+  notifications Notification[]
+
+  // Phase 2: one review per completed booking
+  review Review?
+
+  // GDPR: T&C acceptance record for this booking
+  tc_acceptance TcAcceptance?
+
+  @@unique([expert_id, scheduled_at])
+}
+
+// ─── Legal / GDPR ─────────────────────────────────────────────────────────────
+
+// Tracks the current and historical versions of each legal document.
+// Inserting a new row bumps the active version for that document type.
+model LegalDocument {
+  id             Int      @id @default(autoincrement())
+  type           String   // 'PRIVACY_POLICY' | 'TERMS_CONDITIONS'
+  version        String   // e.g. '1.0', '1.1', '2.0'
+  effective_from DateTime @default(now())
+
+  @@unique([type, version])
+}
+
+// Stored once per parent per Privacy Policy version accepted.
+// marketing_consent recorded at the same moment (GDPR Art. 7 — separate, optional).
+model PrivacyPolicyAcceptance {
+  id                   Int      @id @default(autoincrement())
+  user_id              Int
+  version              String   // version of PP accepted
+  accepted_at          DateTime @default(now())
+  marketing_consent    Boolean  @default(false)
+  marketing_accepted_at DateTime?
+
+  user User @relation(fields: [user_id], references: [id], onDelete: Cascade)
+}
+
+// Stored once per booking — records which T&C version the parent accepted
+// at that specific moment. Per-booking as required by client.
+model TcAcceptance {
+  id          Int      @id @default(autoincrement())
+  user_id     Int
+  booking_id  Int      @unique // one T&C record per booking
+  version     String   // version of T&Cs accepted
+  accepted_at DateTime @default(now())
+
+  user    User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  booking Booking @relation(fields: [booking_id], references: [id], onDelete: Cascade)
+}
+
+// Stripe webhook idempotency — each event processed exactly once
+model StripeEvent {
+  id              Int      @id @default(autoincrement())
+  stripe_event_id String   @unique
+  processed_at    DateTime @default(now())
+}
+
+// ─── Phase 2 Models ───────────────────────────────────────────────────────────
+
+// Parents can save/favourite experts for quick re-booking
+model SavedExpert {
+  id        Int      @id @default(autoincrement())
+  parent_id Int
+  expert_id Int
+  saved_at  DateTime @default(now())
+
+  parent User   @relation("ParentSavedExperts", fields: [parent_id], references: [id], onDelete: Cascade)
+  expert Expert @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+
+  @@unique([parent_id, expert_id]) // a parent can only save the same expert once
+}
+
+// Phase 2: Parent reviews of completed sessions — one review per booking
+// rating: 1–5 stars, comment: optional text, stored on booking completion
+model Review {
+  id         Int      @id @default(autoincrement())
+  booking_id Int      @unique // one review per booking, enforced at DB level
+  parent_id  Int
+  expert_id  Int
+  rating     Int      // 1–5
+  comment    String?
+  created_at DateTime @default(now())
+  updated_at DateTime @updatedAt
+
+  booking Booking @relation(fields: [booking_id], references: [id], onDelete: Cascade)
+  parent  User    @relation("ParentReviews", fields: [parent_id], references: [id], onDelete: Cascade)
+  expert  Expert  @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+
+  @@index([expert_id]) // fast expert rating aggregation
+}
+
+// In-app notifications — created by server, read by client via polling or websocket
+model Notification {
+  id         Int              @id @default(autoincrement())
+  user_id    Int
+  type       NotificationType
+  title      String
+  body       String
+  is_read    Boolean          @default(false)
+  booking_id Int?             // optional link to the booking that triggered this notification
+  created_at DateTime         @default(now())
+
+  user    User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  booking Booking? @relation(fields: [booking_id], references: [id], onDelete: SetNull)
+}
