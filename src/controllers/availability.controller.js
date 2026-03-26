@@ -18,6 +18,27 @@ function minutesToTime(mins) {
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
 }
 
+// ─── Helper: convert a calendar date + local time in an IANA timezone to UTC ─
+// e.g. zonedToUTC(2026, 3, 31, 9, 0, 'Europe/Berlin') → 2026-03-31T07:00:00Z
+function zonedToUTC(year, month, day, hours, minutes, timezone) {
+  // Treat inputs as UTC to get a starting guess
+  const guess = new Date(Date.UTC(year, month - 1, day, hours, minutes, 0, 0));
+
+  // Find what that UTC instant looks like in the target timezone
+  const parts = {};
+  new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    year: 'numeric', month: 'numeric', day: 'numeric',
+    hour: 'numeric', minute: 'numeric', hour12: false,
+  }).formatToParts(guess).forEach(({ type, value }) => {
+    parts[type] = parseInt(value, 10);
+  });
+
+  const zonedHour   = parts.hour === 24 ? 0 : (parts.hour || 0);
+  const diffMinutes = (hours * 60 + minutes) - (zonedHour * 60 + (parts.minute || 0));
+  return new Date(guess.getTime() + diffMinutes * 60 * 1000);
+}
+
 // ─── GET /availability/slots — public slot generation ────────────────────────
 //
 // Query params: expertId (required), date (YYYY-MM-DD, required), serviceId (optional)
@@ -57,9 +78,11 @@ async function getAvailableSlots(req, res) {
   try {
     const expert = await prisma.expert.findUnique({
       where: { id: parseInt(expertId) },
-      select: { id: true },
+      select: { id: true, timezone: true },
     });
     if (!expert) return res.status(404).json({ error: 'Expert not found' });
+
+    const tz = expert.timezone || 'UTC';
 
     // ── Service duration ─────────────────────────────────────────────────────
     let durationMinutes = 60;
@@ -68,22 +91,22 @@ async function getAvailableSlots(req, res) {
       if (svc && svc.expert_id === expert.id) durationMinutes = svc.duration_minutes;
     }
 
-    // ── Availability rules for this day-of-week ──────────────────────────────
-    // getUTCDay(): 0=Sunday … 6=Saturday
-    const dayOfWeek = targetDateUTC.getUTCDay();
+    // ── Day of week from the calendar date (not UTC midnight) ────────────────
+    // Using new Date(y, m-1, d) avoids timezone-induced day shifts for European offsets
+    const dayOfWeek = new Date(year, month - 1, day).getDay();
     const rules = await prisma.availability.findMany({
       where: { expert_id: expert.id, day_of_week: dayOfWeek },
     });
     if (rules.length === 0) return res.json([]);
 
-    // ── Blockouts for this date ───────────────────────────────────────────────
-    const nextDayUTC = new Date(targetDateUTC);
-    nextDayUTC.setUTCDate(nextDayUTC.getUTCDate() + 1);
+    // ── UTC boundaries for this calendar date in the expert's timezone ───────
+    const dayStart = zonedToUTC(year, month, day, 0, 0, tz);
+    const dayEnd   = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
 
     const blockouts = await prisma.availabilityBlock.findMany({
       where: {
         expert_id: expert.id,
-        date: { gte: targetDateUTC, lt: nextDayUTC },
+        date: { gte: dayStart, lt: dayEnd },
       },
     });
 
@@ -94,7 +117,7 @@ async function getAvailableSlots(req, res) {
     const existingBookings = await prisma.booking.findMany({
       where: {
         expert_id: expert.id,
-        scheduled_at: { gte: targetDateUTC, lt: nextDayUTC },
+        scheduled_at: { gte: dayStart, lt: dayEnd },
         status: { in: ['CONFIRMED', 'PENDING_PAYMENT'] },
       },
       select: { scheduled_at: true, duration_minutes: true },
@@ -114,11 +137,9 @@ async function getAvailableSlots(req, res) {
       while (cursor + durationMinutes <= availEnd) {
         const slotEndMinutes = cursor + durationMinutes;
 
-        // Build slot UTC datetime
-        const slotStart = new Date(targetDateUTC);
-        slotStart.setUTCHours(Math.floor(cursor / 60), cursor % 60, 0, 0);
-        const slotEnd = new Date(targetDateUTC);
-        slotEnd.setUTCHours(Math.floor(slotEndMinutes / 60), slotEndMinutes % 60, 0, 0);
+        // Build slot datetime by converting expert's local time to UTC
+        const slotStart = zonedToUTC(year, month, day, Math.floor(cursor / 60), cursor % 60, tz);
+        const slotEnd   = zonedToUTC(year, month, day, Math.floor(slotEndMinutes / 60), slotEndMinutes % 60, tz);
 
         // Skip past slots (with advance buffer)
         if (slotStart.getTime() - now.getTime() < bufferMs) {
@@ -173,11 +194,17 @@ async function addAvailability(req, res) {
   }
 
   try {
-    const expert_id = await getExpertIdForUser(req.user.id);
-    if (!expert_id) return res.status(404).json({ error: 'Expert profile not found' });
+    const expert = await prisma.expert.findUnique({
+      where: { user_id: req.user.id },
+      select: { id: true, timezone: true },
+    });
+    if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
+    if (!expert.timezone) {
+      return res.status(400).json({ error: 'Please set your timezone in your profile before adding availability.' });
+    }
 
     const availability = await prisma.availability.create({
-      data: { expert_id, day_of_week: parseInt(day_of_week), start_time, end_time },
+      data: { expert_id: expert.id, day_of_week: parseInt(day_of_week), start_time, end_time },
     });
     return res.status(201).json(availability);
   } catch (err) {

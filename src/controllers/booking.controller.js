@@ -225,6 +225,8 @@ async function cancelBooking(req, res) {
     const withinFreeWindow  = hoursUntilSession >= 24;
     const wasConfirmed      = booking.status === 'CONFIRMED';
 
+    console.log(`[cancelBooking] booking=${booking.id} status=${booking.status} hoursUntilSession=${hoursUntilSession.toFixed(2)} withinFreeWindow=${withinFreeWindow} wasConfirmed=${wasConfirmed} paymentIntentId=${booking.stripe_payment_intent_id} chargeId=${booking.stripe_charge_id}`);
+
     // ── Cancel the booking ──────────────────────────────────────────────────
     // transfer_status → 'skipped' prevents the transfer cron from paying out
     // a cancelled session even if transfer_due_at has already passed.
@@ -237,6 +239,7 @@ async function cancelBooking(req, res) {
         transfer_status:     'skipped',
       },
     });
+    console.log(`[cancelBooking] booking=${booking.id} marked CANCELLED`);
 
     // ── Initiate Stripe refund if within free window and payment was made ───
     // Use stored stripe_charge_id to avoid an extra Stripe API call.
@@ -244,21 +247,28 @@ async function cancelBooking(req, res) {
     // predate the stripe_charge_id storage (migration safety).
     let refundInitiated = false;
     if (withinFreeWindow && wasConfirmed && booking.stripe_payment_intent_id) {
+      console.log(`[cancelBooking] Eligible for refund — attempting Stripe refund for booking=${booking.id}`);
       try {
         let chargeId = booking.stripe_charge_id;
         if (!chargeId) {
+          console.log(`[cancelBooking] No stored chargeId — retrieving from PaymentIntent ${booking.stripe_payment_intent_id}`);
           const pi = await stripe.paymentIntents.retrieve(booking.stripe_payment_intent_id);
           chargeId = pi.latest_charge;
+          console.log(`[cancelBooking] Retrieved chargeId=${chargeId}`);
         }
         if (chargeId) {
           await stripe.refunds.create({ charge: chargeId });
           refundInitiated = true;
-          // The charge.refunded webhook will later update status → REFUNDED
+          console.log(`[cancelBooking] Stripe refund created for chargeId=${chargeId} — waiting for charge.refunded webhook`);
+        } else {
+          console.warn(`[cancelBooking] No chargeId found — refund skipped for booking=${booking.id}`);
         }
       } catch (stripeErr) {
         // Refund failure must not block the cancellation response
         console.error('[cancelBooking] Stripe refund failed:', stripeErr.message);
       }
+    } else {
+      console.log(`[cancelBooking] Refund NOT initiated — withinFreeWindow=${withinFreeWindow} wasConfirmed=${wasConfirmed} hasPaymentIntent=${!!booking.stripe_payment_intent_id}`);
     }
 
     // ── Notify expert immediately ───────────────────────────────────────────

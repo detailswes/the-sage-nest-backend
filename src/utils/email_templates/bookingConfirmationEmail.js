@@ -123,8 +123,7 @@ const bookingConfirmationEmailHtml = ({
           </div>` : ''}
 
           <p style="margin:0 0 24px;font-size:13px;color:#6B7280;line-height:1.6;">
-            You can cancel your booking up to 24 hours before the session for a full refund.
-            Cancellations within 24 hours may not be eligible for a refund.
+            Free cancellation up to 24 hours before the session. Cancellations within 24 hours are not eligible for a refund.
           </p>
 
           <div style="text-align:center;">
@@ -137,8 +136,9 @@ const bookingConfirmationEmailHtml = ({
         </td></tr>
 
         <tr><td style="padding-top:24px;">
-          <div style="background:#F5F7F5;border:1px solid #E4E7E4;border-radius:8px;padding:16px 20px;">
-            <p style="margin:0;font-size:11px;color:#6B7280;line-height:1.7;">
+          <div style="background:#FFFBEB;border:1px solid #FCD34D;border-radius:8px;padding:16px 20px;">
+            <p style="margin:0 0 6px;font-size:12px;font-weight:700;color:#92400E;text-transform:uppercase;letter-spacing:0.4px;">Health Disclaimer</p>
+            <p style="margin:0;font-size:13px;color:#78350F;line-height:1.7;">
               Sage Nest is a booking platform, not a healthcare provider. Practitioners listed on this platform are independent professionals. Advice given during sessions does not constitute medical advice, diagnosis, or treatment and should not be relied upon as a substitute for professional medical care. Always seek the advice of a qualified healthcare provider if you have concerns about your or your child's health. If you believe you or your child need urgent medical care, contact emergency services immediately.
             </p>
           </div>
