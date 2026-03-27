@@ -345,9 +345,12 @@ async function login(req, res) {
 
 // ─── Refresh ─────────────────────────────────────────────────────────────────
 async function refresh(req, res) {
+  console.log('[refresh] cookies received:', req.cookies);
+  console.log('[refresh] headers origin:', req.headers.origin);
   const refreshToken = req.cookies?.refreshToken;
 
   if (!refreshToken) {
+    console.log('[refresh] No refreshToken cookie found');
     return res.status(401).json({ error: "Refresh token required" });
   }
 
