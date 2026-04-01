@@ -288,6 +288,15 @@ async function login(req, res) {
       });
     }
 
+    if (user.role === "PARENT" && user.parent_status && user.parent_status !== "ACTIVE") {
+      return res.status(403).json({
+        error: user.parent_status === "SUSPENDED"
+          ? "Your account has been suspended. Please contact support."
+          : "Your account has been deactivated. Please contact support.",
+        account_suspended: user.parent_status === "SUSPENDED",
+      });
+    }
+
     // Reset failed attempts on successful login
     await prisma.user.update({
       where: { id: user.id },

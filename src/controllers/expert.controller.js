@@ -99,9 +99,20 @@ async function updateMyProfile(req, res) {
   }
 
   try {
+    // If the expert was awaiting changes, saving any profile update resets them
+    // to PENDING so the admin queue picks them up again for review.
+    const current = await prisma.expert.findUnique({
+      where:  { user_id: req.user.id },
+      select: { status: true },
+    });
+    const statusReset = current?.status === 'CHANGES_REQUESTED'
+      ? { status: 'PENDING', change_request_note: null, change_requested_at: null }
+      : {};
+
     const expert = await prisma.expert.update({
       where: { user_id: req.user.id },
       data: {
+        ...statusReset,
         ...(bio !== undefined && { bio }),
         ...(expertise !== undefined && { expertise }),
         ...(profile_image !== undefined && { profile_image }),
@@ -513,8 +524,9 @@ async function listExperts(_req, res) {
   try {
     const experts = await prisma.expert.findMany({
       where: {
-        status: 'APPROVED',
-        stripe_onboarding_complete: true, // only show experts ready to accept payments
+        status:                     'APPROVED',
+        stripe_onboarding_complete: true,   // only show experts ready to accept payments
+        is_published:               true,   // admin force-unpublish hides from parent search
       },
       select: {
         id:             true,

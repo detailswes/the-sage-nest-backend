@@ -17,6 +17,9 @@ const {
 const {
   bookingReminderEmailHtml,
 } = require("./email_templates/bookingReminderEmail");
+const {
+  changesRequestedEmailHtml,
+} = require("./email_templates/changesRequestedEmail");
 
 // ─── Init (lazy — called after dotenv has loaded) ─────────────────────────────
 let _initialized = false;
@@ -410,6 +413,22 @@ const sendAccountLockedEmail = ({ to, name, unlockAt }) => {
 };
 
 /**
+ * Admin-triggered: notify a specialist that changes are required before approval.
+ * @param {{ to: string, name: string, note: string }} param0
+ */
+const sendChangesRequestedEmail = ({ to, name, note }) =>
+  sendEmail({
+    to,
+    subject: "Action required: please update your Sage Nest profile",
+    text: `Hi ${name}, our team has reviewed your profile and has requested some changes. Feedback: ${note}`,
+    html: changesRequestedEmailHtml({
+      name,
+      note,
+      dashboardUrl: `${process.env.CLIENT_URL}/dashboard/expert/profile`,
+    }),
+  });
+
+/**
  * Email address change — re-verification after parent updates their email.
  * Uses the same verify-email endpoint but with distinct subject + body copy.
  * @param {{ to: string, name: string, userId: number, verificationCode: string }} param0
@@ -453,4 +472,5 @@ module.exports = {
   sendBookingCancellationNotification,
   sendAccountLockedEmail,
   sendEmailChangeVerification,
+  sendChangesRequestedEmail,
 };

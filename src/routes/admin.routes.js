@@ -11,56 +11,76 @@ const {
   manuallyVerify,
   suspendExpert,
   reactivateExpert,
+  requestChanges,
+  unpublishExpert,
+  republishExpert,
   exportTaxData,
   listExpertBookings,
   manualRefund,
   getLegalDocuments,
   bumpLegalDocument,
+  getAuditLog,
+  gdprDeleteExpert,
+  listParents,
+  listParentBookings,
+  activateParent,
+  deactivateParent,
+  suspendParent,
+  gdprDeleteParent,
 } = require('../controllers/admin.controller');
 
 // All admin routes require authentication + admin role
 router.use(authenticate, requireAdmin);
 
-// GET /admin/experts — list all experts
+// ── Expert list ───────────────────────────────────────────────────────────────
 router.get('/experts', listExperts);
 
-// POST /admin/experts/:id/approve — approve an expert
-router.post('/experts/:id/approve', approveExpert);
-
-// POST /admin/experts/:id/reject — reject an expert
-router.post('/experts/:id/reject', rejectExpert);
-
-// PATCH /admin/experts/:id/toggle — toggle bookable state
-router.patch('/experts/:id/toggle', toggleApproval);
-
-// POST /admin/experts/:id/send-password-reset — trigger password reset email
-router.post('/experts/:id/send-password-reset', sendPasswordReset);
-
-// POST /admin/experts/:id/resend-verification — resend verification email
-router.post('/experts/:id/resend-verification', resendVerification);
-
-// POST /admin/experts/:id/verify — manually verify expert email
-router.post('/experts/:id/verify', manuallyVerify);
-
-// POST /admin/experts/:id/suspend — suspend an expert account
-router.post('/experts/:id/suspend', suspendExpert);
-
-// POST /admin/experts/:id/reactivate — reactivate a suspended expert
+// ── Status actions ────────────────────────────────────────────────────────────
+router.post('/experts/:id/approve',    approveExpert);
+router.post('/experts/:id/reject',     rejectExpert);
+router.patch('/experts/:id/toggle',    toggleApproval);
+router.post('/experts/:id/suspend',    suspendExpert);
 router.post('/experts/:id/reactivate', reactivateExpert);
 
-// GET /admin/experts/:id/tax-export?year=YYYY — download tax data CSV
+// ── Moderation actions ────────────────────────────────────────────────────────
+router.post('/experts/:id/request-changes', requestChanges);   // send revision note + set CHANGES_REQUESTED
+router.post('/experts/:id/unpublish',        unpublishExpert);  // hide from parent search (APPROVED only)
+router.post('/experts/:id/republish',        republishExpert);  // restore to parent search
+
+// ── Support tools ─────────────────────────────────────────────────────────────
+router.post('/experts/:id/send-password-reset',  sendPasswordReset);
+router.post('/experts/:id/resend-verification',  resendVerification);
+router.post('/experts/:id/verify',               manuallyVerify);
+
+// ── Tax export ────────────────────────────────────────────────────────────────
 router.get('/experts/:id/tax-export', exportTaxData);
 
-// GET /admin/bookings?expertId=X — list recent bookings for an expert
-router.get('/bookings', listExpertBookings);
+// ── GDPR ──────────────────────────────────────────────────────────────────────
+router.post('/experts/:id/gdpr-delete', gdprDeleteExpert);
 
-// POST /admin/bookings/:id/refund — manual refund override (bypasses 24h rule)
+// ── Bookings ──────────────────────────────────────────────────────────────────
+router.get('/bookings',           listExpertBookings);
 router.post('/bookings/:id/refund', manualRefund);
 
-// GET /admin/legal-documents — current active versions of PP and T&Cs
-router.get('/legal-documents', getLegalDocuments);
-
-// POST /admin/legal-documents/bump — publish a new version
+// ── Legal documents ───────────────────────────────────────────────────────────
+router.get('/legal-documents',      getLegalDocuments);
 router.post('/legal-documents/bump', bumpLegalDocument);
+
+// ── Audit log ─────────────────────────────────────────────────────────────────
+router.get('/audit-log', getAuditLog);   // ?entityId=X&entityType=EXPERT&page=1
+
+// ── Parent list ───────────────────────────────────────────────────────────────
+router.get('/parents', listParents);
+
+// ── Parent bookings ───────────────────────────────────────────────────────────
+router.get('/parents/:id/bookings', listParentBookings);
+
+// ── Parent status actions ─────────────────────────────────────────────────────
+router.post('/parents/:id/activate',   activateParent);
+router.post('/parents/:id/deactivate', deactivateParent);
+router.post('/parents/:id/suspend',    suspendParent);
+
+// ── Parent GDPR ───────────────────────────────────────────────────────────────
+router.post('/parents/:id/gdpr-delete', gdprDeleteParent);
 
 module.exports = router;

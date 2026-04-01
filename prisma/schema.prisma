@@ -22,6 +22,13 @@ enum ExpertStatus {
   APPROVED
   REJECTED
   SUSPENDED
+  CHANGES_REQUESTED
+}
+
+enum ParentStatus {
+  ACTIVE
+  DEACTIVATED
+  SUSPENDED
 }
 
 enum SessionFormat {
@@ -108,6 +115,7 @@ model User {
   login_attempts          Int       @default(0)
   locked_until            DateTime?
   account_deleted         Boolean   @default(false) // GDPR erasure — personal data wiped, record kept for referential integrity
+  parent_status           ParentStatus? // null = ACTIVE (legacy/non-parent); only set for PARENT role
 
   expert             Expert?
   refreshTokens      RefreshToken[]
@@ -173,6 +181,11 @@ model Expert {
   instagram        String?
   facebook         String?
   linkedin         String?
+
+  // ── Admin moderation fields ──────────────────────────────────────────────────
+  is_published        Boolean   @default(true)  // false = hidden from parent search without suspension
+  change_request_note String?                    // admin note sent with CHANGES_REQUESTED status
+  change_requested_at DateTime?                  // when the last change request was sent
 
   user           User                @relation(fields: [user_id], references: [id], onDelete: Cascade)
   services       Service[]
@@ -375,6 +388,19 @@ model TcAcceptance {
 
   user    User    @relation(fields: [user_id], references: [id], onDelete: Cascade)
   booking Booking @relation(fields: [booking_id], references: [id], onDelete: Cascade)
+}
+
+// Admin moderation audit trail — one row per admin action, never deleted
+// admin_id is stored as a plain Int (no FK constraint) so GDPR-deleted admin
+// accounts don't break the log. Queried by joining against User separately.
+model AdminAuditLog {
+  id          Int      @id @default(autoincrement())
+  admin_id    Int      // references User.id — no FK so log survives admin account deletion
+  action      String   // e.g. 'APPROVE' | 'REJECT' | 'SUSPEND' | 'REACTIVATE' | 'REQUEST_CHANGES' | 'UNPUBLISH' | 'REPUBLISH' | 'MANUAL_VERIFY' | 'MANUAL_REFUND' | 'SEND_PASSWORD_RESET' | 'RESEND_VERIFICATION' | 'GDPR_DELETE'
+  entity_type String   // 'EXPERT' | 'BOOKING'
+  entity_id   Int
+  note        String?  // free-text context: reason, change request text, refund reason, etc.
+  created_at  DateTime @default(now())
 }
 
 // Stripe webhook idempotency — each event processed exactly once
