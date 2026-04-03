@@ -20,6 +20,7 @@ async function runTransfers() {
       transfer_due_at: { lte: now },
       status:          'CONFIRMED',
       transfer_attempts: { lt: MAX_ATTEMPTS },
+      is_disputed:     false,
     },
     include: {
       expert: { select: { stripe_account_id: true } },

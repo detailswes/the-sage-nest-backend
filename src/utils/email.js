@@ -20,6 +20,12 @@ const {
 const {
   changesRequestedEmailHtml,
 } = require("./email_templates/changesRequestedEmail");
+const {
+  refundParentEmailHtml,
+} = require("./email_templates/refundParentEmail");
+const {
+  refundExpertEmailHtml,
+} = require("./email_templates/refundExpertEmail");
 
 // ─── Init (lazy — called after dotenv has loaded) ─────────────────────────────
 let _initialized = false;
@@ -413,6 +419,77 @@ const sendAccountLockedEmail = ({ to, name, unlockAt }) => {
 };
 
 /**
+ * Notify a parent that a refund has been issued for their booking.
+ * @param {{
+ *   to: string, parentName: string, expertName: string,
+ *   serviceTitle: string, scheduledAt: Date,
+ *   refundAmount: number, isPartial: boolean,
+ *   reason?: string, bookingId: number
+ * }} param0
+ */
+const sendRefundNotificationToParent = ({
+  to,
+  parentName,
+  expertName,
+  serviceTitle,
+  scheduledAt,
+  refundAmount,
+  isPartial,
+  reason,
+  bookingId,
+}) =>
+  sendEmail({
+    to,
+    subject: `Your refund of £${parseFloat(refundAmount).toFixed(2)} has been processed`,
+    text: `Hi ${parentName}, a ${isPartial ? "partial" : "full"} refund of £${parseFloat(refundAmount).toFixed(2)} has been issued for your booking #${bookingId} with ${expertName}. Funds will appear within 3–5 business days.`,
+    html: refundParentEmailHtml({
+      parentName,
+      expertName,
+      serviceTitle,
+      scheduledAt,
+      refundAmount,
+      isPartial,
+      reason,
+      bookingId,
+      clientUrl: process.env.CLIENT_URL,
+    }),
+  });
+
+/**
+ * Notify an expert that a refund has been issued for one of their bookings.
+ * @param {{
+ *   to: string, expertName: string, parentName: string,
+ *   serviceTitle: string, scheduledAt: Date,
+ *   refundAmount: number, isPartial: boolean, bookingId: number
+ * }} param0
+ */
+const sendRefundNotificationToExpert = ({
+  to,
+  expertName,
+  parentName,
+  serviceTitle,
+  scheduledAt,
+  refundAmount,
+  isPartial,
+  bookingId,
+}) =>
+  sendEmail({
+    to,
+    subject: `A refund has been issued for booking #${bookingId}`,
+    text: `Hi ${expertName}, a ${isPartial ? "partial" : "full"} refund of £${parseFloat(refundAmount).toFixed(2)} has been issued to ${parentName} for booking #${bookingId}. The payout for this booking will not be processed.`,
+    html: refundExpertEmailHtml({
+      expertName,
+      parentName,
+      serviceTitle,
+      scheduledAt,
+      refundAmount,
+      isPartial,
+      bookingId,
+      clientUrl: process.env.CLIENT_URL,
+    }),
+  });
+
+/**
  * Admin-triggered: notify a specialist that changes are required before approval.
  * @param {{ to: string, name: string, note: string }} param0
  */
@@ -473,4 +550,6 @@ module.exports = {
   sendAccountLockedEmail,
   sendEmailChangeVerification,
   sendChangesRequestedEmail,
+  sendRefundNotificationToParent,
+  sendRefundNotificationToExpert,
 };

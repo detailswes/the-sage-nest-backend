@@ -7,6 +7,8 @@ const {
   sendPasswordResetEmail,
   sendVerificationEmail,
   sendChangesRequestedEmail,
+  sendRefundNotificationToParent,
+  sendRefundNotificationToExpert,
 } = require("../utils/email");
 
 const PAGE_LIMIT = 10;
@@ -115,6 +117,7 @@ async function listExperts(req, res) {
     insurance: true,
     business_info: true,
     services: { orderBy: { id: "asc" } },
+    _count: { select: { bookings: true } },
   };
 
   try {
@@ -693,6 +696,42 @@ async function exportTaxData(req, res) {
   }
 }
 
+// ─── Expert detail (single) ───────────────────────────────────────────────────
+
+async function getExpertDetail(req, res) {
+  const { id } = req.params;
+  try {
+    const expert = await prisma.expert.findUnique({
+      where: { id: parseInt(id) },
+      include: {
+        user: {
+          select: {
+            name: true,
+            email: true,
+            phone: true,
+            created_at: true,
+            is_verified: true,
+            login_attempts: true,
+            locked_until: true,
+            account_deleted: true,
+          },
+        },
+        qualifications: { orderBy: { created_at: "asc" } },
+        certifications: { orderBy: { created_at: "asc" } },
+        insurance: true,
+        business_info: true,
+        services: { orderBy: { id: "asc" } },
+        _count: { select: { bookings: true } },
+      },
+    });
+    if (!expert) return res.status(404).json({ error: "Expert not found" });
+    return res.json(expert);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 // ─── Bookings ─────────────────────────────────────────────────────────────────
 
 async function listExpertBookings(req, res) {
@@ -721,13 +760,13 @@ async function listExpertBookings(req, res) {
 
 async function manualRefund(req, res) {
   const { id } = req.params;
-  const { reason } = req.body;
+  const { reason, amount } = req.body;
 
   try {
     const booking = await prisma.booking.findUnique({
       where: { id: parseInt(id) },
       include: {
-        expert: { select: { id: true } },
+        expert: { select: { id: true, user: { select: { name: true, email: true } } } },
         parent: { select: { name: true, email: true } },
         service: { select: { title: true } },
       },
@@ -740,47 +779,371 @@ async function manualRefund(req, res) {
       });
     }
     if (!booking.stripe_payment_intent_id) {
-      return res
-        .status(400)
-        .json({ error: "No payment found for this booking" });
+      return res.status(400).json({ error: "No payment found for this booking" });
+    }
+
+    // Validate optional partial amount
+    const bookingTotal = parseFloat(booking.amount);
+    const isPartial = amount != null && amount !== "";
+    const refundAmountValue = isPartial ? parseFloat(amount) : bookingTotal;
+
+    if (isPartial) {
+      if (isNaN(refundAmountValue) || refundAmountValue <= 0) {
+        return res.status(400).json({ error: "Refund amount must be greater than 0" });
+      }
+      if (refundAmountValue > bookingTotal) {
+        return res.status(400).json({
+          error: `Refund amount (£${refundAmountValue.toFixed(2)}) cannot exceed the booking total (£${bookingTotal.toFixed(2)})`,
+        });
+      }
     }
 
     let chargeId = booking.stripe_charge_id;
     if (!chargeId) {
-      const pi = await stripe.paymentIntents.retrieve(
-        booking.stripe_payment_intent_id
-      );
+      const pi = await stripe.paymentIntents.retrieve(booking.stripe_payment_intent_id);
       chargeId = pi.latest_charge;
     }
     if (!chargeId) {
-      return res
-        .status(400)
-        .json({ error: "Could not locate charge for this booking" });
+      return res.status(400).json({ error: "Could not locate charge for this booking" });
     }
 
-    await stripe.refunds.create({ charge: chargeId });
+    let stripeRefund;
+    try {
+      stripeRefund = await stripe.refunds.create({
+        charge: chargeId,
+        ...(isPartial ? { amount: Math.round(refundAmountValue * 100) } : {}),
+      });
+    } catch (stripeErr) {
+      const code = stripeErr?.code;
+      if (code === "charge_already_refunded") {
+        return res.status(400).json({ error: "This charge has already been fully refunded." });
+      }
+      if (code === "charge_disputed") {
+        return res.status(400).json({ error: "This charge is under dispute and cannot be refunded." });
+      }
+      if (code === "insufficient_funds") {
+        return res.status(400).json({ error: "Refund failed: insufficient funds in Stripe balance." });
+      }
+      return res.status(400).json({ error: stripeErr.message || "Stripe refund failed." });
+    }
 
     await prisma.booking.update({
       where: { id: booking.id },
       data: {
-        status: "REFUNDED",
-        cancellation_reason: reason || "Admin manual refund",
-        cancelled_at: new Date(),
-        transfer_status: "skipped",
+        // Partial refund keeps booking CONFIRMED; full refund marks it REFUNDED
+        status:              isPartial ? "CONFIRMED" : "REFUNDED",
+        cancellation_reason: isPartial ? undefined : (reason || "Admin manual refund"),
+        cancelled_at:        isPartial ? undefined : new Date(),
+        transfer_status:     "skipped",
+        stripe_refund_id:    stripeRefund.id,
+        refund_status:       stripeRefund.status,
+        refund_amount:       refundAmountValue,
+      },
+    });
+
+    const auditNote = isPartial
+      ? `Partial refund of £${refundAmountValue.toFixed(2)}${reason ? ` — ${reason}` : ""}`
+      : `Full refund — ${reason || "Admin manual refund"}`;
+
+    await logAudit(req.user.id, "MANUAL_REFUND", "BOOKING", booking.id, auditNote);
+
+    // Fire-and-forget email notifications
+    try {
+      await sendRefundNotificationToParent({
+        to:            booking.parent.email,
+        parentName:    booking.parent.name,
+        expertName:    booking.expert?.user?.name || "your specialist",
+        serviceTitle:  booking.service?.title || "the session",
+        scheduledAt:   booking.scheduled_at,
+        refundAmount:  refundAmountValue,
+        isPartial,
+        reason:        reason || undefined,
+        bookingId:     booking.id,
+      });
+    } catch (emailErr) {
+      console.error("[ADMIN] Failed to send refund email to parent:", emailErr.message);
+    }
+
+    try {
+      await sendRefundNotificationToExpert({
+        to:           booking.expert?.user?.email,
+        expertName:   booking.expert?.user?.name || "Specialist",
+        parentName:   booking.parent.name,
+        serviceTitle: booking.service?.title || "the session",
+        scheduledAt:  booking.scheduled_at,
+        refundAmount: refundAmountValue,
+        isPartial,
+        bookingId:    booking.id,
+      });
+    } catch (emailErr) {
+      console.error("[ADMIN] Failed to send refund email to expert:", emailErr.message);
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[ADMIN] Manual refund error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Platform-wide booking list ───────────────────────────────────────────────
+
+async function listAllBookings(req, res) {
+  const { search, status, disputed, from, to, page = 1, limit = 25 } = req.query;
+
+  try {
+    const where = {};
+
+    // Status filter — "UPCOMING" is a virtual status meaning CONFIRMED + future
+    if (status && status !== "ALL") {
+      if (status === "UPCOMING") {
+        where.status = "CONFIRMED";
+        where.scheduled_at = { gt: new Date() };
+      } else {
+        where.status = status;
+      }
+    }
+
+    if (disputed === "true") {
+      where.is_disputed = true;
+    }
+
+    // Date range (applied to scheduled_at; merges with UPCOMING filter if both set)
+    if (from || to) {
+      where.scheduled_at = {
+        ...where.scheduled_at,
+        ...(from ? { gte: new Date(from) } : {}),
+        ...(to   ? { lte: new Date(to)   } : {}),
+      };
+    }
+
+    // Search by booking ID, parent name, or specialist name
+    if (search && search.trim()) {
+      const term    = search.trim();
+      const termInt = parseInt(term);
+      const orClauses = [
+        { parent: { name: { contains: term, mode: "insensitive" } } },
+        { expert: { user: { name: { contains: term, mode: "insensitive" } } } },
+      ];
+      if (!isNaN(termInt)) orClauses.push({ id: termInt });
+      where.OR = orClauses;
+    }
+
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const take = parseInt(limit);
+
+    const [bookings, total] = await Promise.all([
+      prisma.booking.findMany({
+        where,
+        orderBy: { scheduled_at: "desc" },
+        skip,
+        take,
+        include: {
+          parent:  { select: { id: true, name: true, email: true } },
+          expert:  { select: { id: true, user: { select: { name: true, email: true } } } },
+          service: { select: { title: true } },
+        },
+      }),
+      prisma.booking.count({ where }),
+    ]);
+
+    return res.json({ bookings, total, page: parseInt(page), limit: take });
+  } catch (err) {
+    console.error("[ADMIN] listAllBookings error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function getBookingDetail(req, res) {
+  const { id } = req.params;
+  try {
+    const booking = await prisma.booking.findUnique({
+      where: { id: parseInt(id) },
+      include: {
+        parent:  { select: { id: true, name: true, email: true, phone: true } },
+        expert:  {
+          select: {
+            id:   true,
+            user: { select: { name: true, email: true } },
+            stripe_account_id: true,
+          },
+        },
+        service: { select: { title: true, price: true, duration_minutes: true } },
+      },
+    });
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    return res.json(booking);
+  } catch (err) {
+    console.error("[ADMIN] getBookingDetail error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function adminCancelBooking(req, res) {
+  const { id }     = req.params;
+  const { reason } = req.body;
+
+  if (!reason || !reason.trim()) {
+    return res.status(400).json({ error: "reason is required" });
+  }
+
+  try {
+    const booking = await prisma.booking.findUnique({
+      where: { id: parseInt(id) },
+      include: {
+        parent:  { select: { name: true, email: true } },
+        expert:  { select: { user: { select: { name: true, email: true } } } },
+        service: { select: { title: true } },
+      },
+    });
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+
+    if (!["CONFIRMED", "PENDING_PAYMENT"].includes(booking.status)) {
+      return res.status(400).json({
+        error: `Cannot cancel a booking with status: ${booking.status}`,
+      });
+    }
+
+    if (booking.status === "CONFIRMED" && booking.stripe_payment_intent_id) {
+      // Refund captured payment
+      let chargeId = booking.stripe_charge_id;
+      if (!chargeId) {
+        const pi = await stripe.paymentIntents.retrieve(booking.stripe_payment_intent_id);
+        chargeId = pi.latest_charge;
+      }
+      let stripeRefund = null;
+      if (chargeId) {
+        stripeRefund = await stripe.refunds.create({ charge: chargeId });
+      }
+      const refundedAmount = parseFloat(booking.amount);
+      await prisma.booking.update({
+        where: { id: booking.id },
+        data: {
+          status:              "REFUNDED",
+          cancellation_reason: reason.trim(),
+          cancelled_at:        new Date(),
+          transfer_status:     "skipped",
+          ...(stripeRefund ? {
+            stripe_refund_id: stripeRefund.id,
+            refund_status:    stripeRefund.status,
+            refund_amount:    refundedAmount,
+          } : {}),
+        },
+      });
+
+      // Fire-and-forget email notifications
+      try {
+        await sendRefundNotificationToParent({
+          to:           booking.parent.email,
+          parentName:   booking.parent.name,
+          expertName:   booking.expert?.user?.name || "your specialist",
+          serviceTitle: booking.service?.title || "the session",
+          scheduledAt:  booking.scheduled_at,
+          refundAmount: refundedAmount,
+          isPartial:    false,
+          reason:       reason.trim(),
+          bookingId:    booking.id,
+        });
+      } catch (emailErr) {
+        console.error("[ADMIN] Failed to send refund email to parent:", emailErr.message);
+      }
+      try {
+        await sendRefundNotificationToExpert({
+          to:           booking.expert?.user?.email,
+          expertName:   booking.expert?.user?.name || "Specialist",
+          parentName:   booking.parent.name,
+          serviceTitle: booking.service?.title || "the session",
+          scheduledAt:  booking.scheduled_at,
+          refundAmount: refundedAmount,
+          isPartial:    false,
+          bookingId:    booking.id,
+        });
+      } catch (emailErr) {
+        console.error("[ADMIN] Failed to send refund email to expert:", emailErr.message);
+      }
+    } else {
+      // PENDING_PAYMENT — cancel the PaymentIntent if it exists (no refund email needed)
+      if (booking.stripe_payment_intent_id) {
+        try {
+          await stripe.paymentIntents.cancel(booking.stripe_payment_intent_id);
+        } catch (_) { /* may already be expired */ }
+      }
+      await prisma.booking.update({
+        where: { id: booking.id },
+        data: {
+          status:              "CANCELLED",
+          cancellation_reason: reason.trim(),
+          cancelled_at:        new Date(),
+          transfer_status:     "skipped",
+        },
+      });
+    }
+
+    await logAudit(req.user.id, "CANCEL_BOOKING", "BOOKING", booking.id, reason.trim());
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[ADMIN] adminCancelBooking error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function markBookingDisputed(req, res) {
+  const { id }                   = req.params;
+  const { reason, disputed = true } = req.body;
+  const isDisputing = disputed !== false && disputed !== "false";
+
+  try {
+    const booking = await prisma.booking.findUnique({ where: { id: parseInt(id) } });
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: {
+        is_disputed:   isDisputing,
+        disputed_at:   isDisputing ? new Date() : null,
+        dispute_reason: isDisputing ? (reason?.trim() || null) : null,
       },
     });
 
     await logAudit(
       req.user.id,
-      "MANUAL_REFUND",
+      isDisputing ? "MARK_DISPUTED" : "RESOLVE_DISPUTE",
       "BOOKING",
       booking.id,
-      reason || "Admin manual refund"
+      reason?.trim() || null
     );
 
     return res.json({ success: true });
   } catch (err) {
-    console.error("[ADMIN] Manual refund error:", err);
+    console.error("[ADMIN] markBookingDisputed error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function updateBookingNote(req, res) {
+  const { id }   = req.params;
+  const { note } = req.body;
+
+  try {
+    const booking = await prisma.booking.findUnique({ where: { id: parseInt(id) } });
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: { internal_admin_note: note?.trim() || null },
+    });
+
+    await logAudit(
+      req.user.id,
+      "UPDATE_NOTE",
+      "BOOKING",
+      booking.id,
+      note?.trim() ? "Note updated" : "Note cleared"
+    );
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[ADMIN] updateBookingNote error:", err);
     return res.status(500).json({ error: "Server error" });
   }
 }
@@ -1094,6 +1457,33 @@ async function gdprDeleteExpert(req, res) {
 
 // ─── Parent list ──────────────────────────────────────────────────────────────
 
+async function getParentDetail(req, res) {
+  const { id } = req.params;
+  try {
+    const parent = await prisma.user.findUnique({
+      where: { id: parseInt(id) },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        is_verified: true,
+        parent_status: true,
+        created_at: true,
+        _count: { select: { bookings_as_parent: true } },
+      },
+    });
+    if (!parent || parent.role !== "PARENT") {
+      return res.status(404).json({ error: "Parent not found" });
+    }
+    return res.json(parent);
+  } catch (err) {
+    console.error("[ADMIN] getParentDetail error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 async function listParents(req, res) {
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limit = Math.min(
@@ -1385,6 +1775,231 @@ async function gdprDeleteParent(req, res) {
   }
 }
 
+// ─── Expert yearly financial summary ─────────────────────────────────────────
+
+async function getExpertYearlySummary(req, res) {
+  const { id } = req.params;
+  const year        = parseInt(req.query.year) || new Date().getFullYear();
+  const statusParam = req.query.status || "ALL"; // "ALL" | "CONFIRMED" | "COMPLETED"
+
+  const from = new Date(`${year}-01-01T00:00:00.000Z`);
+  const to   = new Date(`${year + 1}-01-01T00:00:00.000Z`);
+
+  const earningsStatus =
+    statusParam === "CONFIRMED" ? "CONFIRMED" :
+    statusParam === "COMPLETED" ? "COMPLETED" :
+    { in: ["CONFIRMED", "COMPLETED"] };
+
+  try {
+    const expert = await prisma.expert.findUnique({ where: { id: parseInt(id) } });
+    if (!expert) return res.status(404).json({ error: "Expert not found" });
+
+    // Earnings: filtered by statusParam (CONFIRMED, COMPLETED, or both)
+    const earnings = await prisma.booking.aggregate({
+      where: {
+        expert_id: expert.id,
+        status: earningsStatus,
+        scheduled_at: { gte: from, lt: to },
+      },
+      _sum:   { amount: true, platform_fee: true },
+      _count: { id: true },
+    });
+
+    // Refunds: REFUNDED bookings scheduled in the year
+    const refunds = await prisma.booking.aggregate({
+      where: {
+        expert_id: expert.id,
+        status: "REFUNDED",
+        scheduled_at: { gte: from, lt: to },
+      },
+      _sum:   { amount: true },
+      _count: { id: true },
+    });
+
+    const totalGross     = parseFloat(earnings._sum.amount       ?? 0);
+    const totalFees      = parseFloat(earnings._sum.platform_fee ?? 0);
+    const totalNet       = totalGross - totalFees;
+    const completedCount = earnings._count.id;
+    const refundCount    = refunds._count.id;
+    const totalRefunded  = parseFloat(refunds._sum.amount ?? 0);
+
+    return res.json({
+      year,
+      total_gross:        totalGross,
+      total_fees:         totalFees,
+      total_net:          totalNet,
+      completed_sessions: completedCount,
+      refund_count:       refundCount,
+      total_refunded:     totalRefunded,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Payment status helper ────────────────────────────────────────────────────
+
+function buildTransactionWhere({ payment_status, from, to, search } = {}) {
+  const where = {};
+
+  if (payment_status && payment_status !== "ALL") {
+    switch (payment_status) {
+      case "succeeded":
+        where.status = { in: ["CONFIRMED", "COMPLETED"] };
+        where.stripe_payment_intent_id = { not: null };
+        break;
+      case "refunded":
+        where.status = "REFUNDED";
+        break;
+      case "pending":
+        where.status = "PENDING_PAYMENT";
+        break;
+      case "failed":
+        where.status = "CANCELLED";
+        break;
+    }
+  }
+
+  if (from || to) {
+    where.scheduled_at = {
+      ...(from ? { gte: new Date(from) } : {}),
+      ...(to ? { lte: new Date(to) } : {}),
+    };
+  }
+
+  if (search && search.trim()) {
+    const term = search.trim();
+    const termInt = parseInt(term);
+    const orClauses = [
+      { parent: { name: { contains: term, mode: "insensitive" } } },
+      { expert: { user: { name: { contains: term, mode: "insensitive" } } } },
+    ];
+    if (!isNaN(termInt)) orClauses.push({ id: termInt });
+    where.OR = orClauses;
+  }
+
+  return where;
+}
+
+// ─── Transaction list ─────────────────────────────────────────────────────────
+
+async function listTransactions(req, res) {
+  const { search, payment_status, from, to, page = 1, limit = 25 } = req.query;
+
+  try {
+    const where = buildTransactionWhere({ payment_status, from, to, search });
+    const skip = (parseInt(page) - 1) * parseInt(limit);
+    const take = parseInt(limit);
+
+    const [transactions, total] = await Promise.all([
+      prisma.booking.findMany({
+        where,
+        orderBy: { scheduled_at: "desc" },
+        skip,
+        take,
+        include: {
+          parent:  { select: { id: true, name: true, email: true } },
+          expert:  { select: { id: true, user: { select: { name: true, email: true } } } },
+          service: { select: { title: true } },
+        },
+      }),
+      prisma.booking.count({ where }),
+    ]);
+
+    return res.json({ transactions, total, page: parseInt(page), limit: take });
+  } catch (err) {
+    console.error("[ADMIN] listTransactions error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Transaction CSV export ───────────────────────────────────────────────────
+
+async function exportTransactionsCsv(req, res) {
+  const { search, payment_status, from, to } = req.query;
+
+  try {
+    const where = buildTransactionWhere({ payment_status, from, to, search });
+
+    const transactions = await prisma.booking.findMany({
+      where,
+      orderBy: { scheduled_at: "desc" },
+      include: {
+        parent:  { select: { name: true, email: true } },
+        expert:  { select: { user: { select: { name: true, email: true } } } },
+        service: { select: { title: true } },
+      },
+    });
+
+    const esc = (v) => {
+      const s = v == null ? "" : String(v);
+      return s.includes(",") || s.includes('"') || s.includes("\n")
+        ? `"${s.replace(/"/g, '""')}"`
+        : s;
+    };
+    const line = (...cols) => cols.map(esc).join(",") + "\r\n";
+
+    const paymentStatusLabel = (t) => {
+      if (["CONFIRMED", "COMPLETED"].includes(t.status) && t.stripe_payment_intent_id) return "Succeeded";
+      if (t.status === "REFUNDED")        return "Refunded";
+      if (t.status === "PENDING_PAYMENT") return "Pending";
+      if (t.status === "CANCELLED")       return "Failed";
+      return "Failed";
+    };
+
+    let csv = line(
+      "Booking ID",
+      "Session Date",
+      "Parent Name",
+      "Parent Email",
+      "Specialist Name",
+      "Specialist Email",
+      "Service",
+      "Amount (£)",
+      "Platform Fee (£)",
+      "Specialist Payout (£)",
+      "Payment Status",
+      "Booking Status",
+      "Stripe Payment Intent ID",
+      "Transfer Status"
+    );
+
+    for (const t of transactions) {
+      const amount  = parseFloat(t.amount  || 0);
+      const fee     = parseFloat(t.platform_fee || 0);
+      const payout  = amount - fee;
+      csv += line(
+        t.id,
+        t.scheduled_at ? new Date(t.scheduled_at).toISOString().split("T")[0] : "",
+        t.parent?.name   || "",
+        t.parent?.email  || "",
+        t.expert?.user?.name  || "",
+        t.expert?.user?.email || "",
+        t.service?.title || "",
+        amount.toFixed(2),
+        fee.toFixed(2),
+        payout.toFixed(2),
+        paymentStatusLabel(t),
+        t.status,
+        t.stripe_payment_intent_id || "",
+        t.transfer_status || ""
+      );
+    }
+
+    const dateStamp = new Date().toISOString().split("T")[0];
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader(
+      "Content-Disposition",
+      `attachment; filename="transactions_${dateStamp}.csv"`
+    );
+    return res.send("\uFEFF" + csv);
+  } catch (err) {
+    console.error("[ADMIN] exportTransactionsCsv error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -1401,16 +2016,26 @@ module.exports = {
   unpublishExpert,
   republishExpert,
   exportTaxData,
+  getExpertYearlySummary,
+  getExpertDetail,
   listExpertBookings,
   manualRefund,
+  listAllBookings,
+  getBookingDetail,
+  adminCancelBooking,
+  markBookingDisputed,
+  updateBookingNote,
   getLegalDocuments,
   bumpLegalDocument,
   getAuditLog,
   gdprDeleteExpert,
+  getParentDetail,
   listParents,
   listParentBookings,
   activateParent,
   deactivateParent,
   suspendParent,
   gdprDeleteParent,
+  listTransactions,
+  exportTransactionsCsv,
 };

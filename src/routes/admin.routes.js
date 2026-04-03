@@ -15,18 +15,28 @@ const {
   unpublishExpert,
   republishExpert,
   exportTaxData,
+  getExpertYearlySummary,
+  getExpertDetail,
   listExpertBookings,
   manualRefund,
+  listAllBookings,
+  getBookingDetail,
+  adminCancelBooking,
+  markBookingDisputed,
+  updateBookingNote,
   getLegalDocuments,
   bumpLegalDocument,
   getAuditLog,
   gdprDeleteExpert,
+  getParentDetail,
   listParents,
   listParentBookings,
   activateParent,
   deactivateParent,
   suspendParent,
   gdprDeleteParent,
+  listTransactions,
+  exportTransactionsCsv,
 } = require('../controllers/admin.controller');
 
 // All admin routes require authentication + admin role
@@ -52,15 +62,24 @@ router.post('/experts/:id/send-password-reset',  sendPasswordReset);
 router.post('/experts/:id/resend-verification',  resendVerification);
 router.post('/experts/:id/verify',               manuallyVerify);
 
+// ── Expert detail (single) ────────────────────────────────────────────────────
+router.get('/experts/:id', getExpertDetail);
+
 // ── Tax export ────────────────────────────────────────────────────────────────
-router.get('/experts/:id/tax-export', exportTaxData);
+router.get('/experts/:id/tax-export',       exportTaxData);
+router.get('/experts/:id/yearly-summary',   getExpertYearlySummary);
 
 // ── GDPR ──────────────────────────────────────────────────────────────────────
 router.post('/experts/:id/gdpr-delete', gdprDeleteExpert);
 
 // ── Bookings ──────────────────────────────────────────────────────────────────
-router.get('/bookings',           listExpertBookings);
-router.post('/bookings/:id/refund', manualRefund);
+router.get('/bookings',              listExpertBookings);   // ?expertId=X  (existing — expert detail tab)
+router.get('/bookings/all',          listAllBookings);      // platform-wide list with search/filter/pagination
+router.get('/bookings/:id',          getBookingDetail);
+router.post('/bookings/:id/refund',  manualRefund);
+router.post('/bookings/:id/cancel',  adminCancelBooking);
+router.post('/bookings/:id/dispute', markBookingDisputed);
+router.put('/bookings/:id/note',     updateBookingNote);
 
 // ── Legal documents ───────────────────────────────────────────────────────────
 router.get('/legal-documents',      getLegalDocuments);
@@ -72,6 +91,9 @@ router.get('/audit-log', getAuditLog);   // ?entityId=X&entityType=EXPERT&page=1
 // ── Parent list ───────────────────────────────────────────────────────────────
 router.get('/parents', listParents);
 
+// ── Parent detail (single) ────────────────────────────────────────────────────
+router.get('/parents/:id', getParentDetail);
+
 // ── Parent bookings ───────────────────────────────────────────────────────────
 router.get('/parents/:id/bookings', listParentBookings);
 
@@ -82,5 +104,9 @@ router.post('/parents/:id/suspend',    suspendParent);
 
 // ── Parent GDPR ───────────────────────────────────────────────────────────────
 router.post('/parents/:id/gdpr-delete', gdprDeleteParent);
+
+// ── Transactions (Payment Overview) ──────────────────────────────────────────
+router.get('/transactions',        listTransactions);
+router.get('/transactions/export', exportTransactionsCsv);
 
 module.exports = router;

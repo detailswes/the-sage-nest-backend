@@ -2,7 +2,20 @@ const argon2 = require("argon2");
 const bcrypt = require("bcrypt"); // kept only for verifying legacy hashes during transition
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
+const path = require("path");
+const fs = require("fs");
+const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
+
+const UPLOADS_DIR = path.join(__dirname, "../../uploads");
+
+function deleteFile(fileUrl) {
+  if (!fileUrl || !fileUrl.startsWith("/uploads/")) return;
+  const filePath = path.join(UPLOADS_DIR, path.basename(fileUrl));
+  if (fs.existsSync(filePath)) {
+    try { fs.unlinkSync(filePath); } catch (_) {}
+  }
+}
 const {
   sendVerificationEmail,
   sendPasswordResetEmail,
@@ -716,6 +729,111 @@ async function deleteAccount(req, res) {
 
     const valid = await verifyPassword(user.password_hash, password);
     if (!valid) return res.status(401).json({ error: "Password is incorrect" });
+
+    // ── Expert cleanup (only if this user has an expert profile) ──────────────
+    const expert = await prisma.expert.findUnique({
+      where: { user_id: req.user.id },
+      include: {
+        qualifications: true,
+        certifications: true,
+        insurance: true,
+        business_info: true,
+        bookings: {
+          where: {
+            status: { in: ["PENDING_PAYMENT", "CONFIRMED"] },
+            scheduled_at: { gt: new Date() },
+          },
+        },
+      },
+    });
+
+    if (expert) {
+      // 1. Cancel future bookings and refund where payment was captured
+      for (const booking of expert.bookings) {
+        try {
+          if (booking.status === "CONFIRMED" && booking.stripe_payment_intent_id) {
+            let chargeId = booking.stripe_charge_id;
+            if (!chargeId) {
+              const pi = await stripe.paymentIntents.retrieve(booking.stripe_payment_intent_id);
+              chargeId = pi.latest_charge;
+            }
+            if (chargeId) await stripe.refunds.create({ charge: chargeId });
+            await prisma.booking.update({
+              where: { id: booking.id },
+              data: {
+                status: "REFUNDED",
+                cancellation_reason: "Specialist account deleted (GDPR)",
+                cancelled_at: new Date(),
+                transfer_status: "skipped",
+              },
+            });
+          } else if (booking.status === "PENDING_PAYMENT") {
+            if (booking.stripe_payment_intent_id) {
+              try { await stripe.paymentIntents.cancel(booking.stripe_payment_intent_id); } catch (_) {}
+            }
+            await prisma.booking.update({
+              where: { id: booking.id },
+              data: {
+                status: "CANCELLED",
+                cancellation_reason: "Specialist account deleted (GDPR)",
+                cancelled_at: new Date(),
+              },
+            });
+          }
+        } catch (refundErr) {
+          // Log but never abort the deletion — GDPR obligation > refund convenience
+          console.error(`[GDPR] Failed to process booking ${booking.id}:`, refundErr.message);
+        }
+      }
+
+      // 2. Skip any pending transfers (can't pay a deleted account)
+      await prisma.booking.updateMany({
+        where: { expert_id: expert.id, transfer_status: "pending" },
+        data: { transfer_status: "skipped" },
+      });
+
+      // 3. Delete uploaded files
+      const filesToDelete = [
+        expert.profile_image,
+        ...expert.qualifications.map((q) => q.document_url),
+        ...expert.certifications.map((c) => c.document_url),
+        ...(expert.insurance ? [expert.insurance.document_url] : []),
+      ].filter(Boolean);
+      for (const fileUrl of filesToDelete) deleteFile(fileUrl);
+
+      // 4. Hard-delete BusinessInfo (pure PII — no accounting value)
+      if (expert.business_info) {
+        await prisma.businessInfo.delete({ where: { expert_id: expert.id } });
+      }
+
+      // 5. Anonymise Expert record
+      await prisma.expert.update({
+        where: { id: expert.id },
+        data: {
+          bio: null,
+          profile_image: null,
+          expertise: null,
+          stripe_account_id: null,
+          stripe_onboarding_complete: false,
+          status: "SUSPENDED",
+          is_published: false,
+          summary: null,
+          position: null,
+          session_format: null,
+          address_street: null,
+          address_city: null,
+          address_postcode: null,
+          languages: [],
+          instagram: null,
+          facebook: null,
+          linkedin: null,
+          change_request_note: null,
+          change_requested_at: null,
+        },
+      });
+
+      console.log(`[GDPR] Expert profile ${expert.id} anonymised during self-deletion`);
+    }
 
     // Wipe all personal data immediately
     await prisma.user.update({

@@ -324,6 +324,19 @@ model Booking {
   cancellation_reason String?
   cancelled_at        DateTime?
 
+  // Refund tracking
+  stripe_refund_id String?                     // Stripe refund object ID (re_xxx)
+  refund_status    String?                     // 'pending' | 'succeeded' | 'failed' (from Stripe)
+  refund_amount    Decimal? @db.Decimal(10, 2) // null = no refund yet; set = amount refunded
+
+  // Dispute — admin can flag a booking; pauses any pending payout to the specialist
+  is_disputed        Boolean   @default(false)
+  disputed_at        DateTime?
+  dispute_reason     String?
+
+  // Internal admin note — never exposed to parents or specialists
+  internal_admin_note String?
+
   // Phase 2: Rescheduling — new booking is created on reschedule, old one links forward
   rescheduled_from_id Int?
   rescheduled_at      DateTime?
