@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { authenticate, requireAdmin } = require('../middleware/auth.middleware');
+const { authenticate, authenticateOptional, requireAdmin } = require('../middleware/auth.middleware');
 const {
   listExperts,
   approveExpert,
@@ -39,11 +39,11 @@ const {
   exportTransactionsCsv,
 } = require('../controllers/admin.controller');
 
+// ── Public routes (no auth required) ─────────────────────────────────────────
+router.get('/experts', authenticateOptional, listExperts);
+
 // All admin routes require authentication + admin role
 router.use(authenticate, requireAdmin);
-
-// ── Expert list ───────────────────────────────────────────────────────────────
-router.get('/experts', listExperts);
 
 // ── Status actions ────────────────────────────────────────────────────────────
 router.post('/experts/:id/approve',    approveExpert);

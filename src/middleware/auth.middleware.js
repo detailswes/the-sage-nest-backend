@@ -44,4 +44,18 @@ async function requireEmailVerified(req, res, next) {
   }
 }
 
-module.exports = { authenticate, requireAdmin, requireEmailVerified };
+// Sets req.user if a valid token is present, but never blocks the request
+function authenticateOptional(req, _res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  if (token) {
+    try {
+      req.user = jwt.verify(token, process.env.JWT_SECRET);
+    } catch (_) {
+      // Invalid/expired token — treat as unauthenticated
+    }
+  }
+  next();
+}
+
+module.exports = { authenticate, authenticateOptional, requireAdmin, requireEmailVerified };

@@ -71,6 +71,8 @@ async function logAudit(adminId, action, entityType, entityId, note = null) {
 // ─── Expert list ──────────────────────────────────────────────────────────────
 
 async function listExperts(req, res) {
+  const isAdmin = !!req.user;
+
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limit = Math.min(
     100,
@@ -82,9 +84,15 @@ async function listExperts(req, res) {
   const baseWhere = { user: { role: "EXPERT" } };
   const where = { ...baseWhere };
 
-  if (status && VALID_STATUSES.includes(status)) {
-    where.status = status;
+  if (isAdmin) {
+    if (status && VALID_STATUSES.includes(status)) {
+      where.status = status;
+    }
+  } else {
+    // Public callers may only ever see approved experts
+    where.status = "APPROVED";
   }
+
   if (search?.trim()) {
     where.user = {
       ...where.user,
@@ -101,7 +109,7 @@ async function listExperts(req, res) {
     where.services = { some: { cluster } };
   }
 
-  const include = {
+  const adminInclude = {
     user: {
       select: {
         name: true,
@@ -120,55 +128,92 @@ async function listExperts(req, res) {
     _count: { select: { bookings: true } },
   };
 
-  try {
-    const [
-      total,
-      data,
-      pendingCount,
-      approvedCount,
-      rejectedCount,
-      suspendedCount,
-      changesCount,
-    ] = await Promise.all([
-      prisma.expert.count({ where }),
-      prisma.expert.findMany({
-        where,
-        include,
-        orderBy: { id: "asc" },
-        skip,
-        take: limit,
-      }),
-      prisma.expert.count({ where: { ...baseWhere, status: "PENDING" } }),
-      prisma.expert.count({ where: { ...baseWhere, status: "APPROVED" } }),
-      prisma.expert.count({ where: { ...baseWhere, status: "REJECTED" } }),
-      prisma.expert.count({ where: { ...baseWhere, status: "SUSPENDED" } }),
-      prisma.expert.count({
-        where: { ...baseWhere, status: "CHANGES_REQUESTED" },
-      }),
-    ]);
+  const publicInclude = {
+    user: {
+      select: {
+        name: true,
+      },
+    },
+    qualifications: { orderBy: { created_at: "asc" } },
+    certifications: { orderBy: { created_at: "asc" } },
+    business_info: true,
+    services: { orderBy: { id: "asc" } },
+  };
 
-    return res.json({
-      data,
-      pagination: {
+  const include = isAdmin ? adminInclude : publicInclude;
+
+  try {
+    if (isAdmin) {
+      const [
         total,
-        page,
-        limit,
-        totalPages: Math.max(1, Math.ceil(total / limit)),
-      },
-      counts: {
-        all:
-          pendingCount +
-          approvedCount +
-          rejectedCount +
-          suspendedCount +
-          changesCount,
-        PENDING: pendingCount,
-        APPROVED: approvedCount,
-        REJECTED: rejectedCount,
-        SUSPENDED: suspendedCount,
-        CHANGES_REQUESTED: changesCount,
-      },
-    });
+        data,
+        pendingCount,
+        approvedCount,
+        rejectedCount,
+        suspendedCount,
+        changesCount,
+      ] = await Promise.all([
+        prisma.expert.count({ where }),
+        prisma.expert.findMany({
+          where,
+          include,
+          orderBy: { id: "asc" },
+          skip,
+          take: limit,
+        }),
+        prisma.expert.count({ where: { ...baseWhere, status: "PENDING" } }),
+        prisma.expert.count({ where: { ...baseWhere, status: "APPROVED" } }),
+        prisma.expert.count({ where: { ...baseWhere, status: "REJECTED" } }),
+        prisma.expert.count({ where: { ...baseWhere, status: "SUSPENDED" } }),
+        prisma.expert.count({
+          where: { ...baseWhere, status: "CHANGES_REQUESTED" },
+        }),
+      ]);
+
+      return res.json({
+        data,
+        pagination: {
+          total,
+          page,
+          limit,
+          totalPages: Math.max(1, Math.ceil(total / limit)),
+        },
+        counts: {
+          all:
+            pendingCount +
+            approvedCount +
+            rejectedCount +
+            suspendedCount +
+            changesCount,
+          PENDING: pendingCount,
+          APPROVED: approvedCount,
+          REJECTED: rejectedCount,
+          SUSPENDED: suspendedCount,
+          CHANGES_REQUESTED: changesCount,
+        },
+      });
+    } else {
+      const [total, data] = await Promise.all([
+        prisma.expert.count({ where }),
+        prisma.expert.findMany({
+          where,
+          include,
+          orderBy: { id: "asc" },
+          skip,
+          take: limit,
+        }),
+      ]);
+
+      return res.json({
+        data,
+        pagination: {
+          total,
+          page,
+          limit,
+          totalPages: Math.max(1, Math.ceil(total / limit)),
+        },
+      });
+    }
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
