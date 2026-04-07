@@ -5,6 +5,8 @@ const {
   listExperts,
   approveExpert,
   rejectExpert,
+  approveLanguage,
+  rejectLanguage,
   toggleApproval,
   sendPasswordReset,
   resendVerification,
@@ -46,8 +48,10 @@ router.get('/experts', authenticateOptional, listExperts);
 router.use(authenticate, requireAdmin);
 
 // ── Status actions ────────────────────────────────────────────────────────────
-router.post('/experts/:id/approve',    approveExpert);
-router.post('/experts/:id/reject',     rejectExpert);
+router.post('/experts/:id/approve',              approveExpert);
+router.post('/experts/:id/reject',               rejectExpert);
+router.post('/experts/:id/languages/approve',    approveLanguage);
+router.post('/experts/:id/languages/reject',     rejectLanguage);
 router.patch('/experts/:id/toggle',    toggleApproval);
 router.post('/experts/:id/suspend',    suspendExpert);
 router.post('/experts/:id/reactivate', reactivateExpert);

@@ -174,8 +174,12 @@ model Expert {
   address_street   String?
   address_city     String?
   address_postcode String?
-  languages        String[]       @default([])
-  timezone         String         @default("Europe/Rome")
+  languages         String[]       @default([])
+  pending_languages String[]       @default([])
+  timezone               String         @default("Europe/Rome")
+  buffer_minutes         Int            @default(0)
+  advance_booking_days   Int            @default(60)
+  min_notice_hours       Int            @default(24)
 
   // ── Social media links (optional, shown on public profile) ──────────────────
   instagram        String?
