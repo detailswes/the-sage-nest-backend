@@ -15,7 +15,17 @@ const {
 // ── Own profile ───────────────────────────────────────────────────────────────
 router.get('/me', authenticate, getMyProfile);
 router.put('/me', authenticate, updateMyProfile);
-router.post('/me/profile-image', authenticate, upload.single('profile_image'), uploadProfileImage);
+router.post('/me/profile-image', authenticate, (req, res, next) => {
+  upload.single('profile_image')(req, res, (err) => {
+    if (err?.code === 'LIMIT_FILE_SIZE') {
+      return res.status(413).json({ error: 'File too large. Maximum size is 5 MB.' });
+    }
+    if (err) {
+      return res.status(400).json({ error: err.message || 'Upload failed.' });
+    }
+    next();
+  });
+}, uploadProfileImage);
 
 // ── Qualifications ────────────────────────────────────────────────────────────
 router.post('/me/qualifications', authenticate, documentUpload.single('document'), addQualification);

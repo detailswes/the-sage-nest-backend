@@ -1,6 +1,7 @@
 const path = require('path');
 const fs = require('fs');
 const prisma = require('../prisma/client');
+const { encryptIban, decryptIban } = require('../utils/encryption');
 
 const UPLOADS_DIR = path.join(__dirname, '../../uploads');
 
@@ -46,6 +47,9 @@ async function getMyProfile(req, res) {
       },
     });
     if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
+    if (expert.business_info?.iban) {
+      expert.business_info.iban = decryptIban(expert.business_info.iban);
+    }
     return res.json(expert);
   } catch (err) {
     console.error(err);
@@ -58,7 +62,7 @@ async function updateMyProfile(req, res) {
     bio, expertise, profile_image,
     summary, position, session_format,
     address_street, address_city, address_postcode,
-    languages, timezone,
+    languages, pending_languages, timezone,
     instagram, facebook, linkedin,
   } = req.body;
 
@@ -67,6 +71,11 @@ async function updateMyProfile(req, res) {
     if (!VALID_SESSION_FORMATS.includes(session_format)) {
       return res.status(400).json({ error: 'Invalid session_format value.' });
     }
+  }
+
+  // Validate bio length
+  if (bio !== undefined && bio !== null && bio.length > 700) {
+    return res.status(400).json({ error: 'Full bio must be 700 characters or fewer.' });
   }
 
   // Validate summary length
@@ -98,6 +107,14 @@ async function updateMyProfile(req, res) {
     }
   }
 
+  // Parse pending_languages — simple array of free-text entries
+  let parsedPendingLanguages;
+  if (pending_languages !== undefined) {
+    parsedPendingLanguages = Array.isArray(pending_languages)
+      ? pending_languages.map((l) => l.trim()).filter(Boolean)
+      : [];
+  }
+
   try {
     // If the expert was awaiting changes, saving any profile update resets them
     // to PENDING so the admin queue picks them up again for review.
@@ -125,6 +142,7 @@ async function updateMyProfile(req, res) {
         ...(address_city !== undefined && { address_city }),
         ...(address_postcode !== undefined && { address_postcode }),
         ...(parsedLanguages !== undefined && { languages: parsedLanguages }),
+        ...(parsedPendingLanguages !== undefined && { pending_languages: parsedPendingLanguages }),
         ...(timezone !== undefined && timezone !== null && timezone !== '' && { timezone }),
         ...(instagram !== undefined && { instagram: instagram || null }),
         ...(facebook  !== undefined && { facebook:  facebook  || null }),
@@ -463,10 +481,6 @@ async function saveBusinessInfo(req, res) {
   if (!business_email?.trim()) {
     return res.status(400).json({ error: 'Email address is required.' });
   }
-  if (!website?.trim()) {
-    return res.status(400).json({ error: 'Website is required.' });
-  }
-
   // Parse date_of_birth for INDIVIDUAL
   let dob = null;
   if (entity_type === 'INDIVIDUAL' && date_of_birth) {
@@ -480,6 +494,8 @@ async function saveBusinessInfo(req, res) {
     const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
     if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
 
+    const encryptedIban = encryptIban(iban.trim());
+
     const info = await prisma.businessInfo.upsert({
       where: { expert_id: expert.id },
       update: {
@@ -490,9 +506,9 @@ async function saveBusinessInfo(req, res) {
         tin:                tin.trim(),
         vat_number:         vat_number?.trim()          || null,
         company_reg_number: entity_type === 'COMPANY' ? company_reg_number.trim() : null,
-        iban:               iban.trim(),
+        iban:               encryptedIban,
         business_email:     business_email.trim(),
-        website:            website.trim(),
+        website:            website?.trim()          || null,
         municipality:       municipality?.trim()        || null,
         business_address:   business_address?.trim()    || null,
       },
@@ -505,14 +521,14 @@ async function saveBusinessInfo(req, res) {
         tin:                tin.trim(),
         vat_number:         vat_number?.trim()          || null,
         company_reg_number: entity_type === 'COMPANY' ? company_reg_number.trim() : null,
-        iban:               iban.trim(),
+        iban:               encryptedIban,
         business_email:     business_email.trim(),
-        website:            website.trim(),
+        website:            website?.trim()          || null,
         municipality:       municipality?.trim()        || null,
         business_address:   business_address?.trim()    || null,
       },
     });
-    return res.json(info);
+    return res.json({ ...info, iban: decryptIban(info.iban) });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Server error' });

@@ -1,6 +1,7 @@
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
+const { decryptIban } = require("../utils/encryption");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
 const {
@@ -170,6 +171,10 @@ async function listExperts(req, res) {
         }),
       ]);
 
+      data.forEach((e) => {
+        if (e.business_info?.iban) e.business_info.iban = decryptIban(e.business_info.iban);
+      });
+
       return res.json({
         data,
         pagination: {
@@ -203,6 +208,10 @@ async function listExperts(req, res) {
           take: limit,
         }),
       ]);
+
+      data.forEach((e) => {
+        if (e.business_info?.iban) e.business_info.iban = decryptIban(e.business_info.iban);
+      });
 
       return res.json({
         data,
@@ -672,7 +681,7 @@ async function exportTaxData(req, res) {
       if (bi.vat_number) csv += line("VAT Number", bi.vat_number);
       if (bi.company_reg_number)
         csv += line("Company Reg. Number", bi.company_reg_number);
-      csv += line("IBAN", bi.iban);
+      csv += line("IBAN", decryptIban(bi.iban));
       csv += line("Business Email", bi.business_email);
       csv += line("Website", bi.website);
       if (bi.municipality) csv += line("Municipality", bi.municipality);
@@ -770,6 +779,9 @@ async function getExpertDetail(req, res) {
       },
     });
     if (!expert) return res.status(404).json({ error: "Expert not found" });
+    if (expert.business_info?.iban) {
+      expert.business_info.iban = decryptIban(expert.business_info.iban);
+    }
     return res.json(expert);
   } catch (err) {
     console.error(err);
@@ -2045,12 +2057,58 @@ async function exportTransactionsCsv(req, res) {
   }
 }
 
+// ─── Language approval ────────────────────────────────────────────────────────
+
+async function approveLanguage(req, res) {
+  const { id } = req.params;
+  const { language } = req.body;
+  if (!language?.trim()) return res.status(400).json({ error: 'language is required.' });
+  try {
+    const expert = await prisma.expert.findUnique({ where: { id: parseInt(id) } });
+    if (!expert) return res.status(404).json({ error: 'Expert not found.' });
+    if (!expert.pending_languages.includes(language)) {
+      return res.status(400).json({ error: 'Language not in pending list.' });
+    }
+    const updated = await prisma.expert.update({
+      where: { id: parseInt(id) },
+      data: {
+        languages:         [...expert.languages, language],
+        pending_languages: expert.pending_languages.filter((l) => l !== language),
+      },
+    });
+    return res.json({ languages: updated.languages, pending_languages: updated.pending_languages });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Server error.' });
+  }
+}
+
+async function rejectLanguage(req, res) {
+  const { id } = req.params;
+  const { language } = req.body;
+  if (!language?.trim()) return res.status(400).json({ error: 'language is required.' });
+  try {
+    const expert = await prisma.expert.findUnique({ where: { id: parseInt(id) } });
+    if (!expert) return res.status(404).json({ error: 'Expert not found.' });
+    const updated = await prisma.expert.update({
+      where: { id: parseInt(id) },
+      data: { pending_languages: expert.pending_languages.filter((l) => l !== language) },
+    });
+    return res.json({ languages: updated.languages, pending_languages: updated.pending_languages });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Server error.' });
+  }
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
   listExperts,
   approveExpert,
   rejectExpert,
+  approveLanguage,
+  rejectLanguage,
   toggleApproval,
   sendPasswordReset,
   resendVerification,
