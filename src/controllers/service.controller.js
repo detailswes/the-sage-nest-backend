@@ -11,8 +11,8 @@ async function getExpertIdForUser(userId) {
 async function createService(req, res) {
   const { title, description, duration_minutes, price, format, cluster } = req.body;
 
-  if (!title || !duration_minutes || !price) {
-    return res.status(400).json({ error: 'title, duration_minutes, and price are required.' });
+  if (!title || !description || !duration_minutes || !price) {
+    return res.status(400).json({ error: 'title, description, duration_minutes, and price are required.' });
   }
   if (format && !VALID_FORMATS.includes(format)) {
     return res.status(400).json({ error: 'Invalid format. Must be ONLINE or IN_PERSON.' });
