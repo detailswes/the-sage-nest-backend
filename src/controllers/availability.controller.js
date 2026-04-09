@@ -78,11 +78,20 @@ async function getAvailableSlots(req, res) {
   try {
     const expert = await prisma.expert.findUnique({
       where: { id: parseInt(expertId) },
-      select: { id: true, timezone: true },
+      select: { id: true, timezone: true, buffer_minutes: true, advance_booking_days: true, min_notice_hours: true },
     });
     if (!expert) return res.status(404).json({ error: 'Expert not found' });
 
-    const tz = expert.timezone || 'UTC';
+    const tz                 = expert.timezone             || 'UTC';
+    const bufferMinutes      = expert.buffer_minutes       || 0;
+    const advanceBookingDays = expert.advance_booking_days || 60;
+    const noticeMs           = (expert.min_notice_hours ?? 24) * 60 * 60 * 1000;
+
+    // Reject dates beyond the expert's advance booking window
+    const maxBookingDate = new Date();
+    maxBookingDate.setUTCHours(0, 0, 0, 0);
+    maxBookingDate.setDate(maxBookingDate.getDate() + advanceBookingDays);
+    if (targetDateUTC > maxBookingDate) return res.json([]);
 
     // ── Service duration ─────────────────────────────────────────────────────
     let durationMinutes = 60;
@@ -125,7 +134,6 @@ async function getAvailableSlots(req, res) {
 
     // ── Generate candidate slots ─────────────────────────────────────────────
     const now = new Date();
-    const bufferMs = 30 * 60 * 1000; // 30-min minimum advance
 
     const slots = [];
 
@@ -141,8 +149,8 @@ async function getAvailableSlots(req, res) {
         const slotStart = zonedToUTC(year, month, day, Math.floor(cursor / 60), cursor % 60, tz);
         const slotEnd   = zonedToUTC(year, month, day, Math.floor(slotEndMinutes / 60), slotEndMinutes % 60, tz);
 
-        // Skip past slots (with advance buffer)
-        if (slotStart.getTime() - now.getTime() < bufferMs) {
+        // Skip slots within the expert's minimum notice period
+        if (slotStart.getTime() - now.getTime() < noticeMs) {
           cursor += durationMinutes;
           continue;
         }
@@ -157,11 +165,10 @@ async function getAvailableSlots(req, res) {
         });
         if (blockedByBlockout) { cursor += durationMinutes; continue; }
 
-        // Skip slots overlapping existing bookings
+        // Skip slots overlapping existing bookings (+ expert's buffer after each booking)
         const blockedByBooking = existingBookings.some((bk) => {
           const bkStart = bk.scheduled_at.getTime();
-          const bkEnd   = bkStart + bk.duration_minutes * 60 * 1000;
-          // Overlap
+          const bkEnd   = bkStart + (bk.duration_minutes + bufferMinutes) * 60 * 1000;
           return slotStart.getTime() < bkEnd && slotEnd.getTime() > bkStart;
         });
         if (blockedByBooking) { cursor += durationMinutes; continue; }
