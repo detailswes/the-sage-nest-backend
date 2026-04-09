@@ -125,7 +125,7 @@ async function listExperts(req, res) {
     certifications: { orderBy: { created_at: "asc" } },
     insurance: true,
     business_info: true,
-    services: { orderBy: { id: "asc" } },
+    services: { orderBy: { sort_order: "asc" } },
     _count: { select: { bookings: true } },
   };
 
@@ -138,7 +138,7 @@ async function listExperts(req, res) {
     qualifications: { orderBy: { created_at: "asc" } },
     certifications: { orderBy: { created_at: "asc" } },
     business_info: true,
-    services: { orderBy: { id: "asc" } },
+    services: { orderBy: { sort_order: "asc" } },
   };
 
   const include = isAdmin ? adminInclude : publicInclude;
@@ -774,7 +774,7 @@ async function getExpertDetail(req, res) {
         certifications: { orderBy: { created_at: "asc" } },
         insurance: true,
         business_info: true,
-        services: { orderBy: { id: "asc" } },
+        services: { orderBy: { sort_order: "asc" } },
         _count: { select: { bookings: true } },
       },
     });

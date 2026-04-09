@@ -21,7 +21,36 @@ const {
   sendPasswordResetEmail,
   sendAccountLockedEmail,
   sendEmailChangeVerification,
+  sendOtpEmail,
+  sendPasswordChangedEmail,
 } = require("../utils/email");
+
+const OTP_EXPIRY_MS   = 60 * 1000;        // 1 minute
+const OTP_RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds between resends
+const OTP_MAX_ATTEMPTS = 5;
+
+function generateOtpCode() {
+  // crypto.randomInt is available from Node 14.10+
+  return crypto.randomInt(0, 1_000_000).toString().padStart(6, "0");
+}
+
+function signOtpToken(userId) {
+  return jwt.sign(
+    { id: userId, purpose: "otp" },
+    process.env.JWT_SECRET,
+    { expiresIn: "5m" }
+  );
+}
+
+function verifyOtpToken(token) {
+  try {
+    const payload = jwt.verify(token, process.env.JWT_SECRET);
+    if (payload.purpose !== "otp") return null;
+    return payload;
+  } catch {
+    return null;
+  }
+}
 
 const ACCESS_TOKEN_EXPIRES = "15m";
 const REFRESH_TOKEN_EXPIRES_MS = 30 * 24 * 60 * 60 * 1000; // 30 days (sliding via rotation)
@@ -322,6 +351,27 @@ async function login(req, res) {
       await prisma.user.update({
         where: { id: user.id },
         data: { password_hash: newHash },
+      });
+    }
+
+    // ── 2FA: if enabled, send OTP and pause login ────────────────────────────
+    if (user.two_factor_enabled) {
+      const code = generateOtpCode();
+      const otp_hash = await argon2.hash(code, ARGON2_OPTIONS);
+      const otp_expires_at = new Date(Date.now() + OTP_EXPIRY_MS);
+
+      await prisma.user.update({
+        where: { id: user.id },
+        data: { otp_hash, otp_expires_at, otp_attempts: 0 },
+      });
+
+      sendOtpEmail({ to: user.email, name: user.name, code, purpose: "login" }).catch((err) =>
+        console.error("[2FA] Failed to send OTP email:", err.message)
+      );
+
+      return res.json({
+        two_factor_required: true,
+        otp_token: signOtpToken(user.id),
       });
     }
 
@@ -682,9 +732,8 @@ async function changePassword(req, res) {
   if (!currentPassword || !newPassword) {
     return res.status(400).json({ error: "Current and new password are required" });
   }
-  if (newPassword.length < 6) {
-    return res.status(400).json({ error: "New password must be at least 6 characters" });
-  }
+  const pwError = validatePasswordStrength(newPassword);
+  if (pwError) return res.status(400).json({ error: pwError });
   if (currentPassword === newPassword) {
     return res.status(400).json({ error: "New password must be different from your current password" });
   }
@@ -692,19 +741,29 @@ async function changePassword(req, res) {
   try {
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     if (!user) return res.status(404).json({ error: "User not found" });
+    if (!user.password_hash) {
+      return res.status(400).json({ error: "This account uses social login and has no password to change." });
+    }
 
     const valid = await verifyPassword(user.password_hash, currentPassword);
     if (!valid) return res.status(401).json({ error: "Current password is incorrect" });
 
     const password_hash = await hashPassword(newPassword);
+    await prisma.user.update({ where: { id: req.user.id }, data: { password_hash } });
 
-    await prisma.user.update({
-      where: { id: req.user.id },
-      data: { password_hash },
-    });
+    // Keep current session, invalidate all others
+    const currentRefreshToken = req.cookies?.refreshToken;
+    if (currentRefreshToken) {
+      await prisma.refreshToken.deleteMany({
+        where: { user_id: req.user.id, NOT: { token: currentRefreshToken } },
+      });
+    } else {
+      await prisma.refreshToken.deleteMany({ where: { user_id: req.user.id } });
+    }
 
-    // Invalidate all other sessions — user keeps current session via new token issued by client
-    await prisma.refreshToken.deleteMany({ where: { user_id: req.user.id } });
+    sendPasswordChangedEmail({ to: user.email, name: user.name }).catch((err) =>
+      console.error("[Email] Password changed notification failed:", err.message)
+    );
 
     return res.json({ success: true });
   } catch (err) {
@@ -713,12 +772,9 @@ async function changePassword(req, res) {
   }
 }
 
-// ─── Delete Account (GDPR right to erasure) ───────────────────────────────────
-// Personal data is wiped immediately. Booking records are retained in anonymised
-// form for accounting purposes as permitted under GDPR Art. 17(3)(b).
+// ─── Delete Account (GDPR Art. 17) — role-aware ───────────────────────────────
 async function deleteAccount(req, res) {
   const { password } = req.body;
-
   if (!password) {
     return res.status(400).json({ error: "Password confirmation is required" });
   }
@@ -726,18 +782,75 @@ async function deleteAccount(req, res) {
   try {
     const user = await prisma.user.findUnique({ where: { id: req.user.id } });
     if (!user) return res.status(404).json({ error: "User not found" });
-
+    if (!user.password_hash) {
+      return res.status(400).json({ error: "This account uses social login. Please contact support to delete your account." });
+    }
     const valid = await verifyPassword(user.password_hash, password);
     if (!valid) return res.status(401).json({ error: "Password is incorrect" });
 
-    // ── Expert cleanup (only if this user has an expert profile) ──────────────
+    // ── PARENT flow ───────────────────────────────────────────────────────────
+    if (user.role === "PARENT") {
+      // Block: upcoming bookings
+      const upcomingCount = await prisma.booking.count({
+        where: {
+          parent_id: user.id,
+          status: { in: ["CONFIRMED", "PENDING_PAYMENT"] },
+          scheduled_at: { gt: new Date() },
+        },
+      });
+      if (upcomingCount > 0) {
+        return res.status(409).json({
+          error: "You have upcoming bookings. Please cancel them before deleting your account.",
+          has_upcoming_bookings: true,
+        });
+      }
+
+      // Block: pending refunds or open disputes
+      const pendingTxCount = await prisma.booking.count({
+        where: {
+          parent_id: user.id,
+          OR: [{ refund_status: "pending" }, { is_disputed: true }],
+        },
+      });
+      if (pendingTxCount > 0) {
+        return res.status(409).json({
+          error: "You have a pending refund or an open dispute. Please wait for it to be resolved before deleting your account.",
+          has_pending_transactions: true,
+        });
+      }
+
+      // Clean — wipe all personal data. No retention required for parents.
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          name:                    "Deleted User",
+          email:                   `deleted_${user.id}_${Date.now()}@erasure.local`,
+          phone:                   null,
+          password_hash:           null,
+          is_verified:             false,
+          verification_code:       null,
+          verification_expires_at: null,
+          reset_token:             null,
+          reset_token_expires_at:  null,
+          otp_hash:                null,
+          otp_expires_at:          null,
+          otp_attempts:            0,
+          two_factor_enabled:      false,
+          account_deleted:         true,
+        },
+      });
+      await prisma.refreshToken.deleteMany({ where: { user_id: user.id } });
+      console.log(`[GDPR] Parent account ${user.id} erased — all personal data wiped`);
+      return res.json({ deleted: true });
+    }
+
+    // ── EXPERT flow ───────────────────────────────────────────────────────────
     const expert = await prisma.expert.findUnique({
-      where: { user_id: req.user.id },
+      where: { user_id: user.id },
       include: {
         qualifications: true,
         certifications: true,
         insurance: true,
-        business_info: true,
         bookings: {
           where: {
             status: { in: ["PENDING_PAYMENT", "CONFIRMED"] },
@@ -748,7 +861,18 @@ async function deleteAccount(req, res) {
     });
 
     if (expert) {
-      // 1. Cancel future bookings and refund where payment was captured
+      // Block: pending payout (DAC7 — transfer must clear before account can be deleted)
+      const pendingPayoutCount = await prisma.booking.count({
+        where: { expert_id: expert.id, transfer_status: "pending" },
+      });
+      if (pendingPayoutCount > 0) {
+        return res.status(409).json({
+          error: "You have a pending payout. Please wait for it to clear (typically within 24 hours of a completed session) before deleting your account.",
+          has_pending_payout: true,
+        });
+      }
+
+      // 1. Cancel upcoming bookings and refund where payment was captured
       for (const booking of expert.bookings) {
         try {
           if (booking.status === "CONFIRMED" && booking.stripe_payment_intent_id) {
@@ -781,18 +905,11 @@ async function deleteAccount(req, res) {
             });
           }
         } catch (refundErr) {
-          // Log but never abort the deletion — GDPR obligation > refund convenience
           console.error(`[GDPR] Failed to process booking ${booking.id}:`, refundErr.message);
         }
       }
 
-      // 2. Skip any pending transfers (can't pay a deleted account)
-      await prisma.booking.updateMany({
-        where: { expert_id: expert.id, transfer_status: "pending" },
-        data: { transfer_status: "skipped" },
-      });
-
-      // 3. Delete uploaded files
+      // 2. Delete uploaded files (profile image, qualification/cert/insurance docs)
       const filesToDelete = [
         expert.profile_image,
         ...expert.qualifications.map((q) => q.document_url),
@@ -801,63 +918,317 @@ async function deleteAccount(req, res) {
       ].filter(Boolean);
       for (const fileUrl of filesToDelete) deleteFile(fileUrl);
 
-      // 4. Hard-delete BusinessInfo (pure PII — no accounting value)
-      if (expert.business_info) {
-        await prisma.businessInfo.delete({ where: { expert_id: expert.id } });
+      // 3. Delete credential and operational records (not financial — no DAC7 obligation)
+      await prisma.qualification.deleteMany({ where: { expert_id: expert.id } });
+      await prisma.certification.deleteMany({ where: { expert_id: expert.id } });
+      if (expert.insurance) {
+        await prisma.insurance.delete({ where: { expert_id: expert.id } });
       }
+      await prisma.service.deleteMany({ where: { expert_id: expert.id } });
+      await prisma.availability.deleteMany({ where: { expert_id: expert.id } });
+      await prisma.availabilityBlock.deleteMany({ where: { expert_id: expert.id } });
+      await prisma.savedExpert.deleteMany({ where: { expert_id: expert.id } });
 
-      // 5. Anonymise Expert record
+      // 4. Wipe Expert profile fields — row is KEPT for booking foreign key integrity
+      //    BusinessInfo is intentionally NOT touched — retained per DAC7
+      //    (legal_name, TIN, IBAN required for tax authority reporting for 5+ years)
       await prisma.expert.update({
         where: { id: expert.id },
         data: {
-          bio: null,
-          profile_image: null,
-          expertise: null,
-          stripe_account_id: null,
+          bio:                       null,
+          profile_image:             null,
+          expertise:                 null,
+          stripe_account_id:         null,
           stripe_onboarding_complete: false,
-          status: "SUSPENDED",
-          is_published: false,
-          summary: null,
-          position: null,
-          session_format: null,
-          address_street: null,
-          address_city: null,
-          address_postcode: null,
-          languages: [],
-          instagram: null,
-          facebook: null,
-          linkedin: null,
-          change_request_note: null,
-          change_requested_at: null,
+          status:                    "SUSPENDED",
+          is_published:              false,
+          summary:                   null,
+          position:                  null,
+          session_format:            null,
+          address_street:            null,
+          address_city:              null,
+          address_postcode:          null,
+          languages:                 [],
+          pending_languages:         [],
+          instagram:                 null,
+          facebook:                  null,
+          linkedin:                  null,
+          change_request_note:       null,
+          change_requested_at:       null,
         },
       });
 
-      console.log(`[GDPR] Expert profile ${expert.id} anonymised during self-deletion`);
+      console.log(`[GDPR/DAC7] Expert profile ${expert.id} wiped — BusinessInfo and booking records retained for tax reporting`);
     }
 
-    // Wipe all personal data immediately
+    // 5. Wipe User credentials and contact data
+    //    IMPORTANT: name is intentionally NOT changed — required for DAC7 tax reporting
     await prisma.user.update({
-      where: { id: req.user.id },
+      where: { id: user.id },
       data: {
-        name:                     "Deleted User",
-        email:                    `deleted_${req.user.id}_${Date.now()}@erasure.local`,
-        phone:                    null,
-        password_hash:            null,
-        is_verified:              false,
-        verification_code:        null,
-        verification_expires_at:  null,
-        reset_token:              null,
-        reset_token_expires_at:   null,
-        account_deleted:          true,
+        email:                   `deleted_${user.id}_${Date.now()}@erasure.local`,
+        phone:                   null,
+        password_hash:           null,
+        is_verified:             false,
+        verification_code:       null,
+        verification_expires_at: null,
+        reset_token:             null,
+        reset_token_expires_at:  null,
+        otp_hash:                null,
+        otp_expires_at:          null,
+        otp_attempts:            0,
+        two_factor_enabled:      false,
+        account_deleted:         true,
+        // name is kept — identifiable record required by DAC7
       },
     });
-
-    // Invalidate all sessions
-    await prisma.refreshToken.deleteMany({ where: { user_id: req.user.id } });
-
-    console.log(`[GDPR] Account ${req.user.id} erased — personal data wiped`);
-
+    await prisma.refreshToken.deleteMany({ where: { user_id: user.id } });
+    console.log(`[GDPR/DAC7] Expert account ${user.id} erased — credentials wiped, financial identity retained`);
     return res.json({ deleted: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Shared OTP verifier (used by verifyOtp, enable2FA, disable2FA) ──────────
+async function checkOtp(user, code) {
+  if (!user.otp_hash || !user.otp_expires_at) {
+    return { error: "No verification code found. Please request a new one.", status: 400 };
+  }
+  if (new Date() > user.otp_expires_at) {
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { otp_hash: null, otp_expires_at: null, otp_attempts: 0 },
+    });
+    return { error: "Verification code has expired. Please request a new one.", expired: true, status: 410 };
+  }
+  if (user.otp_attempts >= OTP_MAX_ATTEMPTS) {
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { otp_hash: null, otp_expires_at: null, otp_attempts: 0 },
+    });
+    return { error: "Too many incorrect attempts. Please request a new code.", status: 429 };
+  }
+
+  const valid = await argon2.verify(user.otp_hash, code);
+  if (!valid) {
+    const attempts = user.otp_attempts + 1;
+    const tooMany = attempts >= OTP_MAX_ATTEMPTS;
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        otp_attempts: attempts,
+        ...(tooMany && { otp_hash: null, otp_expires_at: null }),
+      },
+    });
+    return tooMany
+      ? { error: "Too many incorrect attempts. Please request a new code.", status: 429 }
+      : { error: "Incorrect verification code.", status: 401 };
+  }
+
+  // Clear OTP fields on success — single use
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { otp_hash: null, otp_expires_at: null, otp_attempts: 0 },
+  });
+  return { ok: true };
+}
+
+// ─── Verify OTP (login 2FA step) ──────────────────────────────────────────────
+async function verifyOtp(req, res) {
+  const { otp_token, code } = req.body;
+  if (!otp_token || !code) {
+    return res.status(400).json({ error: "otp_token and code are required" });
+  }
+
+  const payload = verifyOtpToken(otp_token);
+  if (!payload) {
+    return res.status(401).json({ error: "Invalid or expired session. Please log in again." });
+  }
+
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: payload.id },
+      include: { expert: { select: { status: true } } },
+    });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const result = await checkOtp(user, code.trim());
+    if (!result.ok) {
+      return res.status(result.status).json({
+        error: result.error,
+        ...(result.expired && { expired: true }),
+      });
+    }
+
+    // Issue full session tokens — same as normal login success
+    const accessToken = generateAccessToken(user);
+    const refreshToken = generateRefreshToken();
+    await storeRefreshToken(user.id, refreshToken);
+
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure: process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+      maxAge: REFRESH_TOKEN_EXPIRES_MS,
+    });
+
+    return res.json({ accessToken, user: userPayload(user) });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Resend OTP (login 2FA step) ─────────────────────────────────────────────
+async function resendOtp(req, res) {
+  const { otp_token } = req.body;
+  if (!otp_token) {
+    return res.status(400).json({ error: "otp_token is required" });
+  }
+
+  const payload = verifyOtpToken(otp_token);
+  if (!payload) {
+    return res.status(401).json({ error: "Invalid or expired session. Please log in again." });
+  }
+
+  try {
+    const user = await prisma.user.findUnique({ where: { id: payload.id } });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    // Cooldown: block if current OTP still has > (OTP_EXPIRY_MS - OTP_RESEND_COOLDOWN_MS) remaining
+    if (
+      user.otp_expires_at &&
+      user.otp_expires_at > new Date(Date.now() + OTP_EXPIRY_MS - OTP_RESEND_COOLDOWN_MS)
+    ) {
+      return res.status(429).json({ error: "Please wait a moment before requesting a new code." });
+    }
+
+    const code = generateOtpCode();
+    const otp_hash = await argon2.hash(code, ARGON2_OPTIONS);
+    const otp_expires_at = new Date(Date.now() + OTP_EXPIRY_MS);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { otp_hash, otp_expires_at, otp_attempts: 0 },
+    });
+
+    sendOtpEmail({ to: user.email, name: user.name, code, purpose: "login" }).catch((err) =>
+      console.error("[2FA] Failed to resend OTP email:", err.message)
+    );
+
+    return res.json({ sent: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Get 2FA status (settings) ────────────────────────────────────────────────
+async function get2FAStatus(req, res) {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: { two_factor_enabled: true },
+    });
+    if (!user) return res.status(404).json({ error: "User not found" });
+    return res.json({ enabled: user.two_factor_enabled });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Send setup OTP (settings — enable/disable flow) ─────────────────────────
+async function sendSetupOtp(req, res) {
+  const { purpose } = req.body; // 'enable_2fa' | 'disable_2fa'
+  const emailPurpose = purpose === "disable_2fa" ? "disable_2fa" : "enable_2fa";
+
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    // Cooldown: same 30s rule
+    if (
+      user.otp_expires_at &&
+      user.otp_expires_at > new Date(Date.now() + OTP_EXPIRY_MS - OTP_RESEND_COOLDOWN_MS)
+    ) {
+      return res.status(429).json({ error: "Please wait a moment before requesting a new code." });
+    }
+
+    const code = generateOtpCode();
+    const otp_hash = await argon2.hash(code, ARGON2_OPTIONS);
+    const otp_expires_at = new Date(Date.now() + OTP_EXPIRY_MS);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { otp_hash, otp_expires_at, otp_attempts: 0 },
+    });
+
+    sendOtpEmail({ to: user.email, name: user.name, code, purpose: emailPurpose }).catch((err) =>
+      console.error("[2FA] Failed to send setup OTP email:", err.message)
+    );
+
+    return res.json({ sent: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Enable 2FA (settings) ────────────────────────────────────────────────────
+async function enable2FA(req, res) {
+  const { code } = req.body;
+  if (!code) return res.status(400).json({ error: "Verification code is required" });
+
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const result = await checkOtp(user, code.trim());
+    if (!result.ok) {
+      return res.status(result.status).json({
+        error: result.error,
+        ...(result.expired && { expired: true }),
+      });
+    }
+
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: { two_factor_enabled: true },
+    });
+
+    return res.json({ enabled: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Disable 2FA (settings) ───────────────────────────────────────────────────
+async function disable2FA(req, res) {
+  const { code } = req.body;
+  if (!code) return res.status(400).json({ error: "Verification code is required" });
+
+  try {
+    const user = await prisma.user.findUnique({ where: { id: req.user.id } });
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const result = await checkOtp(user, code.trim());
+    if (!result.ok) {
+      return res.status(result.status).json({
+        error: result.error,
+        ...(result.expired && { expired: true }),
+      });
+    }
+
+    await prisma.user.update({
+      where: { id: req.user.id },
+      data: { two_factor_enabled: false },
+    });
+
+    return res.json({ disabled: true });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -904,4 +1275,10 @@ module.exports = {
   changePassword,
   deleteAccount,
   acceptPrivacyPolicy,
+  verifyOtp,
+  resendOtp,
+  get2FAStatus,
+  sendSetupOtp,
+  enable2FA,
+  disable2FA,
 };
