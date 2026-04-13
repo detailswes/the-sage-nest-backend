@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth.middleware');
-const { createService, listServices, updateService, deleteService } = require('../controllers/service.controller');
+const { createService, listServices, updateService, deleteService, reorderServices } = require('../controllers/service.controller');
 
 // All routes require authentication
 router.use(authenticate);
@@ -11,6 +11,9 @@ router.get('/', listServices);
 
 // POST /services — create a service
 router.post('/', createService);
+
+// PUT /services/reorder — reorder services (must be before /:id)
+router.put('/reorder', reorderServices);
 
 // PUT /services/:id — edit a service
 router.put('/:id', updateService);

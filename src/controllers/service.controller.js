@@ -11,19 +11,40 @@ async function getExpertIdForUser(userId) {
 async function createService(req, res) {
   const { title, description, duration_minutes, price, format, cluster } = req.body;
 
-  if (!title || !duration_minutes || !price) {
-    return res.status(400).json({ error: 'title, duration_minutes, and price are required.' });
+  if (!title || !description || !duration_minutes || !price || !format || !cluster) {
+    return res.status(400).json({ error: 'title, description, duration_minutes, price, format, and cluster are required.' });
   }
-  if (format && !VALID_FORMATS.includes(format)) {
+  if (title.trim().length > 80) {
+    return res.status(400).json({ error: 'Service title must be 80 characters or fewer.' });
+  }
+  if (description && description.trim().length > 300) {
+    return res.status(400).json({ error: 'Description must be 300 characters or fewer.' });
+  }
+  const dur = parseInt(duration_minutes);
+  if (isNaN(dur) || dur < 15 || dur > 480) {
+    return res.status(400).json({ error: 'Duration must be between 15 and 480 minutes.' });
+  }
+  const priceVal = parseFloat(price);
+  if (isNaN(priceVal) || priceVal < 1.00) {
+    return res.status(400).json({ error: 'Price must be at least €1.00.' });
+  }
+  if (!VALID_FORMATS.includes(format)) {
     return res.status(400).json({ error: 'Invalid format. Must be ONLINE or IN_PERSON.' });
   }
-  if (cluster && !VALID_CLUSTERS.includes(cluster)) {
+  if (!VALID_CLUSTERS.includes(cluster)) {
     return res.status(400).json({ error: 'Invalid cluster. Must be FOR_MUM, FOR_BABY, PACKAGE, or GIFT.' });
   }
 
   try {
     const expert_id = await getExpertIdForUser(req.user.id);
     if (!expert_id) return res.status(404).json({ error: 'Expert profile not found' });
+
+    // Place new service at the end of the expert's current list
+    const maxOrderResult = await prisma.service.aggregate({
+      where: { expert_id },
+      _max: { sort_order: true },
+    });
+    const sort_order = (maxOrderResult._max.sort_order ?? -1) + 1;
 
     const service = await prisma.service.create({
       data: {
@@ -34,6 +55,8 @@ async function createService(req, res) {
         price: parseFloat(price),
         format: format || null,
         cluster: cluster || null,
+        is_active: false,
+        sort_order,
       },
     });
     return res.status(201).json(service);
@@ -50,7 +73,7 @@ async function listServices(req, res) {
 
     const services = await prisma.service.findMany({
       where: { expert_id },
-      orderBy: { id: 'asc' },
+      orderBy: { sort_order: 'asc' },
     });
     return res.json(services);
   } catch (err) {
@@ -63,6 +86,24 @@ async function updateService(req, res) {
   const { id } = req.params;
   const { title, description, duration_minutes, price, is_active, format, cluster } = req.body;
 
+  if (title !== undefined && title.trim().length > 80) {
+    return res.status(400).json({ error: 'Service title must be 80 characters or fewer.' });
+  }
+  if (description !== undefined && description && description.trim().length > 300) {
+    return res.status(400).json({ error: 'Description must be 300 characters or fewer.' });
+  }
+  if (duration_minutes !== undefined) {
+    const dur = parseInt(duration_minutes);
+    if (isNaN(dur) || dur < 15 || dur > 480) {
+      return res.status(400).json({ error: 'Duration must be between 15 and 480 minutes.' });
+    }
+  }
+  if (price !== undefined) {
+    const priceVal = parseFloat(price);
+    if (isNaN(priceVal) || priceVal < 1.00) {
+      return res.status(400).json({ error: 'Price must be at least €1.00.' });
+    }
+  }
   if (format !== undefined && format !== null && format !== '' && !VALID_FORMATS.includes(format)) {
     return res.status(400).json({ error: 'Invalid format. Must be ONLINE or IN_PERSON.' });
   }
@@ -118,4 +159,41 @@ async function deleteService(req, res) {
   }
 }
 
-module.exports = { createService, listServices, updateService, deleteService };
+async function reorderServices(req, res) {
+  const { ids } = req.body;
+
+  if (!Array.isArray(ids) || ids.length === 0) {
+    return res.status(400).json({ error: 'ids must be a non-empty array' });
+  }
+
+  try {
+    const expert_id = await getExpertIdForUser(req.user.id);
+    if (!expert_id) return res.status(404).json({ error: 'Expert profile not found' });
+
+    // Verify every ID in the list belongs to this expert
+    const owned = await prisma.service.findMany({
+      where: { expert_id, id: { in: ids } },
+      select: { id: true },
+    });
+    if (owned.length !== ids.length) {
+      return res.status(403).json({ error: 'One or more services not found' });
+    }
+
+    // Assign sort_order = position in the submitted array
+    await prisma.$transaction(
+      ids.map((id, index) =>
+        prisma.service.update({
+          where: { id },
+          data: { sort_order: index },
+        })
+      )
+    );
+
+    return res.json({ message: 'Services reordered' });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+module.exports = { createService, listServices, updateService, deleteService, reorderServices };

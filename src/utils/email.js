@@ -309,7 +309,7 @@ const sendBookingCancellationNotification = ({
 /**
  * New booking notification — sent to the expert when a booking is confirmed.
  * @param {{
- *   to: string, expertName: string, parentName: string,
+ *   to: string, expertName: string, parentName: string, parentEmail: string,
  *   serviceTitle: string, format: string,
  *   scheduledAt: Date, durationMinutes: number, bookingId: number
  * }} param0
@@ -318,6 +318,7 @@ const sendNewBookingNotificationEmail = ({
   to,
   expertName,
   parentName,
+  parentEmail,
   serviceTitle,
   format,
   scheduledAt,
@@ -327,12 +328,13 @@ const sendNewBookingNotificationEmail = ({
   sendEmail({
     to,
     subject: `New booking from ${parentName}`,
-    text: `Hi ${expertName}, ${parentName} has booked ${serviceTitle} on ${new Date(
+    text: `Hi ${expertName}, ${parentName} (${parentEmail}) has booked ${serviceTitle} on ${new Date(
       scheduledAt
     ).toLocaleDateString("en-GB")}.`,
     html: newBookingNotificationEmailHtml({
       expertName,
       parentName,
+      parentEmail,
       serviceTitle,
       format,
       scheduledAt,
@@ -534,6 +536,75 @@ const sendEmailChangeVerification = ({
   });
 };
 
+const OTP_COPY = {
+  login: {
+    subject: "Your Sage Nest sign-in code",
+    heading: "Sign-in verification code",
+    body: "Enter this code to complete your sign-in.",
+  },
+  enable_2fa: {
+    subject: "Confirm enabling two-factor authentication",
+    heading: "Enable two-factor authentication",
+    body: "Enter this code to turn on two-factor authentication for your account.",
+  },
+  disable_2fa: {
+    subject: "Confirm disabling two-factor authentication",
+    heading: "Disable two-factor authentication",
+    body: "Enter this code to turn off two-factor authentication for your account.",
+  },
+};
+
+/**
+ * OTP email — subject and body copy vary by purpose.
+ * @param {{ to: string, name: string, code: string, purpose: 'login'|'enable_2fa'|'disable_2fa' }} param0
+ */
+const sendOtpEmail = ({ to, name, code, purpose = "login" }) => {
+  const copy = OTP_COPY[purpose] ?? OTP_COPY.login;
+  return sendEmail({
+    to,
+    subject: copy.subject,
+    text: `Hi ${name}, ${copy.body}\n\nYour code: ${code}\n\nValid for 1 minute. Single use only. Do not share this code.`,
+    html: layout(`
+      <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">${copy.heading}</h1>
+      <p style="margin:0 0 24px;font-size:15px;color:#4B5563;line-height:1.6;">
+        Hi ${name}, ${copy.body}
+      </p>
+      <div style="text-align:center;margin:0 0 24px;">
+        <div style="display:inline-block;background:#F5F7F5;border:1px solid #E4E7E4;border-radius:12px;padding:20px 40px;">
+          <span style="font-size:36px;font-weight:700;color:#445446;letter-spacing:10px;font-family:monospace;">${code}</span>
+        </div>
+      </div>
+      <p style="margin:0 0 8px;font-size:13px;color:#9CA3AF;text-align:center;">
+        Valid for <strong>1 minute</strong> &nbsp;·&nbsp; Single use only
+      </p>
+      <p style="margin:0;font-size:13px;color:#9CA3AF;text-align:center;">
+        If you didn't request this code, you can safely ignore this email.
+      </p>
+    `),
+  });
+};
+
+/**
+ * Notification sent to expert after a successful password change.
+ * @param {{ to: string, name: string }} param0
+ */
+const sendPasswordChangedEmail = ({ to, name }) =>
+  sendEmail({
+    to,
+    subject: "Your Sage Nest password has been changed",
+    text: `Hi ${name}, your password was just changed. If this wasn't you, reset your password immediately.`,
+    html: layout(`
+      <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">Password changed</h1>
+      <p style="margin:0 0 20px;font-size:15px;color:#4B5563;line-height:1.6;">
+        Hi ${name}, your Sage Nest password was just successfully changed.
+      </p>
+      <p style="margin:0 0 28px;font-size:14px;color:#6B7280;line-height:1.6;">
+        If you made this change, no further action is needed. If you did not change your password, reset it immediately using the button below.
+      </p>
+      ${btn(`${process.env.CLIENT_URL}/forgot-password`, "Reset My Password")}
+    `),
+  });
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 module.exports = {
   sendEmail,
@@ -552,4 +623,6 @@ module.exports = {
   sendChangesRequestedEmail,
   sendRefundNotificationToParent,
   sendRefundNotificationToExpert,
+  sendOtpEmail,
+  sendPasswordChangedEmail,
 };
