@@ -64,6 +64,7 @@ async function updateMyProfile(req, res) {
     address_street, address_city, address_postcode,
     languages, pending_languages, timezone,
     instagram, facebook, linkedin,
+    buffer_minutes, advance_booking_days, min_notice_hours,
   } = req.body;
 
   // Validate session_format if provided
@@ -87,6 +88,33 @@ async function updateMyProfile(req, res) {
   if (timezone !== undefined && timezone !== null && timezone !== '') {
     if (!isValidTimezone(timezone)) {
       return res.status(400).json({ error: 'Invalid timezone value.' });
+    }
+  }
+
+  // Validate buffer_minutes — must be one of the allowed values
+  const VALID_BUFFERS = [0, 15, 30, 45, 60];
+  if (buffer_minutes !== undefined) {
+    const parsed = parseInt(buffer_minutes, 10);
+    if (!VALID_BUFFERS.includes(parsed)) {
+      return res.status(400).json({ error: 'buffer_minutes must be one of: 0, 15, 30, 45, 60.' });
+    }
+  }
+
+  // Validate advance_booking_days — must be one of the allowed values
+  const VALID_ADVANCE_DAYS = [14, 30, 60, 90];
+  if (advance_booking_days !== undefined) {
+    const parsed = parseInt(advance_booking_days, 10);
+    if (!VALID_ADVANCE_DAYS.includes(parsed)) {
+      return res.status(400).json({ error: 'advance_booking_days must be one of: 14, 30, 60, 90.' });
+    }
+  }
+
+  // Validate min_notice_hours — must be one of the allowed values
+  const VALID_NOTICE_HOURS = [12, 24, 48, 72];
+  if (min_notice_hours !== undefined) {
+    const parsed = parseInt(min_notice_hours, 10);
+    if (!VALID_NOTICE_HOURS.includes(parsed)) {
+      return res.status(400).json({ error: 'min_notice_hours must be one of: 12, 24, 48, 72.' });
     }
   }
 
@@ -147,6 +175,9 @@ async function updateMyProfile(req, res) {
         ...(instagram !== undefined && { instagram: instagram || null }),
         ...(facebook  !== undefined && { facebook:  facebook  || null }),
         ...(linkedin  !== undefined && { linkedin:  linkedin  || null }),
+        ...(buffer_minutes       !== undefined && { buffer_minutes:       parseInt(buffer_minutes, 10) }),
+        ...(advance_booking_days !== undefined && { advance_booking_days: parseInt(advance_booking_days, 10) }),
+        ...(min_notice_hours     !== undefined && { min_notice_hours:     parseInt(min_notice_hours,     10) }),
       },
     });
     return res.json(expert);
@@ -164,7 +195,7 @@ async function getExpertById(req, res) {
       where: { id: parseInt(id) },
       include: {
         user: { select: { name: true, email: true } },
-        services: { where: { is_active: true }, orderBy: { id: 'asc' } },
+        services: { where: { is_active: true }, orderBy: { sort_order: 'asc' } },
         availability: true,
         qualifications: { orderBy: { created_at: 'asc' } },
         certifications: { orderBy: { created_at: 'asc' } },
@@ -560,7 +591,7 @@ async function listExperts(_req, res) {
         services: {
           where:   { is_active: true },
           select:  { id: true, title: true, price: true, duration_minutes: true, format: true, cluster: true },
-          orderBy: { id: 'asc' },
+          orderBy: { sort_order: 'asc' },
         },
         qualifications: {
           select: { type: true, custom_name: true },

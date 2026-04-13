@@ -19,6 +19,10 @@ model User {
   reset_token             String?
   reset_token_expires_at  DateTime?
   account_deleted         Boolean                   @default(false)
+  two_factor_enabled      Boolean                   @default(false)
+  otp_hash                String?
+  otp_expires_at          DateTime?
+  otp_attempts            Int                       @default(0)
   locked_until            DateTime?
   login_attempts          Int                       @default(0)
   phone                   String?
@@ -78,6 +82,12 @@ model Expert {
   change_requested_at        DateTime?
   is_published               Boolean             @default(true)
   pending_languages          String[]            @default([])
+  notify_new_booking         Boolean             @default(true)
+  notify_cancellation        Boolean             @default(true)
+  notify_reminder            Boolean             @default(true)
+  buffer_minutes             Int                 @default(0)
+  advance_booking_days       Int                 @default(60)
+  min_notice_hours           Int                 @default(24)
   availability               Availability[]
   blockouts                  AvailabilityBlock[]
   bookings                   Booking[]           @relation("ExpertBookings")
@@ -97,7 +107,8 @@ model Service {
   title            String
   duration_minutes Int
   price            Decimal         @db.Decimal(10, 2)
-  is_active        Boolean         @default(true)
+  is_active        Boolean         @default(false)
+  sort_order       Int             @default(0)
   cluster          ServiceCluster?
   description      String?
   format           ServiceFormat?
