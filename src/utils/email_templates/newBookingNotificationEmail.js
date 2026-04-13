@@ -4,6 +4,7 @@
  * @param {{
  *   expertName: string,
  *   parentName: string,
+ *   parentEmail: string,
  *   serviceTitle: string,
  *   format: 'ONLINE' | 'IN_PERSON',
  *   scheduledAt: Date,
@@ -15,6 +16,7 @@
 const newBookingNotificationEmailHtml = ({
   expertName,
   parentName,
+  parentEmail,
   serviceTitle,
   format,
   scheduledAt,
@@ -74,6 +76,12 @@ const newBookingNotificationEmailHtml = ({
                 <td style="padding-bottom:12px;">
                   <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Client</span><br>
                   <span style="font-size:15px;font-weight:600;color:#1F2933;">${parentName}</span>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding-bottom:12px;border-top:1px solid #E4E7E4;padding-top:12px;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Client Email</span><br>
+                  <a href="mailto:${parentEmail}" style="font-size:15px;font-weight:600;color:#445446;text-decoration:none;">${parentEmail}</a>
                 </td>
               </tr>
               <tr>
