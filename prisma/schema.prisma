@@ -19,10 +19,6 @@ model User {
   reset_token             String?
   reset_token_expires_at  DateTime?
   account_deleted         Boolean                   @default(false)
-  two_factor_enabled      Boolean                   @default(false)
-  otp_hash                String?
-  otp_expires_at          DateTime?
-  otp_attempts            Int                       @default(0)
   locked_until            DateTime?
   login_attempts          Int                       @default(0)
   phone                   String?
@@ -107,7 +103,7 @@ model Service {
   title            String
   duration_minutes Int
   price            Decimal         @db.Decimal(10, 2)
-  is_active        Boolean         @default(false)
+  is_active        Boolean         @default(true)
   sort_order       Int             @default(0)
   cluster          ServiceCluster?
   description      String?

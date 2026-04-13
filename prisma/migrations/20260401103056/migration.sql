@@ -24,6 +24,10 @@ CREATE TYPE "NotificationType" AS ENUM ('BOOKING_CONFIRMED', 'BOOKING_CANCELLED'
 ALTER TYPE "BookingStatus" ADD VALUE 'PENDING_PAYMENT';
 ALTER TYPE "BookingStatus" ADD VALUE 'REFUNDED';
 
+-- Commit the new enum values before using them as column defaults
+COMMIT;
+BEGIN;
+
 -- AlterTable
 ALTER TABLE "Booking" ADD COLUMN     "amount" DECIMAL(10,2),
 ADD COLUMN     "cancellation_reason" TEXT,

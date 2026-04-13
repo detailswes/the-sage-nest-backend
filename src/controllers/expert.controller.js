@@ -591,7 +591,7 @@ async function listExperts(_req, res) {
         services: {
           where:   { is_active: true },
           select:  { id: true, title: true, price: true, duration_minutes: true, format: true, cluster: true },
-          orderBy: { sort_order: 'asc' },
+          orderBy: { id: 'asc' },
         },
         qualifications: {
           select: { type: true, custom_name: true },
