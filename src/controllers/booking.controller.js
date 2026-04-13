@@ -306,7 +306,7 @@ async function getUpcomingAppointments(req, res) {
       orderBy: { scheduled_at: 'asc' },
       take: 10,
       include: {
-        parent:  { select: { name: true } },
+        parent:  { select: { name: true, email: true } },
         service: { select: { title: true, duration_minutes: true, format: true } },
       },
     });
@@ -341,7 +341,7 @@ async function getCalendarBookings(req, res) {
       where,
       orderBy: { scheduled_at: 'asc' },
       include: {
-        parent:  { select: { name: true } },
+        parent:  { select: { name: true, email: true } },
         service: { select: { title: true, format: true } },
       },
     });

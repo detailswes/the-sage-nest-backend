@@ -309,7 +309,7 @@ const sendBookingCancellationNotification = ({
 /**
  * New booking notification — sent to the expert when a booking is confirmed.
  * @param {{
- *   to: string, expertName: string, parentName: string,
+ *   to: string, expertName: string, parentName: string, parentEmail: string,
  *   serviceTitle: string, format: string,
  *   scheduledAt: Date, durationMinutes: number, bookingId: number
  * }} param0
@@ -318,6 +318,7 @@ const sendNewBookingNotificationEmail = ({
   to,
   expertName,
   parentName,
+  parentEmail,
   serviceTitle,
   format,
   scheduledAt,
@@ -327,12 +328,13 @@ const sendNewBookingNotificationEmail = ({
   sendEmail({
     to,
     subject: `New booking from ${parentName}`,
-    text: `Hi ${expertName}, ${parentName} has booked ${serviceTitle} on ${new Date(
+    text: `Hi ${expertName}, ${parentName} (${parentEmail}) has booked ${serviceTitle} on ${new Date(
       scheduledAt
     ).toLocaleDateString("en-GB")}.`,
     html: newBookingNotificationEmailHtml({
       expertName,
       parentName,
+      parentEmail,
       serviceTitle,
       format,
       scheduledAt,

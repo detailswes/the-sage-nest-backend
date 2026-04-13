@@ -176,6 +176,7 @@ async function handleWebhook(req, res) {
             to:              booking.expert.user.email,
             expertName:      booking.expert.user.name,
             parentName:      booking.parent.name,
+            parentEmail:     booking.parent.email,
             serviceTitle:    booking.service.title,
             format:          booking.format,
             scheduledAt:     booking.scheduled_at,
