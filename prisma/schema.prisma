@@ -78,12 +78,12 @@ model Expert {
   change_requested_at        DateTime?
   is_published               Boolean             @default(true)
   pending_languages          String[]            @default([])
-  notify_new_booking         Boolean             @default(true)
-  notify_cancellation        Boolean             @default(true)
-  notify_reminder            Boolean             @default(true)
-  buffer_minutes             Int                 @default(0)
   advance_booking_days       Int                 @default(60)
+  buffer_minutes             Int                 @default(0)
   min_notice_hours           Int                 @default(24)
+  notify_cancellation        Boolean             @default(true)
+  notify_new_booking         Boolean             @default(true)
+  notify_reminder            Boolean             @default(true)
   availability               Availability[]
   blockouts                  AvailabilityBlock[]
   bookings                   Booking[]           @relation("ExpertBookings")
@@ -104,10 +104,10 @@ model Service {
   duration_minutes Int
   price            Decimal         @db.Decimal(10, 2)
   is_active        Boolean         @default(true)
-  sort_order       Int             @default(0)
   cluster          ServiceCluster?
   description      String?
   format           ServiceFormat?
+  sort_order       Int             @default(0)
   bookings         Booking[]
   expert           Expert          @relation(fields: [expert_id], references: [id], onDelete: Cascade)
 }
@@ -213,6 +213,7 @@ model Booking {
   disputed_at              DateTime?
   internal_admin_note      String?
   is_disputed              Boolean        @default(false)
+  is_reschedule            Boolean        @default(false)
   expert                   Expert         @relation("ExpertBookings", fields: [expert_id], references: [id], onDelete: Cascade)
   parent                   User           @relation("ParentBookings", fields: [parent_id], references: [id], onDelete: Cascade)
   rescheduled_from         Booking?       @relation("BookingReschedule", fields: [rescheduled_from_id], references: [id])
@@ -342,10 +343,11 @@ enum ServiceFormat {
 }
 
 enum ServiceCluster {
-  FOR_MUM
+  FOR_PARENTS
   FOR_BABY
   PACKAGE
   GIFT
+  EVENT
 }
 
 enum QualificationType {

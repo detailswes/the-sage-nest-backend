@@ -33,7 +33,7 @@ const VALID_QUALIFICATION_TYPES = [
   "PARENTING_COACH",
   "OTHER",
 ];
-const VALID_CLUSTERS = ["FOR_MUM", "FOR_BABY", "PACKAGE", "GIFT"];
+const VALID_CLUSTERS = ["FOR_PARENTS", "FOR_BABY", "PACKAGE", "GIFT", "EVENT"];
 
 const UPLOADS_DIR = path.join(__dirname, "../../uploads");
 

@@ -1,26 +1,21 @@
 /**
- * Cancellation notification email sent to the expert when a parent cancels.
+ * Email sent to the parent when their expert cancels a confirmed booking.
+ * A full refund is always issued in this case.
  *
  * @param {{
- *   expertName: string,
  *   parentName: string,
+ *   expertName: string,
  *   serviceTitle: string,
- *   format: 'ONLINE' | 'IN_PERSON',
  *   scheduledAt: Date,
- *   cancellationReason?: string,
- *   refundPercent: 0 | 50 | 100,
- *   amount: number | string,
+ *   amount: number,
  *   clientUrl: string
  * }} params
  */
-const cancellationNotificationEmailHtml = ({
-  expertName,
+const expertCancelledSessionEmailHtml = ({
   parentName,
+  expertName,
   serviceTitle,
-  format,
   scheduledAt,
-  cancellationReason,
-  refundPercent,
   amount,
   clientUrl,
 }) => {
@@ -36,19 +31,10 @@ const cancellationNotificationEmailHtml = ({
     timeZone: 'UTC',
   });
 
-  const expertFirstName = expertName.split(' ')[0];
   const parentFirstName = parentName.split(' ')[0];
+  const expertFirstName = expertName.split(' ')[0];
+  const amountFormatted = `£${Number(amount).toFixed(2)}`;
   const logoUrl = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
-
-  const totalAmount   = Number(amount) || 0;
-  const halfAmount    = totalAmount * 0.5;
-  const fmt           = (n) => `£${n.toFixed(2)}`;
-
-  const refundOutcome = refundPercent === 100
-    ? `As the cancellation was made more than 24 hours before the session, ${parentFirstName} has received a full refund of ${fmt(totalAmount)}.`
-    : refundPercent === 50
-    ? `As the cancellation was made between 12 and 24 hours before the session, ${parentFirstName} has received a 50% refund of ${fmt(halfAmount)}. The remaining 50% (${fmt(halfAmount)}) will be transferred to you in line with the standard payout schedule.`
-    : `As the cancellation was made less than 12 hours before the session, no refund has been issued. The full amount (${fmt(totalAmount)}) will be transferred to you in line with the standard payout schedule.`;
 
   return `
 <!DOCTYPE html>
@@ -56,7 +42,7 @@ const cancellationNotificationEmailHtml = ({
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Booking Cancelled – Sage Nest</title>
+  <title>Session Cancelled – Sage Nest</title>
 </head>
 <body style="margin:0;padding:0;background:#F5F7F5;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;">
   <table width="100%" cellpadding="0" cellspacing="0" style="background:#F5F7F5;padding:40px 16px;">
@@ -73,22 +59,22 @@ const cancellationNotificationEmailHtml = ({
 
           <!-- Greeting -->
           <p style="margin:0 0 4px;font-size:15px;color:#1F2933;line-height:1.6;">
-            Hi ${expertFirstName},
+            Hi ${parentFirstName},
           </p>
           <p style="margin:0 0 28px;font-size:15px;color:#4B5563;line-height:1.6;">
-            We are writing to let you know that <strong>${parentFirstName}</strong> has cancelled the following booking:
+            We are sorry to let you know that <strong>${expertFirstName}</strong> has had to cancel your upcoming session. We understand how frustrating this can be, especially when you have been looking forward to it.
           </p>
 
-          <!-- Cancelled booking section -->
-          <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">Cancelled Booking</p>
-          <div style="background:#F5F7F5;border-radius:12px;padding:20px 24px;margin-bottom:${cancellationReason ? '16px' : '24px'};">
+          <!-- Cancelled session section -->
+          <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">Cancelled Session</p>
+          <div style="background:#F5F7F5;border-radius:12px;padding:20px 24px;margin-bottom:24px;">
             <table width="100%" cellpadding="0" cellspacing="0">
               <tr>
                 <td style="padding-bottom:10px;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#6B7280;">Parent name</span>
+                  <span style="font-size:13px;color:#6B7280;">Expert</span>
                 </td>
                 <td style="padding-bottom:10px;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${parentName}</span>
+                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${expertName}</span>
                 </td>
               </tr>
               <tr>
@@ -108,50 +94,34 @@ const cancellationNotificationEmailHtml = ({
                 </td>
               </tr>
               <tr>
-                <td style="padding:10px 0;border-top:1px solid #E4E7E4;width:40%;vertical-align:top;">
+                <td style="padding-top:10px;border-top:1px solid #E4E7E4;width:40%;vertical-align:top;">
                   <span style="font-size:13px;color:#6B7280;">Time</span>
                 </td>
-                <td style="padding:10px 0;border-top:1px solid #E4E7E4;vertical-align:top;">
+                <td style="padding-top:10px;border-top:1px solid #E4E7E4;vertical-align:top;">
                   <span style="font-size:13px;font-weight:600;color:#1F2933;">${timeStr} UTC</span>
                 </td>
               </tr>
-              <tr>
-                <td style="padding-top:10px;border-top:1px solid #E4E7E4;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#6B7280;">Format</span>
-                </td>
-                <td style="padding-top:10px;border-top:1px solid #E4E7E4;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${format === 'ONLINE' ? 'Online' : 'In-Person'}</span>
-                </td>
-              </tr>
             </table>
           </div>
 
-          ${cancellationReason ? `
-          <div style="background:#F5F7F5;border-radius:12px;padding:14px 24px;margin-bottom:24px;">
-            <table width="100%" cellpadding="0" cellspacing="0">
-              <tr>
-                <td style="width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#6B7280;">Reason</span>
-                </td>
-                <td style="vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${cancellationReason}</span>
-                </td>
-              </tr>
-            </table>
-          </div>` : ''}
-
-          <!-- Refund outcome -->
+          <!-- Full refund box -->
           <div style="background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px;padding:16px;margin-bottom:28px;">
-            <p style="margin:0 0 6px;font-size:11px;font-weight:700;text-transform:uppercase;color:#065F46;letter-spacing:0.6px;">Refund outcome</p>
-            <p style="margin:0;font-size:13px;color:#065F46;line-height:1.6;">${refundOutcome}</p>
+            <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#065F46;">Full refund issued</p>
+            <p style="margin:0;font-size:13px;color:#065F46;line-height:1.6;">
+              A full refund of <strong>${amountFormatted}</strong> has been issued to your original payment method. Please allow 5–10 business days for the amount to appear in your account, depending on your bank.
+            </p>
           </div>
 
-          <!-- Body -->
+          <!-- Find another expert -->
+          <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">Find Another Expert</p>
           <p style="margin:0 0 12px;font-size:14px;color:#4B5563;line-height:1.6;">
-            We are sorry for the disruption to your schedule. You can view all your bookings and any updates in your Sage Nest expert dashboard.
+            We know your time and your family's wellbeing matter. If you would like to book with another expert, you can browse available specialists on the Sage Nest website and find a time that works for you.
+          </p>
+          <p style="margin:0 0 12px;font-size:14px;color:#4B5563;line-height:1.6;">
+            You can also view the details of this cancellation in your dashboard at any time.
           </p>
           <p style="margin:0 0 28px;font-size:14px;color:#4B5563;line-height:1.6;">
-            If you have any questions, please do not hesitate to contact us at <a href="mailto:hello@sagenest.org" style="color:#445446;text-decoration:none;">hello@sagenest.org</a>.
+            We are sorry again for the inconvenience, and we hope to help you find the right support very soon.
           </p>
 
           <!-- Sign-off -->
@@ -169,4 +139,4 @@ const cancellationNotificationEmailHtml = ({
 </html>`;
 };
 
-module.exports = { cancellationNotificationEmailHtml };
+module.exports = { expertCancelledSessionEmailHtml };

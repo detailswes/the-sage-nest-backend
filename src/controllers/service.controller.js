@@ -1,7 +1,7 @@
 const prisma = require('../prisma/client');
 
 const VALID_FORMATS  = ['ONLINE', 'IN_PERSON'];
-const VALID_CLUSTERS = ['FOR_MUM', 'FOR_BABY', 'PACKAGE', 'GIFT'];
+const VALID_CLUSTERS = ['FOR_PARENTS', 'FOR_BABY', 'PACKAGE', 'GIFT', 'EVENT'];
 
 async function getExpertIdForUser(userId) {
   const expert = await prisma.expert.findUnique({ where: { user_id: userId } });
@@ -32,7 +32,7 @@ async function createService(req, res) {
     return res.status(400).json({ error: 'Invalid format. Must be ONLINE or IN_PERSON.' });
   }
   if (!VALID_CLUSTERS.includes(cluster)) {
-    return res.status(400).json({ error: 'Invalid cluster. Must be FOR_MUM, FOR_BABY, PACKAGE, or GIFT.' });
+    return res.status(400).json({ error: 'Invalid cluster. Must be FOR_PARENTS, FOR_BABY, PACKAGE, GIFT, or EVENT.' });
   }
 
   try {
@@ -108,7 +108,7 @@ async function updateService(req, res) {
     return res.status(400).json({ error: 'Invalid format. Must be ONLINE or IN_PERSON.' });
   }
   if (cluster !== undefined && cluster !== null && cluster !== '' && !VALID_CLUSTERS.includes(cluster)) {
-    return res.status(400).json({ error: 'Invalid cluster. Must be FOR_MUM, FOR_BABY, PACKAGE, or GIFT.' });
+    return res.status(400).json({ error: 'Invalid cluster. Must be FOR_PARENTS, FOR_BABY, PACKAGE, GIFT, or EVENT.' });
   }
 
   try {

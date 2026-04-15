@@ -26,6 +26,12 @@ const {
 const {
   refundExpertEmailHtml,
 } = require("./email_templates/refundExpertEmail");
+const {
+  rescheduleNotificationEmailHtml,
+} = require("./email_templates/rescheduleNotificationEmail");
+const {
+  expertCancelledSessionEmailHtml,
+} = require("./email_templates/expertCancelledSessionEmail");
 
 // ─── Init (lazy — called after dotenv has loaded) ─────────────────────────────
 let _initialized = false;
@@ -238,7 +244,7 @@ const sendVerificationEmail = ({ to, name, userId, verificationCode }) => {
  *   to: string, name: string, expertName: string,
  *   serviceTitle: string, format: string,
  *   scheduledAt: Date, durationMinutes: number,
- *   amount: number|string, bookingId: number
+ *   location?: string
  * }} param0
  */
 const sendBookingConfirmationEmail = ({
@@ -249,12 +255,11 @@ const sendBookingConfirmationEmail = ({
   format,
   scheduledAt,
   durationMinutes,
-  amount,
-  bookingId,
+  location,
 }) =>
   sendEmail({
     to,
-    subject: `Your booking with ${expertName} is confirmed!`,
+    subject: `Your booking is confirmed — ${serviceTitle} with ${expertName.split(' ')[0]}`,
     text: `Hi ${name}, your booking for ${serviceTitle} on ${new Date(
       scheduledAt
     ).toLocaleDateString("en-GB")} is confirmed.`,
@@ -265,8 +270,7 @@ const sendBookingConfirmationEmail = ({
       format,
       scheduledAt,
       durationMinutes,
-      amount,
-      bookingId,
+      location,
       clientUrl: process.env.CLIENT_URL,
     }),
   });
@@ -277,7 +281,7 @@ const sendBookingConfirmationEmail = ({
  *   to: string, expertName: string, parentName: string,
  *   serviceTitle: string, format: string,
  *   scheduledAt: Date, cancellationReason?: string,
- *   withinFreeWindow: boolean
+ *   refundPercent: 0 | 50 | 100, amount: number | string
  * }} param0
  */
 const sendBookingCancellationNotification = ({
@@ -288,11 +292,15 @@ const sendBookingCancellationNotification = ({
   format,
   scheduledAt,
   cancellationReason,
-  withinFreeWindow,
-}) =>
-  sendEmail({
+  refundPercent,
+  amount,
+}) => {
+  const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  });
+  return sendEmail({
     to,
-    subject: `Booking cancellation — ${parentName}`,
+    subject: `Booking cancelled — ${serviceTitle} on ${dateStr}`,
     text: `Hi ${expertName}, ${parentName} has cancelled their booking for ${serviceTitle}. The slot has been freed.`,
     html: cancellationNotificationEmailHtml({
       expertName,
@@ -301,10 +309,12 @@ const sendBookingCancellationNotification = ({
       format,
       scheduledAt,
       cancellationReason,
-      withinFreeWindow,
+      refundPercent,
+      amount,
       clientUrl: process.env.CLIENT_URL,
     }),
   });
+};
 
 /**
  * New booking notification — sent to the expert when a booking is confirmed.
@@ -492,6 +502,45 @@ const sendRefundNotificationToExpert = ({
   });
 
 /**
+ * Reschedule notification — sent to the expert when a parent reschedules.
+ * @param {{
+ *   to: string, expertName: string, parentName: string, parentEmail: string,
+ *   serviceTitle: string, format: 'ONLINE'|'IN_PERSON',
+ *   previousScheduledAt: Date, newScheduledAt: Date,
+ *   durationMinutes: number, bookingId: number
+ * }} param0
+ */
+const sendRescheduleNotificationEmail = ({
+  to,
+  expertName,
+  parentName,
+  parentEmail,
+  serviceTitle,
+  format,
+  previousScheduledAt,
+  newScheduledAt,
+  durationMinutes,
+  bookingId,
+}) =>
+  sendEmail({
+    to,
+    subject: `Booking rescheduled — ${parentName}`,
+    text: `Hi ${expertName}, ${parentName} has rescheduled their booking for ${serviceTitle}. The new time is ${new Date(newScheduledAt).toLocaleString("en-GB", { timeZone: "UTC" })} UTC.`,
+    html: rescheduleNotificationEmailHtml({
+      expertName,
+      parentName,
+      parentEmail,
+      serviceTitle,
+      format,
+      previousScheduledAt,
+      newScheduledAt,
+      durationMinutes,
+      bookingId,
+      clientUrl: process.env.CLIENT_URL,
+    }),
+  });
+
+/**
  * Admin-triggered: notify a specialist that changes are required before approval.
  * @param {{ to: string, name: string, note: string }} param0
  */
@@ -605,6 +654,40 @@ const sendPasswordChangedEmail = ({ to, name }) =>
     `),
   });
 
+/**
+ * Expert-cancelled session email — sent to the parent when an expert cancels.
+ * A full refund is always issued in this scenario.
+ * @param {{
+ *   to: string, parentName: string, expertName: string,
+ *   serviceTitle: string, scheduledAt: Date, amount: number
+ * }} param0
+ */
+const sendExpertCancelledSessionEmail = ({
+  to,
+  parentName,
+  expertName,
+  serviceTitle,
+  scheduledAt,
+  amount,
+}) => {
+  const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  });
+  return sendEmail({
+    to,
+    subject: `Your session on ${dateStr} has been cancelled — full refund issued`,
+    text: `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. A full refund of £${Number(amount).toFixed(2)} has been issued to your original payment method.`,
+    html: expertCancelledSessionEmailHtml({
+      parentName,
+      expertName,
+      serviceTitle,
+      scheduledAt,
+      amount,
+      clientUrl: process.env.CLIENT_URL,
+    }),
+  });
+};
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 module.exports = {
   sendEmail,
@@ -623,6 +706,8 @@ module.exports = {
   sendChangesRequestedEmail,
   sendRefundNotificationToParent,
   sendRefundNotificationToExpert,
+  sendRescheduleNotificationEmail,
   sendOtpEmail,
   sendPasswordChangedEmail,
+  sendExpertCancelledSessionEmail,
 };

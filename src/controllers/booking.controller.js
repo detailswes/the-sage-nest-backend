@@ -1,6 +1,12 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const prisma = require('../prisma/client');
-const { sendBookingCancellationNotification } = require('../utils/email');
+const {
+  sendBookingCancellationNotification,
+  sendBookingConfirmationEmail,
+  sendNewBookingNotificationEmail,
+  sendRescheduleNotificationEmail,
+  sendExpertCancelledSessionEmail,
+} = require('../utils/email');
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 async function getExpertIdForUser(userId) {
@@ -194,13 +200,29 @@ async function getMyBookings(req, res) {
 
 // ─── DELETE /bookings/:id — parent cancels their booking ─────────────────────
 //
-// Policy:
-//   ≥ 24 h before session → cancel + initiate Stripe refund + notify expert
-//   < 24 h before session → cancel + no refund             + notify expert
+// Three-tier cancellation policy — boundary is the request-received timestamp,
+// NOT the Stripe processing timestamp:
+//
+//   ≥ 24 h before session        → full refund  (100%)
+//   ≥ 12 h and < 24 h before     → 50% refund
+//   < 12 h before session        → no refund    (0%)
+//
+// Edge-case rules:
+//   • Exactly 24 h  → treated as ≥ 24 h  (full refund)
+//   • Exactly 12 h  → treated as ≥ 12 h  (50% refund)
+//   • No-show       → 0% (< 12 h window; no active cancellation issued by parent)
+//   • Expert cancel → always 100% (handled separately via admin controller)
+//   • System delay  → cancelledAt is stamped at request arrival, before any
+//                     async work, so processing latency never moves a boundary
 //
 async function cancelBooking(req, res) {
   const { id } = req.params;
   const { reason } = req.body;
+
+  // Stamp the request-received time immediately — this is the authoritative
+  // timestamp used for both the tier calculation and the DB audit field.
+  // Any subsequent async work (DB fetch, Stripe call) cannot shift the boundary.
+  const cancelledAt = new Date();
 
   try {
     const booking = await prisma.booking.findUnique({
@@ -220,12 +242,16 @@ async function cancelBooking(req, res) {
       return res.status(400).json({ error: `Booking cannot be cancelled (current status: ${booking.status})` });
     }
 
-    const now = new Date();
-    const hoursUntilSession = (booking.scheduled_at.getTime() - now.getTime()) / (1000 * 60 * 60);
-    const withinFreeWindow  = hoursUntilSession >= 24;
+    const hoursUntilSession = (booking.scheduled_at.getTime() - cancelledAt.getTime()) / (1000 * 60 * 60);
     const wasConfirmed      = booking.status === 'CONFIRMED';
 
-    console.log(`[cancelBooking] booking=${booking.id} status=${booking.status} hoursUntilSession=${hoursUntilSession.toFixed(2)} withinFreeWindow=${withinFreeWindow} wasConfirmed=${wasConfirmed} paymentIntentId=${booking.stripe_payment_intent_id} chargeId=${booking.stripe_charge_id}`);
+    // Determine refund tier. Boundaries are inclusive on the more-favourable side:
+    //   >= 24 h → 100%, >= 12 h → 50%, < 12 h → 0%
+    const refundPercent = hoursUntilSession >= 24 ? 100
+                        : hoursUntilSession >= 12 ? 50
+                        : 0;
+
+    console.log(`[cancelBooking] booking=${booking.id} status=${booking.status} hoursUntilSession=${hoursUntilSession.toFixed(4)} refundPercent=${refundPercent}% wasConfirmed=${wasConfirmed} paymentIntentId=${booking.stripe_payment_intent_id} chargeId=${booking.stripe_charge_id}`);
 
     // ── Cancel the booking ──────────────────────────────────────────────────
     // transfer_status → 'skipped' prevents the transfer cron from paying out
@@ -235,19 +261,20 @@ async function cancelBooking(req, res) {
       data: {
         status:              'CANCELLED',
         cancellation_reason: reason || null,
-        cancelled_at:        now,
+        cancelled_at:        cancelledAt,   // request-received time, not now()
         transfer_status:     'skipped',
       },
     });
     console.log(`[cancelBooking] booking=${booking.id} marked CANCELLED`);
 
-    // ── Initiate Stripe refund if within free window and payment was made ───
+    // ── Initiate Stripe refund based on tier ────────────────────────────────
     // Use stored stripe_charge_id to avoid an extra Stripe API call.
     // Fall back to retrieving from the PaymentIntent for older bookings that
     // predate the stripe_charge_id storage (migration safety).
+    // Always pass an explicit amount so Stripe creates a partial refund correctly.
     let refundInitiated = false;
-    if (withinFreeWindow && wasConfirmed && booking.stripe_payment_intent_id) {
-      console.log(`[cancelBooking] Eligible for refund — attempting Stripe refund for booking=${booking.id}`);
+    if (refundPercent > 0 && wasConfirmed && booking.stripe_payment_intent_id) {
+      console.log(`[cancelBooking] Initiating ${refundPercent}% refund for booking=${booking.id}`);
       try {
         let chargeId = booking.stripe_charge_id;
         if (!chargeId) {
@@ -257,9 +284,12 @@ async function cancelBooking(req, res) {
           console.log(`[cancelBooking] Retrieved chargeId=${chargeId}`);
         }
         if (chargeId) {
-          await stripe.refunds.create({ charge: chargeId });
+          // Compute the exact pence amount to refund so both 100% and 50%
+          // go through the same code path, reducing the risk of silent errors.
+          const refundAmountPence = Math.round(Number(booking.amount) * 100 * refundPercent / 100);
+          await stripe.refunds.create({ charge: chargeId, amount: refundAmountPence });
           refundInitiated = true;
-          console.log(`[cancelBooking] Stripe refund created for chargeId=${chargeId} — waiting for charge.refunded webhook`);
+          console.log(`[cancelBooking] Stripe refund of ${refundAmountPence}p created for chargeId=${chargeId} — waiting for charge.refunded webhook`);
         } else {
           console.warn(`[cancelBooking] No chargeId found — refund skipped for booking=${booking.id}`);
         }
@@ -268,7 +298,7 @@ async function cancelBooking(req, res) {
         console.error('[cancelBooking] Stripe refund failed:', stripeErr.message);
       }
     } else {
-      console.log(`[cancelBooking] Refund NOT initiated — withinFreeWindow=${withinFreeWindow} wasConfirmed=${wasConfirmed} hasPaymentIntent=${!!booking.stripe_payment_intent_id}`);
+      console.log(`[cancelBooking] No refund — refundPercent=${refundPercent}% wasConfirmed=${wasConfirmed} hasPaymentIntent=${!!booking.stripe_payment_intent_id}`);
     }
 
     // ── Notify expert immediately ───────────────────────────────────────────
@@ -280,12 +310,141 @@ async function cancelBooking(req, res) {
       format:             booking.format,
       scheduledAt:        booking.scheduled_at,
       cancellationReason: reason || null,
-      withinFreeWindow,
+      refundPercent,
+      amount:             booking.amount,
     }).catch((e) => console.error('[Email] Cancellation notification failed:', e.message));
 
-    return res.json({ success: true, refund_initiated: refundInitiated });
+    return res.json({ success: true, refund_initiated: refundInitiated, refund_percent: refundPercent });
   } catch (err) {
     console.error('[cancelBooking] Error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+// ─── PATCH /bookings/:id/reschedule — parent moves booking to a new slot ─────
+//
+// Rules:
+//   • Only CONFIRMED bookings can be rescheduled
+//   • Must be > 12 h before the CURRENT session start (same lockout as cancel)
+//   • New slot must be different from the current slot
+//   • No payment change: no new charge, no refund — Stripe is never touched
+//   • is_reschedule is set to true so the audit trail is clear and the cancel
+//     refund logic can never misfire during a reschedule operation
+//   • Reminder flags are reset so reminders fire correctly for the new time
+//   • transfer_due_at is recalculated for the new session end time
+//
+async function rescheduleBooking(req, res) {
+  const { id } = req.params;
+  const { newScheduledAt } = req.body;
+
+  if (!newScheduledAt) {
+    return res.status(400).json({ error: 'newScheduledAt is required' });
+  }
+
+  const newDate = new Date(newScheduledAt);
+  if (isNaN(newDate.getTime())) {
+    return res.status(400).json({ error: 'Invalid newScheduledAt date' });
+  }
+  if (newDate <= new Date()) {
+    return res.status(400).json({ error: 'New scheduled time must be in the future' });
+  }
+
+  try {
+    const booking = await prisma.booking.findUnique({
+      where: { id: parseInt(id) },
+      include: {
+        parent:  { select: { name: true, email: true } },
+        expert:  { select: { address_street: true, address_city: true, address_postcode: true, user: { select: { name: true, email: true } } } },
+        service: { select: { title: true, duration_minutes: true } },
+      },
+    });
+
+    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+    if (booking.parent_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (booking.status !== 'CONFIRMED') {
+      return res.status(400).json({ error: 'Only confirmed bookings can be rescheduled' });
+    }
+
+    // Enforce the 12 h window using the same boundary as cancellation
+    const hoursUntilCurrent = (booking.scheduled_at.getTime() - Date.now()) / (1000 * 60 * 60);
+    if (hoursUntilCurrent < 12) {
+      return res.status(400).json({ error: 'Bookings cannot be rescheduled within 12 hours of the session' });
+    }
+
+    // Prevent no-op reschedules
+    if (booking.scheduled_at.getTime() === newDate.getTime()) {
+      return res.status(400).json({ error: 'New time must be different from the current session time' });
+    }
+
+    // Check the target slot is free for this expert (any status — unique constraint
+    // on expert_id + scheduled_at applies table-wide, so even CANCELLED rows block)
+    const conflict = await prisma.booking.findFirst({
+      where: {
+        expert_id:    booking.expert_id,
+        scheduled_at: newDate,
+        id:           { not: booking.id },
+      },
+    });
+    if (conflict) {
+      return res.status(409).json({ error: 'That time slot is no longer available. Please choose another.' });
+    }
+
+    // Recalculate transfer_due_at for the new session end time
+    const newSessionEnd    = new Date(newDate.getTime() + booking.duration_minutes * 60 * 1000);
+    const newTransferDueAt = new Date(newSessionEnd.getTime() + 24 * 60 * 60 * 1000);
+
+    const previousScheduledAt = booking.scheduled_at;
+    const now = new Date();
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: {
+        scheduled_at:      newDate,
+        is_reschedule:     true,        // guards against refund logic misfiring
+        rescheduled_at:    now,
+        transfer_due_at:   newTransferDueAt,
+        reminder_1h_sent:  false,       // reset so reminders fire for the new time
+        reminder_24h_sent: false,
+      },
+    });
+
+    console.log(`[rescheduleBooking] booking=${booking.id} rescheduled ${booking.scheduled_at.toISOString()} → ${newDate.toISOString()}`);
+
+    // ── Notify parent (updated confirmation) ───────────────────────────────
+    const expertAddress = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
+    sendBookingConfirmationEmail({
+      to:              booking.parent.email,
+      name:            booking.parent.name,
+      expertName:      booking.expert.user.name,
+      serviceTitle:    booking.service.title,
+      format:          booking.format,
+      scheduledAt:     newDate,
+      durationMinutes: booking.duration_minutes,
+      location:        expertAddress || undefined,
+    }).catch((e) => console.error('[Email] Reschedule parent confirmation failed:', e.message));
+
+    // ── Notify expert (reschedule-specific notification) ───────────────────
+    sendRescheduleNotificationEmail({
+      to:                  booking.expert.user.email,
+      expertName:          booking.expert.user.name,
+      parentName:          booking.parent.name,
+      parentEmail:         booking.parent.email,
+      serviceTitle:        booking.service.title,
+      format:              booking.format,
+      previousScheduledAt,
+      newScheduledAt:      newDate,
+      durationMinutes:     booking.duration_minutes,
+      bookingId:           booking.id,
+    }).catch((e) => console.error('[Email] Reschedule expert notification failed:', e.message));
+
+    return res.json({ success: true, scheduled_at: newDate.toISOString() });
+  } catch (err) {
+    if (err.code === 'P2002') {
+      // Unique constraint race — another booking was created between our check and update
+      return res.status(409).json({ error: 'That time slot is no longer available. Please choose another.' });
+    }
+    console.error('[rescheduleBooking] Error:', err);
     return res.status(500).json({ error: 'Server error' });
   }
 }
@@ -353,6 +512,93 @@ async function getCalendarBookings(req, res) {
   }
 }
 
+// ─── POST /bookings/:id/verify-payment — reconcile if webhook was missed ──────
+//
+// Called by BookingStatusPage after polling times out with status still
+// PENDING_PAYMENT. Checks the PaymentIntent status directly with Stripe
+// and confirms the booking if the payment succeeded.  Safe to call multiple
+// times — the status guard makes it idempotent.
+//
+async function verifyPayment(req, res) {
+  const { id } = req.params;
+
+  try {
+    const booking = await prisma.booking.findUnique({
+      where: { id: parseInt(id) },
+      include: {
+        parent:  { select: { id: true, name: true, email: true } },
+        expert:  { select: { address_street: true, address_city: true, address_postcode: true, user: { select: { name: true, email: true } } } },
+        service: { select: { title: true } },
+      },
+    });
+
+    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+    if (booking.parent_id !== req.user.id) return res.status(403).json({ error: 'Access denied' });
+
+    // Already resolved — nothing to do
+    if (booking.status !== 'PENDING_PAYMENT') {
+      return res.json({ status: booking.status });
+    }
+
+    if (!booking.stripe_payment_intent_id) {
+      return res.status(400).json({ error: 'No payment intent on record for this booking' });
+    }
+
+    const pi = await stripe.paymentIntents.retrieve(booking.stripe_payment_intent_id);
+
+    if (pi.status !== 'succeeded') {
+      // Payment genuinely not completed — return current state
+      return res.json({ status: booking.status, pi_status: pi.status });
+    }
+
+    // Payment succeeded but webhook was missed — self-heal
+    console.log(`[verifyPayment] Reconciling booking ${booking.id} — PI ${pi.id} succeeded but webhook not received`);
+
+    const sessionEndTime  = new Date(booking.scheduled_at.getTime() + booking.duration_minutes * 60 * 1000);
+    const transferDueAt   = new Date(sessionEndTime.getTime() + 24 * 60 * 60 * 1000);
+
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: {
+        status:           'CONFIRMED',
+        stripe_charge_id: pi.latest_charge || null,
+        transfer_status:  'pending',
+        transfer_due_at:  transferDueAt,
+      },
+    });
+
+    // Fire confirmation emails (same as webhook handler)
+    const expertAddressVerify = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
+    sendBookingConfirmationEmail({
+      to:              booking.parent.email,
+      name:            booking.parent.name,
+      expertName:      booking.expert.user.name,
+      serviceTitle:    booking.service.title,
+      format:          booking.format,
+      scheduledAt:     booking.scheduled_at,
+      durationMinutes: booking.duration_minutes,
+      location:        expertAddressVerify || undefined,
+    }).catch((e) => console.error('[verifyPayment] Parent confirmation email failed:', e.message));
+
+    sendNewBookingNotificationEmail({
+      to:              booking.expert.user.email,
+      expertName:      booking.expert.user.name,
+      parentName:      booking.parent.name,
+      parentEmail:     booking.parent.email,
+      serviceTitle:    booking.service.title,
+      format:          booking.format,
+      scheduledAt:     booking.scheduled_at,
+      durationMinutes: booking.duration_minutes,
+      bookingId:       booking.id,
+    }).catch((e) => console.error('[verifyPayment] Expert notification email failed:', e.message));
+
+    return res.json({ status: 'CONFIRMED', reconciled: true });
+  } catch (err) {
+    console.error('[verifyPayment]', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
 // ─── PATCH /bookings/:id/link-sent — expert marks session link as sent ───────
 async function markSessionLinkSent(req, res) {
   const { id } = req.params;
@@ -378,11 +624,98 @@ async function markSessionLinkSent(req, res) {
   }
 }
 
+// ─── POST /bookings/:id/expert-cancel — expert cancels a confirmed booking ─────
+//
+// Always issues a full refund regardless of timing, then emails the parent.
+//
+async function expertCancelBooking(req, res) {
+  const { id } = req.params;
+  const cancelledAt = new Date();
+
+  try {
+    const booking = await prisma.booking.findUnique({
+      where: { id: parseInt(id) },
+      include: {
+        parent:  { select: { name: true, email: true } },
+        expert:  { select: { user_id: true, user: { select: { name: true, email: true } } } },
+        service: { select: { title: true } },
+      },
+    });
+
+    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+
+    // Only the expert who owns this booking can cancel it
+    if (booking.expert.user_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+
+    if (!['CONFIRMED', 'PENDING_PAYMENT'].includes(booking.status)) {
+      return res.status(400).json({ error: `Booking cannot be cancelled (current status: ${booking.status})` });
+    }
+
+    let stripeRefund = null;
+    const refundedAmount = parseFloat(booking.amount) || 0;
+
+    if (booking.status === 'CONFIRMED' && booking.stripe_payment_intent_id) {
+      let chargeId = booking.stripe_charge_id;
+      if (!chargeId) {
+        const pi = await stripe.paymentIntents.retrieve(booking.stripe_payment_intent_id);
+        chargeId = pi.latest_charge;
+      }
+      if (chargeId) {
+        // Expert cancellations always receive a full refund — no partial tiers
+        stripeRefund = await stripe.refunds.create({ charge: chargeId });
+      }
+    } else if (booking.status === 'PENDING_PAYMENT' && booking.stripe_payment_intent_id) {
+      try {
+        await stripe.paymentIntents.cancel(booking.stripe_payment_intent_id);
+      } catch (_) { /* may already be expired */ }
+    }
+
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: {
+        status:              booking.status === 'CONFIRMED' ? 'REFUNDED' : 'CANCELLED',
+        cancellation_reason: 'Cancelled by expert',
+        cancelled_at:        cancelledAt,
+        transfer_status:     'skipped',
+        ...(stripeRefund ? {
+          stripe_refund_id: stripeRefund.id,
+          refund_status:    stripeRefund.status,
+          refund_amount:    refundedAmount,
+        } : {}),
+      },
+    });
+
+    console.log(`[expertCancelBooking] booking=${booking.id} cancelled by expert user=${req.user.id} refund=${stripeRefund?.id || 'none'}`);
+
+    // Email the parent — fire-and-forget
+    if (booking.status === 'CONFIRMED') {
+      sendExpertCancelledSessionEmail({
+        to:           booking.parent.email,
+        parentName:   booking.parent.name,
+        expertName:   booking.expert.user.name,
+        serviceTitle: booking.service.title,
+        scheduledAt:  booking.scheduled_at,
+        amount:       refundedAmount,
+      }).catch((e) => console.error('[Email] Expert cancel parent email failed:', e.message));
+    }
+
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('[expertCancelBooking] Error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
 module.exports = {
   createBooking,
   getBookingById,
   getMyBookings,
+  verifyPayment,
   cancelBooking,
+  rescheduleBooking,
+  expertCancelBooking,
   getUpcomingAppointments,
   getCalendarBookings,
   markSessionLinkSent,

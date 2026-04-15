@@ -126,7 +126,7 @@ async function handleWebhook(req, res) {
           where: { stripe_payment_intent_id: pi.id },
           include: {
             parent:  { select: { name: true, email: true } },
-            expert:  { include: { user: { select: { name: true, email: true } } } },
+            expert:  { select: { address_street: true, address_city: true, address_postcode: true, user: { select: { name: true, email: true } } } },
             service: { select: { title: true } },
           },
         });
@@ -160,6 +160,7 @@ async function handleWebhook(req, res) {
           );
 
           // Fire-and-forget: parent confirmation + expert new-booking notification
+          const expertAddress = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
           sendBookingConfirmationEmail({
             to:              booking.parent.email,
             name:            booking.parent.name,
@@ -168,8 +169,7 @@ async function handleWebhook(req, res) {
             format:          booking.format,
             scheduledAt:     booking.scheduled_at,
             durationMinutes: booking.duration_minutes,
-            amount:          booking.amount,
-            bookingId:       booking.id,
+            location:        expertAddress || undefined,
           }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));
 
           sendNewBookingNotificationEmail({
