@@ -1,5 +1,5 @@
--- AlterTable: add refund tracking fields to Booking
+-- AlterTable: add refund tracking fields to Booking (idempotent)
 ALTER TABLE "Booking"
-ADD COLUMN "stripe_refund_id" TEXT,
-ADD COLUMN "refund_status"    TEXT,
-ADD COLUMN "refund_amount"    DECIMAL(10,2);
+  ADD COLUMN IF NOT EXISTS "stripe_refund_id" TEXT,
+  ADD COLUMN IF NOT EXISTS "refund_status"    TEXT,
+  ADD COLUMN IF NOT EXISTS "refund_amount"    DECIMAL(10,2);

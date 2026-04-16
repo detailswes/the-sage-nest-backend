@@ -1,2 +1,2 @@
--- AddColumn: pending_languages on Expert
-ALTER TABLE "Expert" ADD COLUMN "pending_languages" TEXT[] NOT NULL DEFAULT '{}';
+-- AddColumn: pending_languages on Expert (idempotent)
+ALTER TABLE "Expert" ADD COLUMN IF NOT EXISTS "pending_languages" TEXT[] NOT NULL DEFAULT '{}';
