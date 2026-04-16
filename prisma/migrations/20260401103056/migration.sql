@@ -1,7 +1,7 @@
 /*
-  Idempotent rewrite — original migration was blocked because prisma db push
-  had already created these types/tables on the Render DB.
-  Every statement is now safe to run even if the object already exists.
+  Idempotent rewrite — objects were already created by prisma db push.
+  COMMIT/BEGIN removed: not needed on PostgreSQL 14+ and it breaks
+  Prisma's own transaction used to record migration results.
 */
 
 -- CreateEnum (idempotent)
@@ -24,13 +24,10 @@ DO $$ BEGIN
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
--- AlterEnum: add BookingStatus values (IF NOT EXISTS, PostgreSQL 9.1+)
--- Must commit before using new enum values as defaults.
+-- AlterEnum: ADD VALUE IF NOT EXISTS is safe to run multiple times
+-- No COMMIT/BEGIN needed on PostgreSQL 12+ (Render runs 14+)
 ALTER TYPE "BookingStatus" ADD VALUE IF NOT EXISTS 'PENDING_PAYMENT';
 ALTER TYPE "BookingStatus" ADD VALUE IF NOT EXISTS 'REFUNDED';
-
-COMMIT;
-BEGIN;
 
 -- AlterTable Booking
 ALTER TABLE "Booking"
@@ -53,24 +50,22 @@ ALTER TABLE "Booking" ALTER COLUMN "status" SET DEFAULT 'PENDING_PAYMENT';
 
 -- AlterTable Expert
 ALTER TABLE "Expert"
-  ADD COLUMN IF NOT EXISTS "facebook"                    TEXT,
-  ADD COLUMN IF NOT EXISTS "instagram"                   TEXT,
-  ADD COLUMN IF NOT EXISTS "linkedin"                    TEXT,
-  ADD COLUMN IF NOT EXISTS "stripe_onboarding_complete"  BOOLEAN NOT NULL DEFAULT false;
+  ADD COLUMN IF NOT EXISTS "facebook"                   TEXT,
+  ADD COLUMN IF NOT EXISTS "instagram"                  TEXT,
+  ADD COLUMN IF NOT EXISTS "linkedin"                   TEXT,
+  ADD COLUMN IF NOT EXISTS "stripe_onboarding_complete" BOOLEAN NOT NULL DEFAULT false;
 
 -- AlterTable User
 ALTER TABLE "User"
-  ADD COLUMN IF NOT EXISTS "account_deleted"  BOOLEAN NOT NULL DEFAULT false,
-  ADD COLUMN IF NOT EXISTS "locked_until"     TIMESTAMP(3),
-  ADD COLUMN IF NOT EXISTS "login_attempts"   INTEGER NOT NULL DEFAULT 0,
-  ADD COLUMN IF NOT EXISTS "phone"            TEXT;
+  ADD COLUMN IF NOT EXISTS "account_deleted" BOOLEAN NOT NULL DEFAULT false,
+  ADD COLUMN IF NOT EXISTS "locked_until"    TIMESTAMP(3),
+  ADD COLUMN IF NOT EXISTS "login_attempts"  INTEGER NOT NULL DEFAULT 0,
+  ADD COLUMN IF NOT EXISTS "phone"           TEXT;
 
-DO $$ BEGIN
-  ALTER TABLE "User" ALTER COLUMN "password_hash" DROP NOT NULL;
-EXCEPTION WHEN others THEN NULL;
-END $$;
+-- DROP NOT NULL is a no-op if column is already nullable (PostgreSQL 11+)
+ALTER TABLE "User" ALTER COLUMN "password_hash" DROP NOT NULL;
 
--- CreateTable OAuthAccount
+-- CreateTable (IF NOT EXISTS = no-op if already present)
 CREATE TABLE IF NOT EXISTS "OAuthAccount" (
     "id"          SERIAL NOT NULL,
     "user_id"     INTEGER NOT NULL,
@@ -80,7 +75,6 @@ CREATE TABLE IF NOT EXISTS "OAuthAccount" (
     CONSTRAINT "OAuthAccount_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable BusinessInfo
 CREATE TABLE IF NOT EXISTS "BusinessInfo" (
     "id"                 SERIAL NOT NULL,
     "expert_id"          INTEGER NOT NULL,
@@ -101,7 +95,6 @@ CREATE TABLE IF NOT EXISTS "BusinessInfo" (
     CONSTRAINT "BusinessInfo_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable LegalDocument
 CREATE TABLE IF NOT EXISTS "LegalDocument" (
     "id"             SERIAL NOT NULL,
     "type"           TEXT NOT NULL,
@@ -110,7 +103,6 @@ CREATE TABLE IF NOT EXISTS "LegalDocument" (
     CONSTRAINT "LegalDocument_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable PrivacyPolicyAcceptance
 CREATE TABLE IF NOT EXISTS "PrivacyPolicyAcceptance" (
     "id"                    SERIAL NOT NULL,
     "user_id"               INTEGER NOT NULL,
@@ -121,17 +113,15 @@ CREATE TABLE IF NOT EXISTS "PrivacyPolicyAcceptance" (
     CONSTRAINT "PrivacyPolicyAcceptance_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable TcAcceptance
 CREATE TABLE IF NOT EXISTS "TcAcceptance" (
-    "id"         SERIAL NOT NULL,
-    "user_id"    INTEGER NOT NULL,
-    "booking_id" INTEGER NOT NULL,
-    "version"    TEXT NOT NULL,
+    "id"          SERIAL NOT NULL,
+    "user_id"     INTEGER NOT NULL,
+    "booking_id"  INTEGER NOT NULL,
+    "version"     TEXT NOT NULL,
     "accepted_at" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT "TcAcceptance_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable StripeEvent
 CREATE TABLE IF NOT EXISTS "StripeEvent" (
     "id"              SERIAL NOT NULL,
     "stripe_event_id" TEXT NOT NULL,
@@ -139,7 +129,6 @@ CREATE TABLE IF NOT EXISTS "StripeEvent" (
     CONSTRAINT "StripeEvent_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable SavedExpert
 CREATE TABLE IF NOT EXISTS "SavedExpert" (
     "id"        SERIAL NOT NULL,
     "parent_id" INTEGER NOT NULL,
@@ -148,7 +137,6 @@ CREATE TABLE IF NOT EXISTS "SavedExpert" (
     CONSTRAINT "SavedExpert_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable Review
 CREATE TABLE IF NOT EXISTS "Review" (
     "id"         SERIAL NOT NULL,
     "booking_id" INTEGER NOT NULL,
@@ -161,7 +149,6 @@ CREATE TABLE IF NOT EXISTS "Review" (
     CONSTRAINT "Review_pkey" PRIMARY KEY ("id")
 );
 
--- CreateTable Notification
 CREATE TABLE IF NOT EXISTS "Notification" (
     "id"         SERIAL NOT NULL,
     "user_id"    INTEGER NOT NULL,
@@ -174,7 +161,7 @@ CREATE TABLE IF NOT EXISTS "Notification" (
     CONSTRAINT "Notification_pkey" PRIMARY KEY ("id")
 );
 
--- CreateIndex (IF NOT EXISTS, PostgreSQL 9.5+)
+-- CreateIndex (IF NOT EXISTS = no-op if already present)
 CREATE UNIQUE INDEX IF NOT EXISTS "OAuthAccount_provider_provider_id_key"  ON "OAuthAccount"("provider", "provider_id");
 CREATE UNIQUE INDEX IF NOT EXISTS "BusinessInfo_expert_id_key"              ON "BusinessInfo"("expert_id");
 CREATE UNIQUE INDEX IF NOT EXISTS "LegalDocument_type_version_key"          ON "LegalDocument"("type", "version");
@@ -185,7 +172,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS "Review_booking_id_key"                   ON "
 CREATE INDEX        IF NOT EXISTS "Review_expert_id_idx"                    ON "Review"("expert_id");
 CREATE UNIQUE INDEX IF NOT EXISTS "Booking_expert_id_scheduled_at_key"      ON "Booking"("expert_id", "scheduled_at");
 
--- AddForeignKey (idempotent via DO blocks)
+-- AddForeignKey (DO blocks catch duplicate_object if constraint already exists)
 DO $$ BEGIN
   ALTER TABLE "OAuthAccount" ADD CONSTRAINT "OAuthAccount_user_id_fkey"
     FOREIGN KEY ("user_id") REFERENCES "User"("id") ON DELETE CASCADE ON UPDATE CASCADE;
