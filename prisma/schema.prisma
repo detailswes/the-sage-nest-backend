@@ -22,6 +22,10 @@ model User {
   locked_until            DateTime?
   login_attempts          Int                       @default(0)
   phone                   String?
+  two_factor_enabled      Boolean                   @default(false)
+  otp_hash                String?
+  otp_expires_at          DateTime?
+  otp_attempts            Int                       @default(0)
   parent_status           ParentStatus?
   bookings_as_parent      Booking[]                 @relation("ParentBookings")
   expert                  Expert?
