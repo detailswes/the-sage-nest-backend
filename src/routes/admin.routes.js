@@ -39,6 +39,8 @@ const {
   gdprDeleteParent,
   listTransactions,
   exportTransactionsCsv,
+  approveProfileDraft,
+  rejectProfileDraft,
 } = require('../controllers/admin.controller');
 
 // ── Public routes (no auth required) ─────────────────────────────────────────
@@ -60,6 +62,10 @@ router.post('/experts/:id/reactivate', reactivateExpert);
 router.post('/experts/:id/request-changes', requestChanges);   // send revision note + set CHANGES_REQUESTED
 router.post('/experts/:id/unpublish',        unpublishExpert);  // hide from parent search (APPROVED only)
 router.post('/experts/:id/republish',        republishExpert);  // restore to parent search
+
+// ── Profile draft review ──────────────────────────────────────────────────────
+router.post('/experts/:id/draft/approve', approveProfileDraft);
+router.post('/experts/:id/draft/reject',  rejectProfileDraft);
 
 // ── Support tools ─────────────────────────────────────────────────────────────
 router.post('/experts/:id/send-password-reset',  sendPasswordReset);
