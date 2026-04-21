@@ -159,7 +159,7 @@ async function getBookingById(req, res) {
       where: { id: parseInt(id) },
       include: {
         parent:  { select: { id: true, name: true, email: true } },
-        expert:  { include: { user: { select: { id: true, name: true } } } },
+        expert:  { include: { user: { select: { id: true, name: true, account_deleted: true } } } },
         service: true,
       },
     });
@@ -187,7 +187,7 @@ async function getMyBookings(req, res) {
       where: { parent_id: req.user.id },
       orderBy: { scheduled_at: 'desc' },
       include: {
-        expert:  { select: { profile_image: true, user: { select: { name: true } } } },
+        expert:  { select: { profile_image: true, user: { select: { name: true, account_deleted: true } } } },
         service: { select: { title: true, duration_minutes: true } },
       },
     });

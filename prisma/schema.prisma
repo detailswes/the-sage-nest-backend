@@ -99,6 +99,7 @@ model Expert {
   reviews                    Review[]
   saved_by                   SavedExpert[]
   services                   Service[]
+  profile_draft              ExpertProfileDraft?
 }
 
 model Service {
@@ -396,4 +397,35 @@ enum NotificationType {
   BOOKING_REMINDER
   EXPERT_APPROVED
   EXPERT_REJECTED
+}
+
+enum DraftStatus {
+  PENDING_REVIEW
+  REJECTED
+}
+
+model ExpertProfileDraft {
+  id               Int            @id @default(autoincrement())
+  expert_id        Int            @unique
+  expert           Expert         @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+  bio              String?
+  summary          String?
+  position         String?
+  session_format   SessionFormat?
+  address_street   String?
+  address_city     String?
+  address_postcode String?
+  languages        String[]       @default([])
+  pending_languages String[]      @default([])
+  timezone         String?
+  instagram        String?
+  facebook         String?
+  linkedin         String?
+  expertise        String?
+  status           DraftStatus    @default(PENDING_REVIEW)
+  submitted_at     DateTime       @default(now())
+  reviewed_at      DateTime?
+  rejection_note   String?
+
+  @@map("expert_profile_drafts")
 }

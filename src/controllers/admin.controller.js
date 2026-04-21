@@ -175,6 +175,46 @@ async function listExperts(req, res) {
         if (e.business_info?.iban) e.business_info.iban = decryptIban(e.business_info.iban);
       });
 
+      // DAC7 threshold flags — single batch query for all experts on this page.
+      const dac7Year = new Date().getFullYear();
+      const dac7From = new Date(`${dac7Year}-01-01T00:00:00.000Z`);
+      const dac7To   = new Date(`${dac7Year + 1}-01-01T00:00:00.000Z`);
+      const dac7Stats = await prisma.booking.groupBy({
+        by:    ["expert_id"],
+        where: {
+          expert_id:    { in: data.map((e) => e.id) },
+          status:       { in: ["CONFIRMED", "COMPLETED"] },
+          scheduled_at: { gte: dac7From, lt: dac7To },
+        },
+        _count: { id: true },
+        _sum:   { amount: true },
+      });
+      const dac7Map = new Map(dac7Stats.map((s) => [s.expert_id, s]));
+
+      // Pending payout flags — one batch query for all experts on this page.
+      const payoutStats = await prisma.booking.groupBy({
+        by:    ["expert_id"],
+        where: {
+          expert_id:       { in: data.map((e) => e.id) },
+          transfer_status: "pending",
+        },
+        _count: { id: true },
+      });
+      const payoutMap = new Map(payoutStats.map((s) => [s.expert_id, s._count.id]));
+
+      data.forEach((e) => {
+        const s       = dac7Map.get(e.id);
+        const txCount = s?._count?.id ?? 0;
+        const gross   = parseFloat(s?._sum?.amount ?? 0);
+        e.dac7 = {
+          year:              dac7Year,
+          transaction_count: txCount,
+          gross_earnings:    gross,
+          threshold_reached: txCount >= 30 || gross >= 2000,
+        };
+        e.pending_payout_count = payoutMap.get(e.id) ?? 0;
+      });
+
       return res.json({
         data,
         pagination: {
@@ -416,6 +456,22 @@ async function requestChanges(req, res) {
 }
 
 // ─── Publish / unpublish ──────────────────────────────────────────────────────
+//
+// Force Unpublish sets is_published = false on an APPROVED expert.
+// Effect: expert is hidden from parent search/browse (listExperts filters on
+//   is_published = true). Status stays APPROVED. Sessions are not invalidated.
+//   The expert retains full login access and their dashboard is unaffected.
+//   Existing and future bookings are not touched — sessions proceed normally.
+//
+// NOTE: createBooking does not check is_published, so a parent with a direct
+//   link can still book an unpublished expert. If blocking all new bookings is
+//   required, add an is_published guard to createBooking.
+//
+// Reinstatement: republishExpert (sets is_published = true). Requires
+//   status = APPROVED; if the expert was subsequently suspended, reactivate first.
+//
+// vs Suspend: Suspend changes status → SUSPENDED and invalidates all sessions.
+//   Use Suspend to prevent login. Use Unpublish only to remove from search.
 
 async function unpublishExpert(req, res) {
   const { id } = req.params;
@@ -683,7 +739,6 @@ async function exportTaxData(req, res) {
         csv += line("Company Reg. Number", bi.company_reg_number);
       csv += line("IBAN", decryptIban(bi.iban));
       csv += line("Business Email", bi.business_email);
-      csv += line("Website", bi.website);
       if (bi.municipality) csv += line("Municipality", bi.municipality);
       if (bi.business_address)
         csv += line("Business Address", bi.business_address);
@@ -775,6 +830,7 @@ async function getExpertDetail(req, res) {
         insurance: true,
         business_info: true,
         services: { orderBy: { sort_order: "asc" } },
+        profile_draft: true,
         _count: { select: { bookings: true } },
       },
     });
@@ -782,7 +838,108 @@ async function getExpertDetail(req, res) {
     if (expert.business_info?.iban) {
       expert.business_info.iban = decryptIban(expert.business_info.iban);
     }
+
+    // DAC7 threshold check for the current calendar year.
+    // Threshold: 30+ qualifying transactions OR gross earnings >= 2,000 (GBP, as
+    // booked amounts are stored in GBP — confirm EUR equivalence with tax adviser).
+    const dac7Year = new Date().getFullYear();
+    const dac7From = new Date(`${dac7Year}-01-01T00:00:00.000Z`);
+    const dac7To   = new Date(`${dac7Year + 1}-01-01T00:00:00.000Z`);
+    const dac7Agg  = await prisma.booking.aggregate({
+      where: {
+        expert_id: expert.id,
+        status:    { in: ["CONFIRMED", "COMPLETED"] },
+        scheduled_at: { gte: dac7From, lt: dac7To },
+      },
+      _count: { id: true },
+      _sum:   { amount: true },
+    });
+    const dac7TxCount = dac7Agg._count.id;
+    const dac7Gross   = parseFloat(dac7Agg._sum.amount ?? 0);
+    const byTx       = dac7TxCount >= 30;
+    const byEarnings = dac7Gross   >= 2000;
+    expert.dac7 = {
+      year:              dac7Year,
+      transaction_count: dac7TxCount,
+      gross_earnings:    dac7Gross,
+      threshold_reached: byTx || byEarnings,
+      threshold_reason:  byTx && byEarnings ? "both"
+                       : byTx              ? "transactions"
+                       : byEarnings        ? "earnings"
+                       : null,
+    };
+
+    expert.pending_payout_count = await prisma.booking.count({
+      where: { expert_id: expert.id, transfer_status: "pending" },
+    });
+
     return res.json(expert);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Profile draft review ─────────────────────────────────────────────────────
+
+async function approveProfileDraft(req, res) {
+  const { id } = req.params;
+  try {
+    const expert = await prisma.expert.findUnique({
+      where: { id: parseInt(id) },
+      include: { profile_draft: true },
+    });
+    if (!expert) return res.status(404).json({ error: "Expert not found" });
+    const draft = expert.profile_draft;
+    if (!draft) return res.status(404).json({ error: "No pending draft found" });
+
+    // Merge draft fields onto live expert record
+    const {
+      bio, summary, position, session_format, address_street, address_city,
+      address_postcode, languages, pending_languages, timezone, instagram,
+      facebook, linkedin, expertise,
+    } = draft;
+
+    await prisma.$transaction([
+      prisma.expert.update({
+        where: { id: parseInt(id) },
+        data: {
+          bio, summary, position, session_format, address_street, address_city,
+          address_postcode, languages, pending_languages, timezone, instagram,
+          facebook, linkedin, expertise,
+        },
+      }),
+      prisma.expertProfileDraft.delete({ where: { expert_id: parseInt(id) } }),
+    ]);
+
+    await logAudit(req.user.id, "APPROVE_PROFILE_DRAFT", "Expert", parseInt(id));
+    return res.json({ message: "Draft approved and published" });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function rejectProfileDraft(req, res) {
+  const { id } = req.params;
+  const { note } = req.body;
+  try {
+    const draft = await prisma.expertProfileDraft.findUnique({
+      where: { expert_id: parseInt(id) },
+    });
+    if (!draft) return res.status(404).json({ error: "No pending draft found" });
+
+    await prisma.expertProfileDraft.update({
+      where: { expert_id: parseInt(id) },
+      data: {
+        status: "REJECTED",
+        rejection_note: note || null,
+        reviewed_at: new Date(),
+      },
+    });
+
+    await logAudit(req.user.id, "REJECT_PROFILE_DRAFT", "Expert", parseInt(id), note);
+    return res.json({ message: "Draft rejected" });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -1361,6 +1518,19 @@ async function gdprDeleteExpert(req, res) {
     ) {
       return res.status(400).json({
         error: "Email confirmation does not match this expert's account.",
+      });
+    }
+
+    // Hard block: pending payouts must clear before the account can be erased.
+    // Deleting an account with a pending payout would cause the expert to lose
+    // earned income with no recourse.
+    const pendingPayoutCount = await prisma.booking.count({
+      where: { expert_id: expert.id, transfer_status: "pending" },
+    });
+    if (pendingPayoutCount > 0) {
+      return res.status(409).json({
+        error: `This account cannot be deleted until all pending payouts have cleared. ${pendingPayoutCount} payout${pendingPayoutCount !== 1 ? "s are" : " is"} still pending.`,
+        code: "PENDING_PAYOUTS",
       });
     }
 
@@ -2141,4 +2311,6 @@ module.exports = {
   gdprDeleteParent,
   listTransactions,
   exportTransactionsCsv,
+  approveProfileDraft,
+  rejectProfileDraft,
 };
