@@ -1,5 +1,6 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const prisma = require('../prisma/client');
+const { logAudit } = require('../utils/auditLog');
 const {
   sendBookingCancellationNotification,
   sendBookingConfirmationEmail,
@@ -90,21 +91,27 @@ async function createBooking(req, res) {
       throw err;
     }
 
-    // ── Create Stripe PaymentIntent ─────────────────────────────────────────
-    // Amount in pence (GBP) — price is stored as Decimal.
-    // We use transfer_group (no transfer_data) so funds land in the platform
-    // account first. The processTransfers cron job creates the actual transfer
-    // to the expert 24h after the session ends, keeping the platform fee.
-    const amountInPence = Math.round(Number(service.price) * 100);
+    // ── Create Stripe PaymentIntent (Destination Charge) ───────────────────
+    // on_behalf_of makes the expert the Merchant of Record — the charge appears
+    // on their connected account and their statement descriptor is used.
+    // application_fee_amount is Sage Nest's 20% platform fee collected at source.
+    // transfer_data.destination routes the net amount to the expert's balance
+    // immediately; the expert's account is set to manual payouts so those funds
+    // stay in their Stripe balance until our processPayouts job releases them
+    // 24 hours after the session ends.
+    const amountInPence         = Math.round(Number(service.price) * 100);
+    const applicationFeePence   = Math.round(Number(platformFee) * 100);
 
-    console.log(`[Payment] Creating PaymentIntent — booking=${booking.id} expert=${expert.id} amount=${amountInPence}p transfer_group=${booking.id}`);
+    console.log(`[Payment] Creating PaymentIntent — booking=${booking.id} expert=${expert.id} amount=${amountInPence}p fee=${applicationFeePence}p`);
 
     let paymentIntent;
     try {
       paymentIntent = await stripe.paymentIntents.create({
-        amount:         amountInPence,
-        currency:       'gbp',
-        transfer_group: String(booking.id),
+        amount:                 amountInPence,
+        currency:               'gbp',
+        on_behalf_of:           expert.stripe_account_id,
+        transfer_data:          { destination: expert.stripe_account_id },
+        application_fee_amount: applicationFeePence,
         metadata: {
           booking_id: booking.id.toString(),
           expert_id:  expert.id.toString(),
@@ -219,6 +226,10 @@ async function cancelBooking(req, res) {
   const { id } = req.params;
   const { reason } = req.body;
 
+  if (!reason || !reason.trim()) {
+    return res.status(400).json({ error: 'A cancellation reason is required.' });
+  }
+
   // Stamp the request-received time immediately — this is the authoritative
   // timestamp used for both the tier calculation and the DB audit field.
   // Any subsequent async work (DB fetch, Stripe call) cannot shift the boundary.
@@ -260,7 +271,7 @@ async function cancelBooking(req, res) {
       where: { id: booking.id },
       data: {
         status:              'CANCELLED',
-        cancellation_reason: reason || null,
+        cancellation_reason: reason.trim(),
         cancelled_at:        cancelledAt,   // request-received time, not now()
         transfer_status:     'skipped',
       },
@@ -286,10 +297,29 @@ async function cancelBooking(req, res) {
         if (chargeId) {
           // Compute the exact pence amount to refund so both 100% and 50%
           // go through the same code path, reducing the risk of silent errors.
-          const refundAmountPence = Math.round(Number(booking.amount) * 100 * refundPercent / 100);
-          await stripe.refunds.create({ charge: chargeId, amount: refundAmountPence });
+          // refund_application_fee refunds our platform fee proportionally.
+          // reverse_transfer reclaims the expert's net amount from their Stripe
+          // balance (skipped if we already triggered their bank payout).
+          const refundAmountPence    = Math.round(Number(booking.amount) * 100 * refundPercent / 100);
+          const shouldReverseTransfer = booking.transfer_status !== 'completed';
+          const stripeRefund = await stripe.refunds.create({
+            charge:                 chargeId,
+            amount:                 refundAmountPence,
+            refund_application_fee: true,
+            reverse_transfer:       shouldReverseTransfer,
+          });
           refundInitiated = true;
-          console.log(`[cancelBooking] Stripe refund of ${refundAmountPence}p created for chargeId=${chargeId} — waiting for charge.refunded webhook`);
+          const refundedAt = new Date();
+          await prisma.booking.update({
+            where: { id: booking.id },
+            data: {
+              stripe_refund_id: stripeRefund.id,
+              refund_status:    stripeRefund.status,
+              refund_amount:    refundAmountPence / 100,
+              refunded_at:      refundedAt,
+            },
+          });
+          console.log(`[cancelBooking] Stripe refund of ${refundAmountPence}p created for chargeId=${chargeId} reverse_transfer=${shouldReverseTransfer} — waiting for charge.refunded webhook`);
         } else {
           console.warn(`[cancelBooking] No chargeId found — refund skipped for booking=${booking.id}`);
         }
@@ -299,6 +329,15 @@ async function cancelBooking(req, res) {
       }
     } else {
       console.log(`[cancelBooking] No refund — refundPercent=${refundPercent}% wasConfirmed=${wasConfirmed} hasPaymentIntent=${!!booking.stripe_payment_intent_id}`);
+    }
+
+    // ── Audit trail ────────────────────────────────────────────────────────
+    logAudit(req.user.id, 'BOOKING_CANCELLED', 'PARENT', req.user.id,
+      `Booking #${booking.id} cancelled · ${refundPercent}% refund`);
+    if (refundInitiated) {
+      const refundAmountGbp = (Number(booking.amount) * refundPercent / 100).toFixed(2);
+      logAudit(req.user.id, 'REFUND_ISSUED', 'PARENT', req.user.id,
+        `Booking #${booking.id} · £${refundAmountGbp} refunded (${refundPercent}%)`);
     }
 
     // ── Notify expert immediately ───────────────────────────────────────────
@@ -567,6 +606,9 @@ async function verifyPayment(req, res) {
       },
     });
 
+    logAudit(booking.parent_id, 'BOOKING_CONFIRMED', 'PARENT', booking.parent_id,
+      `Booking #${booking.id} confirmed (reconciled)`);
+
     // Fire confirmation emails (same as webhook handler)
     const expertAddressVerify = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
     sendBookingConfirmationEmail({
@@ -663,8 +705,14 @@ async function expertCancelBooking(req, res) {
         chargeId = pi.latest_charge;
       }
       if (chargeId) {
-        // Expert cancellations always receive a full refund — no partial tiers
-        stripeRefund = await stripe.refunds.create({ charge: chargeId });
+        // Expert cancellations always receive a full refund — no partial tiers.
+        // refund_application_fee returns our 20% fee; reverse_transfer reclaims
+        // the expert's net amount from their Stripe balance.
+        stripeRefund = await stripe.refunds.create({
+          charge:                 chargeId,
+          refund_application_fee: true,
+          reverse_transfer:       booking.transfer_status !== 'completed',
+        });
       }
     } else if (booking.status === 'PENDING_PAYMENT' && booking.stripe_payment_intent_id) {
       try {
@@ -683,11 +731,15 @@ async function expertCancelBooking(req, res) {
           stripe_refund_id: stripeRefund.id,
           refund_status:    stripeRefund.status,
           refund_amount:    refundedAmount,
+          refunded_at:      new Date(),
         } : {}),
       },
     });
 
     console.log(`[expertCancelBooking] booking=${booking.id} cancelled by expert user=${req.user.id} refund=${stripeRefund?.id || 'none'}`);
+
+    logAudit(req.user.id, 'BOOKING_CANCELLED_BY_EXPERT', 'PARENT', booking.parent_id,
+      `Booking #${booking.id} cancelled by specialist${stripeRefund ? ' · full refund issued' : ''}`);
 
     // Email the parent — fire-and-forget
     if (booking.status === 'CONFIRMED') {
