@@ -41,6 +41,9 @@ const {
   exportTransactionsCsv,
   approveProfileDraft,
   rejectProfileDraft,
+  sendParentPasswordReset,
+  resendParentVerification,
+  manuallyVerifyParent,
 } = require('../controllers/admin.controller');
 
 // ── Public routes (no auth required) ─────────────────────────────────────────
@@ -106,6 +109,11 @@ router.get('/parents/:id', getParentDetail);
 
 // ── Parent bookings ───────────────────────────────────────────────────────────
 router.get('/parents/:id/bookings', listParentBookings);
+
+// ── Parent support tools ──────────────────────────────────────────────────────
+router.post('/parents/:id/send-password-reset', sendParentPasswordReset);
+router.post('/parents/:id/resend-verification', resendParentVerification);
+router.post('/parents/:id/verify',              manuallyVerifyParent);
 
 // ── Parent status actions ─────────────────────────────────────────────────────
 router.post('/parents/:id/activate',   activateParent);

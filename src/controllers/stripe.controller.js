@@ -1,5 +1,6 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const prisma = require('../prisma/client');
+const { logAudit } = require('../utils/auditLog');
 const {
   sendBookingConfirmationEmail,
   sendNewBookingNotificationEmail,
@@ -14,12 +15,23 @@ async function createConnectLink(req, res) {
     let accountId = expert.stripe_account_id;
 
     if (!accountId) {
-      const account = await stripe.accounts.create({ type: 'express' });
+      const account = await stripe.accounts.create({
+        type: 'express',
+        settings: {
+          payouts: { schedule: { interval: 'manual' } },
+        },
+      });
       accountId = account.id;
       await prisma.expert.update({
         where: { id: expert.id },
         data: { stripe_account_id: accountId },
       });
+    } else {
+      // Ensure existing connected accounts have manual payouts so funds
+      // never auto-release to the expert's bank before we trigger the payout.
+      await stripe.accounts.update(accountId, {
+        settings: { payouts: { schedule: { interval: 'manual' } } },
+      }).catch((e) => console.error('[Stripe] payout schedule update failed:', e.message));
     }
 
     const accountLink = await stripe.accountLinks.create({
@@ -159,6 +171,9 @@ async function handleWebhook(req, res) {
             `charge=${pi.latest_charge} transfer_due=${transferDueAt.toISOString()}`
           );
 
+          logAudit(booking.parent_id, 'BOOKING_CONFIRMED', 'PARENT', booking.parent_id,
+            `Booking #${booking.id} confirmed · payment received`);
+
           // Fire-and-forget: parent confirmation + expert new-booking notification
           const expertAddress = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
           sendBookingConfirmationEmail({
@@ -237,9 +252,19 @@ async function handleWebhook(req, res) {
       case 'charge.refunded': {
         const charge = event.data.object;
         if (charge.payment_intent) {
+          // Extract the most recent refund object from the charge
+          const latestRefund = charge.refunds?.data?.[0];
           await prisma.booking.updateMany({
             where: { stripe_payment_intent_id: charge.payment_intent },
-            data: { status: 'REFUNDED' },
+            data: {
+              status: 'REFUNDED',
+              ...(latestRefund ? {
+                stripe_refund_id: latestRefund.id,
+                refund_status:    latestRefund.status,
+                refund_amount:    latestRefund.amount / 100,
+                refunded_at:      new Date(latestRefund.created * 1000),
+              } : {}),
+            },
           });
         }
         break;

@@ -208,12 +208,14 @@ model Booking {
   stripe_charge_id         String?
   stripe_payment_intent_id String?
   stripe_transfer_id       String?
+  stripe_payout_id         String?
   transfer_attempts        Int            @default(0)
   transfer_due_at          DateTime?
   transfer_status          String?
   stripe_refund_id         String?
   refund_status            String?
   refund_amount            Decimal?       @db.Decimal(10, 2)
+  refunded_at              DateTime?
   dispute_reason           String?
   disputed_at              DateTime?
   internal_admin_note      String?

@@ -2,6 +2,7 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { decryptIban } = require("../utils/encryption");
+const { logAudit }   = require("../utils/auditLog");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
 const {
@@ -46,26 +47,6 @@ function deleteFile(fileUrl) {
     try {
       fs.unlinkSync(filePath);
     } catch (_) {}
-  }
-}
-
-/**
- * Write one row to AdminAuditLog. Fire-and-forget — never throws.
- * admin_id has no FK constraint so logs survive GDPR-deleted admin accounts.
- */
-async function logAudit(adminId, action, entityType, entityId, note = null) {
-  try {
-    await prisma.adminAuditLog.create({
-      data: {
-        admin_id: adminId,
-        action,
-        entity_type: entityType,
-        entity_id: entityId,
-        note,
-      },
-    });
-  } catch (err) {
-    console.error("[AUDIT] Failed to write audit log:", err.message);
   }
 }
 
@@ -658,6 +639,88 @@ async function manuallyVerify(req, res) {
   }
 }
 
+// ─── Parent support tools ─────────────────────────────────────────────────────
+
+async function sendParentPasswordReset(req, res) {
+  const { id } = req.params;
+  try {
+    const user = await prisma.user.findUnique({ where: { id: parseInt(id) } });
+    if (!user || user.role !== "PARENT") return res.status(404).json({ error: "Parent not found" });
+
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const resetTokenExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { reset_token: resetToken, reset_token_expires_at: resetTokenExpiresAt },
+    });
+
+    sendPasswordResetEmail({ to: user.email, name: user.name, resetToken })
+      .catch((err) => console.error("Failed to send parent password reset email:", err.message));
+
+    await logAudit(req.user.id, "SEND_PASSWORD_RESET", "PARENT", parseInt(id));
+
+    return res.json({ sent: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function resendParentVerification(req, res) {
+  const { id } = req.params;
+  try {
+    const user = await prisma.user.findUnique({ where: { id: parseInt(id) } });
+    if (!user || user.role !== "PARENT") return res.status(404).json({ error: "Parent not found" });
+
+    if (user.is_verified) {
+      return res.status(400).json({ error: "Parent email is already verified." });
+    }
+
+    const verificationCode = crypto.randomBytes(32).toString("hex");
+    const verificationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { verification_code: verificationCode, verification_expires_at: verificationExpiresAt },
+    });
+
+    sendVerificationEmail({ to: user.email, name: user.name, userId: user.id, verificationCode })
+      .catch((err) => console.error("Failed to resend parent verification email:", err.message));
+
+    await logAudit(req.user.id, "RESEND_VERIFICATION", "PARENT", parseInt(id));
+
+    return res.json({ sent: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function manuallyVerifyParent(req, res) {
+  const { id } = req.params;
+  try {
+    const user = await prisma.user.findUnique({ where: { id: parseInt(id) } });
+    if (!user || user.role !== "PARENT") return res.status(404).json({ error: "Parent not found" });
+
+    if (user.is_verified) {
+      return res.status(400).json({ error: "Parent email is already verified." });
+    }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { is_verified: true, verification_code: null, verification_expires_at: null },
+    });
+
+    await logAudit(req.user.id, "MANUAL_VERIFY", "PARENT", parseInt(id));
+
+    return res.json({ verified: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 // ─── Tax CSV export ───────────────────────────────────────────────────────────
 
 async function exportTaxData(req, res) {
@@ -1024,8 +1087,10 @@ async function manualRefund(req, res) {
     let stripeRefund;
     try {
       stripeRefund = await stripe.refunds.create({
-        charge: chargeId,
+        charge:                 chargeId,
         ...(isPartial ? { amount: Math.round(refundAmountValue * 100) } : {}),
+        refund_application_fee: true,
+        reverse_transfer:       booking.transfer_status !== 'completed',
       });
     } catch (stripeErr) {
       const code = stripeErr?.code;
@@ -1052,6 +1117,7 @@ async function manualRefund(req, res) {
         stripe_refund_id:    stripeRefund.id,
         refund_status:       stripeRefund.status,
         refund_amount:       refundAmountValue,
+        refunded_at:         new Date(),
       },
     });
 
@@ -1060,6 +1126,7 @@ async function manualRefund(req, res) {
       : `Full refund — ${reason || "Admin manual refund"}`;
 
     await logAudit(req.user.id, "MANUAL_REFUND", "BOOKING", booking.id, auditNote);
+    await logAudit(req.user.id, "REFUND_ISSUED", "PARENT", booking.parent_id, `Booking #${booking.id} · ${auditNote}`);
 
     // Fire-and-forget email notifications
     try {
@@ -1154,7 +1221,7 @@ async function listAllBookings(req, res) {
         take,
         include: {
           parent:  { select: { id: true, name: true, email: true } },
-          expert:  { select: { id: true, user: { select: { name: true, email: true } } } },
+          expert:  { select: { id: true, timezone: true, user: { select: { name: true, email: true } } } },
           service: { select: { title: true } },
         },
       }),
@@ -1177,8 +1244,9 @@ async function getBookingDetail(req, res) {
         parent:  { select: { id: true, name: true, email: true, phone: true } },
         expert:  {
           select: {
-            id:   true,
-            user: { select: { name: true, email: true } },
+            id:               true,
+            timezone:         true,
+            user:             { select: { name: true, email: true } },
             stripe_account_id: true,
           },
         },
@@ -1227,7 +1295,11 @@ async function adminCancelBooking(req, res) {
       }
       let stripeRefund = null;
       if (chargeId) {
-        stripeRefund = await stripe.refunds.create({ charge: chargeId });
+        stripeRefund = await stripe.refunds.create({
+          charge:                 chargeId,
+          refund_application_fee: true,
+          reverse_transfer:       booking.transfer_status !== 'completed',
+        });
       }
       const refundedAmount = parseFloat(booking.amount);
       await prisma.booking.update({
@@ -1241,6 +1313,7 @@ async function adminCancelBooking(req, res) {
             stripe_refund_id: stripeRefund.id,
             refund_status:    stripeRefund.status,
             refund_amount:    refundedAmount,
+            refunded_at:      new Date(),
           } : {}),
         },
       });
@@ -1294,6 +1367,7 @@ async function adminCancelBooking(req, res) {
     }
 
     await logAudit(req.user.id, "CANCEL_BOOKING", "BOOKING", booking.id, reason.trim());
+    await logAudit(req.user.id, "BOOKING_CANCELLED", "PARENT", booking.parent_id, `Booking #${booking.id} cancelled by admin — ${reason.trim()}`);
     return res.json({ success: true });
   } catch (err) {
     console.error("[ADMIN] adminCancelBooking error:", err);
@@ -1549,7 +1623,14 @@ async function gdprDeleteExpert(req, res) {
             chargeId = pi.latest_charge;
           }
           if (chargeId) {
-            await stripe.refunds.create({ charge: chargeId });
+            // Destination Charges: refund must originate from the expert's
+            // connected account via reverse_transfer, not from Sage Nest's
+            // platform balance. refund_application_fee returns our platform fee.
+            await stripe.refunds.create({
+              charge:                 chargeId,
+              refund_application_fee: true,
+              reverse_transfer:       booking.transfer_status !== 'completed',
+            });
           }
           await prisma.booking.update({
             where: { id: booking.id },
@@ -1814,7 +1895,7 @@ async function listParentBookings(req, res) {
         service: {
           select: { title: true, duration_minutes: true, price: true },
         },
-        expert: { select: { user: { select: { name: true } } } },
+        expert: { select: { timezone: true, user: { select: { name: true } } } },
       },
     });
     return res.json(bookings);
@@ -2313,4 +2394,7 @@ module.exports = {
   exportTransactionsCsv,
   approveProfileDraft,
   rejectProfileDraft,
+  sendParentPasswordReset,
+  resendParentVerification,
+  manuallyVerifyParent,
 };

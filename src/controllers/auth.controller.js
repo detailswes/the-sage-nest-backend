@@ -6,6 +6,7 @@ const path = require("path");
 const fs = require("fs");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
+const { logAudit } = require("../utils/auditLog");
 
 const UPLOADS_DIR = path.join(__dirname, "../../uploads");
 
@@ -402,6 +403,10 @@ async function login(req, res) {
       if (currentPp && (!lastAccepted || lastAccepted.version !== currentPp.version)) {
         ppUpdateRequired = true;
       }
+    }
+
+    if (user.role === 'PARENT') {
+      logAudit(user.id, 'LOGIN', 'PARENT', user.id);
     }
 
     return res.json({
