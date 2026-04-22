@@ -387,22 +387,20 @@ async function login(req, res) {
       maxAge: REFRESH_TOKEN_EXPIRES_MS,
     });
 
-    // Check if parent needs to re-accept an updated Privacy Policy
+    // Check if user needs to re-accept an updated Privacy Policy (all roles)
     let ppUpdateRequired = false;
-    if (user.role === "PARENT") {
-      const [currentPp, lastAccepted] = await Promise.all([
-        prisma.legalDocument.findFirst({
-          where: { type: "PRIVACY_POLICY" },
-          orderBy: { effective_from: "desc" },
-        }),
-        prisma.privacyPolicyAcceptance.findFirst({
-          where: { user_id: user.id },
-          orderBy: { accepted_at: "desc" },
-        }),
-      ]);
-      if (currentPp && (!lastAccepted || lastAccepted.version !== currentPp.version)) {
-        ppUpdateRequired = true;
-      }
+    const [currentPp, lastAccepted] = await Promise.all([
+      prisma.legalDocument.findFirst({
+        where: { type: "PRIVACY_POLICY" },
+        orderBy: { effective_from: "desc" },
+      }),
+      prisma.privacyPolicyAcceptance.findFirst({
+        where: { user_id: user.id },
+        orderBy: { accepted_at: "desc" },
+      }),
+    ]);
+    if (currentPp && (!lastAccepted || lastAccepted.version !== currentPp.version)) {
+      ppUpdateRequired = true;
     }
 
     if (user.role === 'PARENT') {
@@ -1240,6 +1238,30 @@ async function disable2FA(req, res) {
   }
 }
 
+// ─── Public: current legal document versions ─────────────────────────────────
+// Used by the public Privacy Policy and Terms & Conditions pages to display
+// the live version number and effective date without requiring authentication.
+async function getLegalVersions(req, res) {
+  try {
+    const [pp, tc] = await Promise.all([
+      prisma.legalDocument.findFirst({
+        where: { type: "PRIVACY_POLICY" },
+        orderBy: { effective_from: "desc" },
+        select: { version: true, effective_from: true },
+      }),
+      prisma.legalDocument.findFirst({
+        where: { type: "TERMS_CONDITIONS" },
+        orderBy: { effective_from: "desc" },
+        select: { version: true, effective_from: true },
+      }),
+    ]);
+    return res.json({ privacy_policy: pp, terms_conditions: tc });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 // ─── Accept Updated Privacy Policy ───────────────────────────────────────────
 async function acceptPrivacyPolicy(req, res) {
   try {
@@ -1280,6 +1302,7 @@ module.exports = {
   changePassword,
   deleteAccount,
   acceptPrivacyPolicy,
+  getLegalVersions,
   verifyOtp,
   resendOtp,
   get2FAStatus,

@@ -12,11 +12,13 @@ const {
   getCalendarBookings,
   markSessionLinkSent,
   verifyPayment,
+  getCurrentTcVersion,
 } = require('../controllers/booking.controller');
 
 router.use(authenticate);
 
 // ── Parent routes ─────────────────────────────────────────────────────────────
+router.get('/tc-version',      getCurrentTcVersion);     // GET    /bookings/tc-version
 router.post('/',               requireEmailVerified, createBooking); // POST   /bookings
 router.get('/my',              getMyBookings);           // GET    /bookings/my
 router.delete('/:id',          cancelBooking);           // DELETE /bookings/:id

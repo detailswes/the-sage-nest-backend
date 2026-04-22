@@ -760,6 +760,34 @@ async function expertCancelBooking(req, res) {
   }
 }
 
+// ─── GET /bookings/tc-version ─────────────────────────────────────────────────
+// Returns the current T&C version and whether this user's last accepted
+// version differs (so the frontend can show a "T&C updated" notice).
+async function getCurrentTcVersion(req, res) {
+  try {
+    const [currentTc, lastAccepted] = await Promise.all([
+      prisma.legalDocument.findFirst({
+        where: { type: 'TERMS_CONDITIONS' },
+        orderBy: { effective_from: 'desc' },
+      }),
+      prisma.tcAcceptance.findFirst({
+        where: { user_id: req.user.id },
+        orderBy: { accepted_at: 'desc' },
+      }),
+    ]);
+
+    return res.json({
+      version:         currentTc?.version ?? null,
+      version_updated: currentTc && lastAccepted
+                         ? lastAccepted.version !== currentTc.version
+                         : false,
+    });
+  } catch (err) {
+    console.error('[getCurrentTcVersion] Error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
 module.exports = {
   createBooking,
   getBookingById,
@@ -771,4 +799,5 @@ module.exports = {
   getUpcomingAppointments,
   getCalendarBookings,
   markSessionLinkSent,
+  getCurrentTcVersion,
 };

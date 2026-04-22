@@ -39,6 +39,8 @@ const {
   gdprDeleteParent,
   listTransactions,
   exportTransactionsCsv,
+  retryTransfer,
+  markTransferResolved,
   approveProfileDraft,
   rejectProfileDraft,
   sendParentPasswordReset,
@@ -91,8 +93,10 @@ router.get('/bookings/all',          listAllBookings);      // platform-wide lis
 router.get('/bookings/:id',          getBookingDetail);
 router.post('/bookings/:id/refund',  manualRefund);
 router.post('/bookings/:id/cancel',  adminCancelBooking);
-router.post('/bookings/:id/dispute', markBookingDisputed);
-router.put('/bookings/:id/note',     updateBookingNote);
+router.post('/bookings/:id/dispute',               markBookingDisputed);
+router.put('/bookings/:id/note',                   updateBookingNote);
+router.post('/bookings/:id/retry-transfer',        retryTransfer);
+router.post('/bookings/:id/mark-transfer-resolved', markTransferResolved);
 
 // ── Legal documents ───────────────────────────────────────────────────────────
 router.get('/legal-documents',      getLegalDocuments);

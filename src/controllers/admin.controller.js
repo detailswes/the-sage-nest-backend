@@ -1050,7 +1050,7 @@ async function manualRefund(req, res) {
     });
 
     if (!booking) return res.status(404).json({ error: "Booking not found" });
-    if (booking.status !== "CONFIRMED") {
+    if (!["CONFIRMED", "COMPLETED", "CANCELLED"].includes(booking.status)) {
       return res.status(400).json({
         error: `Booking cannot be refunded (status: ${booking.status})`,
       });
@@ -1106,13 +1106,22 @@ async function manualRefund(req, res) {
       return res.status(400).json({ error: stripeErr.message || "Stripe refund failed." });
     }
 
+    // CANCELLED bookings stay CANCELLED (session already cancelled, refund is supplementary).
+    // For CONFIRMED/COMPLETED: partial keeps CONFIRMED, full refund marks REFUNDED.
+    const newStatus = booking.status === "CANCELLED"
+      ? "CANCELLED"
+      : isPartial ? "CONFIRMED" : "REFUNDED";
+    const newCancellationReason = (isPartial || booking.status === "CANCELLED")
+      ? undefined
+      : (reason || "Admin manual refund");
+    const newCancelledAt = (isPartial || booking.status === "CANCELLED") ? undefined : new Date();
+
     await prisma.booking.update({
       where: { id: booking.id },
       data: {
-        // Partial refund keeps booking CONFIRMED; full refund marks it REFUNDED
-        status:              isPartial ? "CONFIRMED" : "REFUNDED",
-        cancellation_reason: isPartial ? undefined : (reason || "Admin manual refund"),
-        cancelled_at:        isPartial ? undefined : new Date(),
+        status:              newStatus,
+        cancellation_reason: newCancellationReason,
+        cancelled_at:        newCancelledAt,
         transfer_status:     "skipped",
         stripe_refund_id:    stripeRefund.id,
         refund_status:       stripeRefund.status,
@@ -1440,17 +1449,32 @@ async function updateBookingNote(req, res) {
 
 async function getLegalDocuments(req, res) {
   try {
-    const [pp, tc] = await Promise.all([
-      prisma.legalDocument.findFirst({
+    const [ppDocs, tcDocs, ppCounts, tcCounts] = await Promise.all([
+      prisma.legalDocument.findMany({
         where: { type: "PRIVACY_POLICY" },
         orderBy: { effective_from: "desc" },
       }),
-      prisma.legalDocument.findFirst({
+      prisma.legalDocument.findMany({
         where: { type: "TERMS_CONDITIONS" },
         orderBy: { effective_from: "desc" },
       }),
+      prisma.privacyPolicyAcceptance.groupBy({
+        by: ["version"],
+        _count: { version: true },
+      }),
+      prisma.tcAcceptance.groupBy({
+        by: ["version"],
+        _count: { version: true },
+      }),
     ]);
-    return res.json({ privacy_policy: pp, terms_conditions: tc });
+
+    const toMap  = (counts) => Object.fromEntries(counts.map((c) => [c.version, c._count.version]));
+    const enrich = (docs, countMap) => docs.map((d) => ({ ...d, accepted_count: countMap[d.version] ?? 0 }));
+
+    return res.json({
+      privacy_policy:   enrich(ppDocs, toMap(ppCounts)),
+      terms_conditions: enrich(tcDocs, toMap(tcCounts)),
+    });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -1479,14 +1503,24 @@ async function bumpLegalDocument(req, res) {
         .json({ error: `Version ${version} already exists for ${type}` });
     }
 
-    const doc = await prisma.legalDocument.create({
+    await prisma.legalDocument.create({
       data: { type, version: version.trim() },
     });
 
     console.log(
       `[ADMIN] Legal document bumped: ${type} → v${version} by admin ${req.user?.id}`
     );
-    return res.status(201).json(doc);
+
+    // Return the full enriched history for this type so the frontend can
+    // update its list state without a second round-trip.
+    const [allDocs, acceptanceCounts] = await Promise.all([
+      prisma.legalDocument.findMany({ where: { type }, orderBy: { effective_from: "desc" } }),
+      type === "PRIVACY_POLICY"
+        ? prisma.privacyPolicyAcceptance.groupBy({ by: ["version"], _count: { version: true } })
+        : prisma.tcAcceptance.groupBy({ by: ["version"], _count: { version: true } }),
+    ]);
+    const countMap = Object.fromEntries(acceptanceCounts.map((c) => [c.version, c._count.version]));
+    return res.status(201).json(allDocs.map((d) => ({ ...d, accepted_count: countMap[d.version] ?? 0 })));
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -2158,13 +2192,27 @@ function buildTransactionWhere({ payment_status, from, to, search } = {}) {
         where.stripe_payment_intent_id = { not: null };
         break;
       case "refunded":
-        where.status = "REFUNDED";
+        // Covers explicit REFUNDED status and CANCELLED bookings where payment was captured
+        where.AND = [
+          {
+            OR: [
+              { status: "REFUNDED" },
+              { status: "CANCELLED", stripe_payment_intent_id: { not: null } },
+            ],
+          },
+        ];
         break;
       case "pending":
         where.status = "PENDING_PAYMENT";
         break;
       case "failed":
+        // Only true payment failures: booking cancelled before any payment was captured
         where.status = "CANCELLED";
+        where.stripe_payment_intent_id = null;
+        break;
+      case "transfer_failed":
+        where.status = { in: ["CONFIRMED", "COMPLETED"] };
+        where.transfer_status = "failed";
         break;
     }
   }
@@ -2184,7 +2232,13 @@ function buildTransactionWhere({ payment_status, from, to, search } = {}) {
       { expert: { user: { name: { contains: term, mode: "insensitive" } } } },
     ];
     if (!isNaN(termInt)) orClauses.push({ id: termInt });
-    where.OR = orClauses;
+    // If a payment_status filter already uses where.AND (e.g. "refunded"), nest the
+    // search OR inside AND to avoid clobbering it at the top level
+    if (where.AND) {
+      where.AND.push({ OR: orClauses });
+    } else {
+      where.OR = orClauses;
+    }
   }
 
   return where;
@@ -2352,6 +2406,55 @@ async function rejectLanguage(req, res) {
   }
 }
 
+// ─── Transfer retry / manual resolution ──────────────────────────────────────
+
+async function retryTransfer(req, res) {
+  const { id } = req.params;
+  try {
+    const booking = await prisma.booking.findUnique({ where: { id: parseInt(id) } });
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (booking.transfer_status !== "failed") {
+      return res.status(400).json({ error: "Only failed transfers can be retried" });
+    }
+    if (!["CONFIRMED", "COMPLETED"].includes(booking.status)) {
+      return res.status(400).json({ error: "Booking must be CONFIRMED or COMPLETED to retry transfer" });
+    }
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: { transfer_status: "pending", transfer_attempts: 0 },
+    });
+    await logAudit(req.user.id, "RETRY_TRANSFER", "BOOKING", booking.id, "Transfer reset to pending by admin");
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[ADMIN] retryTransfer error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function markTransferResolved(req, res) {
+  const { id } = req.params;
+  const { note } = req.body;
+  try {
+    const booking = await prisma.booking.findUnique({ where: { id: parseInt(id) } });
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (booking.transfer_status !== "failed") {
+      return res.status(400).json({ error: "Only failed transfers can be marked resolved" });
+    }
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: {
+        transfer_status:    "resolved",
+        internal_admin_note: note?.trim() || booking.internal_admin_note,
+      },
+    });
+    await logAudit(req.user.id, "TRANSFER_RESOLVED", "BOOKING", booking.id, note?.trim() || "Marked resolved by admin");
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[ADMIN] markTransferResolved error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -2392,6 +2495,8 @@ module.exports = {
   gdprDeleteParent,
   listTransactions,
   exportTransactionsCsv,
+  retryTransfer,
+  markTransferResolved,
   approveProfileDraft,
   rejectProfileDraft,
   sendParentPasswordReset,

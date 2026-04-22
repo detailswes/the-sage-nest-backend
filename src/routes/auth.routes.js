@@ -5,12 +5,13 @@ const {
   verifyEmail, resendVerification,
   forgotPassword, resetPassword,
   getProfile, updateProfile, updateEmail, changePassword, deleteAccount,
-  acceptPrivacyPolicy,
+  acceptPrivacyPolicy, getLegalVersions,
   verifyOtp, resendOtp,
   get2FAStatus, sendSetupOtp, enable2FA, disable2FA,
 } = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth.middleware');
 
+router.get ('/legal-versions',       getLegalVersions);  // public — used by policy pages
 router.post('/register',            register);
 router.post('/login',               login);
 router.post('/refresh',             refresh);
