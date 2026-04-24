@@ -17,6 +17,10 @@ async function createConnectLink(req, res) {
     if (!accountId) {
       const account = await stripe.accounts.create({
         type: 'express',
+        capabilities: {
+          card_payments: { requested: true },
+          transfers:     { requested: true },
+        },
         settings: {
           payouts: { schedule: { interval: 'manual' } },
         },
@@ -27,11 +31,14 @@ async function createConnectLink(req, res) {
         data: { stripe_account_id: accountId },
       });
     } else {
-      // Ensure existing connected accounts have manual payouts so funds
-      // never auto-release to the expert's bank before we trigger the payout.
+      // Ensure existing connected accounts have manual payouts and capabilities requested.
       await stripe.accounts.update(accountId, {
+        capabilities: {
+          card_payments: { requested: true },
+          transfers:     { requested: true },
+        },
         settings: { payouts: { schedule: { interval: 'manual' } } },
-      }).catch((e) => console.error('[Stripe] payout schedule update failed:', e.message));
+      }).catch((e) => console.error('[Stripe] account update failed:', e.message));
     }
 
     const accountLink = await stripe.accountLinks.create({

@@ -1103,14 +1103,16 @@ async function manualRefund(req, res) {
       if (code === "insufficient_funds") {
         return res.status(400).json({ error: "Refund failed: insufficient funds in Stripe balance." });
       }
-      // Charge has no associated transfer (e.g. pre-Connect bookings or direct charges).
-      // Retry without reverse_transfer so the customer refund still goes through.
-      if (stripeErr?.message?.includes("does not have an associated transfer")) {
+      // Pre-Connect / legacy charges have no transfer and no application fee.
+      // Fall back to a bare refund so the customer still gets their money back.
+      const isLegacyChargeError =
+        stripeErr?.message?.includes("does not have an associated transfer") ||
+        stripeErr?.message?.includes("refund_application_fee");
+      if (isLegacyChargeError) {
         try {
           stripeRefund = await stripe.refunds.create({
-            charge:                 chargeId,
+            charge: chargeId,
             ...(isPartial ? { amount: Math.round(refundAmountValue * 100) } : {}),
-            refund_application_fee: true,
           });
         } catch (retryErr) {
           return res.status(400).json({ error: retryErr.message || "Stripe refund failed." });
@@ -1325,12 +1327,12 @@ async function adminCancelBooking(req, res) {
             reverse_transfer:       booking.transfer_status !== 'completed',
           });
         } catch (stripeErr) {
-          if (stripeErr?.message?.includes("does not have an associated transfer")) {
-            // Pre-Connect charge: no transfer to reverse — refund directly to customer.
-            stripeRefund = await stripe.refunds.create({
-              charge:                 chargeId,
-              refund_application_fee: true,
-            });
+          const isLegacyChargeError =
+            stripeErr?.message?.includes("does not have an associated transfer") ||
+            stripeErr?.message?.includes("refund_application_fee");
+          if (isLegacyChargeError) {
+            // Pre-Connect / legacy charge: no transfer or application fee — bare refund.
+            stripeRefund = await stripe.refunds.create({ charge: chargeId });
           } else {
             throw stripeErr;
           }
