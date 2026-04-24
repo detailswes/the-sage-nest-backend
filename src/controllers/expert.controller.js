@@ -7,6 +7,17 @@ const UPLOADS_DIR = path.join(__dirname, '../../uploads');
 
 const VALID_SESSION_FORMATS = ['ONLINE', 'IN_PERSON', 'BOTH'];
 
+// Fire-and-forget audit entry written on behalf of an expert (not an admin).
+// admin_id stores the expert's user_id — the User record exists so the name
+// resolves correctly in getAuditLog without any schema changes.
+async function logExpertEvent(userId, action, expertId, note = null) {
+  try {
+    await prisma.adminAuditLog.create({
+      data: { admin_id: userId, action, entity_type: 'EXPERT', entity_id: expertId, note },
+    });
+  } catch { /* non-fatal */ }
+}
+
 function isValidTimezone(tz) {
   try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return true; }
   catch { return false; }
@@ -144,13 +155,60 @@ async function updateMyProfile(req, res) {
   }
 
   try {
-    // If the expert was awaiting changes, saving any profile update resets them
-    // to PENDING so the admin queue picks them up again for review.
     const current = await prisma.expert.findUnique({
       where:  { user_id: req.user.id },
-      select: { status: true },
+      select: { id: true, status: true },
     });
-    const statusReset = current?.status === 'CHANGES_REQUESTED'
+    if (!current) return res.status(404).json({ error: 'Expert profile not found' });
+
+    // ── APPROVED experts: profile content changes go into a pending draft ────────
+    // Scheduling/operational settings (buffer_minutes etc.) always go live.
+    if (current.status === 'APPROVED') {
+      // Build draft data from the profile-content fields only
+      const draftData = {
+        ...(bio              !== undefined && { bio:              bio              || null }),
+        ...(expertise        !== undefined && { expertise:        expertise        || null }),
+        ...(summary          !== undefined && { summary:          summary          || null }),
+        ...(position         !== undefined && { position:         position         || null }),
+        ...(session_format   !== undefined && { session_format:   session_format   || null }),
+        ...(address_street   !== undefined && { address_street:   address_street   || null }),
+        ...(address_city     !== undefined && { address_city:     address_city     || null }),
+        ...(address_postcode !== undefined && { address_postcode: address_postcode || null }),
+        ...(parsedLanguages        !== undefined && { languages:         parsedLanguages }),
+        ...(parsedPendingLanguages !== undefined && { pending_languages: parsedPendingLanguages }),
+        ...(timezone  !== undefined && timezone !== null && timezone !== '' && { timezone }),
+        ...(instagram !== undefined && { instagram: instagram || null }),
+        ...(facebook  !== undefined && { facebook:  facebook  || null }),
+        ...(linkedin  !== undefined && { linkedin:  linkedin  || null }),
+      };
+
+      // Upsert the draft — replaces any existing rejected draft too
+      const draft = await prisma.expertProfileDraft.upsert({
+        where:  { expert_id: current.id },
+        create: { expert_id: current.id, ...draftData },
+        update: { ...draftData, status: 'PENDING_REVIEW', submitted_at: new Date(), reviewed_at: null, rejection_note: null },
+      });
+
+      // Apply scheduling settings directly to the live record (they are operational, not public-facing content)
+      if (buffer_minutes !== undefined || advance_booking_days !== undefined || min_notice_hours !== undefined) {
+        await prisma.expert.update({
+          where: { id: current.id },
+          data: {
+            ...(buffer_minutes       !== undefined && { buffer_minutes:       parseInt(buffer_minutes, 10) }),
+            ...(advance_booking_days !== undefined && { advance_booking_days: parseInt(advance_booking_days, 10) }),
+            ...(min_notice_hours     !== undefined && { min_notice_hours:     parseInt(min_notice_hours,     10) }),
+          },
+        });
+      }
+
+      logExpertEvent(req.user.id, 'EXPERT_PROFILE_DRAFT_SUBMITTED', current.id);
+      return res.json({ draft: true, profile_draft: draft });
+    }
+
+    // ── Non-APPROVED experts: save directly to live record (existing behaviour) ──
+    // If the expert was awaiting changes, saving resets them to PENDING.
+    const isResubmission = current.status === 'CHANGES_REQUESTED';
+    const statusReset = isResubmission
       ? { status: 'PENDING', change_request_note: null, change_requested_at: null }
       : {};
 
@@ -180,7 +238,30 @@ async function updateMyProfile(req, res) {
         ...(min_notice_hours     !== undefined && { min_notice_hours:     parseInt(min_notice_hours,     10) }),
       },
     });
+    logExpertEvent(
+      req.user.id,
+      isResubmission ? 'EXPERT_PROFILE_RESUBMITTED' : 'EXPERT_PROFILE_SAVED',
+      current.id,
+    );
     return res.json(expert);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+async function getMyProfileDraft(req, res) {
+  try {
+    const expert = await prisma.expert.findUnique({
+      where:  { user_id: req.user.id },
+      select: { id: true },
+    });
+    if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
+
+    const draft = await prisma.expertProfileDraft.findUnique({
+      where: { expert_id: expert.id },
+    });
+    return res.json(draft || null);
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Server error' });
@@ -621,4 +702,5 @@ module.exports = {
   saveInsurance,
   deleteInsurance,
   saveBusinessInfo,
+  getMyProfileDraft,
 };

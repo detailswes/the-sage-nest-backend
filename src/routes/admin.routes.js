@@ -39,6 +39,14 @@ const {
   gdprDeleteParent,
   listTransactions,
   exportTransactionsCsv,
+  getRefundLog,
+  retryTransfer,
+  markTransferResolved,
+  approveProfileDraft,
+  rejectProfileDraft,
+  sendParentPasswordReset,
+  resendParentVerification,
+  manuallyVerifyParent,
 } = require('../controllers/admin.controller');
 
 // ── Public routes (no auth required) ─────────────────────────────────────────
@@ -61,6 +69,10 @@ router.post('/experts/:id/request-changes', requestChanges);   // send revision 
 router.post('/experts/:id/unpublish',        unpublishExpert);  // hide from parent search (APPROVED only)
 router.post('/experts/:id/republish',        republishExpert);  // restore to parent search
 
+// ── Profile draft review ──────────────────────────────────────────────────────
+router.post('/experts/:id/draft/approve', approveProfileDraft);
+router.post('/experts/:id/draft/reject',  rejectProfileDraft);
+
 // ── Support tools ─────────────────────────────────────────────────────────────
 router.post('/experts/:id/send-password-reset',  sendPasswordReset);
 router.post('/experts/:id/resend-verification',  resendVerification);
@@ -82,8 +94,10 @@ router.get('/bookings/all',          listAllBookings);      // platform-wide lis
 router.get('/bookings/:id',          getBookingDetail);
 router.post('/bookings/:id/refund',  manualRefund);
 router.post('/bookings/:id/cancel',  adminCancelBooking);
-router.post('/bookings/:id/dispute', markBookingDisputed);
-router.put('/bookings/:id/note',     updateBookingNote);
+router.post('/bookings/:id/dispute',               markBookingDisputed);
+router.put('/bookings/:id/note',                   updateBookingNote);
+router.post('/bookings/:id/retry-transfer',        retryTransfer);
+router.post('/bookings/:id/mark-transfer-resolved', markTransferResolved);
 
 // ── Legal documents ───────────────────────────────────────────────────────────
 router.get('/legal-documents',      getLegalDocuments);
@@ -101,6 +115,11 @@ router.get('/parents/:id', getParentDetail);
 // ── Parent bookings ───────────────────────────────────────────────────────────
 router.get('/parents/:id/bookings', listParentBookings);
 
+// ── Parent support tools ──────────────────────────────────────────────────────
+router.post('/parents/:id/send-password-reset', sendParentPasswordReset);
+router.post('/parents/:id/resend-verification', resendParentVerification);
+router.post('/parents/:id/verify',              manuallyVerifyParent);
+
 // ── Parent status actions ─────────────────────────────────────────────────────
 router.post('/parents/:id/activate',   activateParent);
 router.post('/parents/:id/deactivate', deactivateParent);
@@ -112,5 +131,6 @@ router.post('/parents/:id/gdpr-delete', gdprDeleteParent);
 // ── Transactions (Payment Overview) ──────────────────────────────────────────
 router.get('/transactions',        listTransactions);
 router.get('/transactions/export', exportTransactionsCsv);
+router.get('/refund-log',          getRefundLog);
 
 module.exports = router;

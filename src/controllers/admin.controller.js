@@ -2,6 +2,7 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { decryptIban } = require("../utils/encryption");
+const { logAudit }   = require("../utils/auditLog");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
 const {
@@ -46,26 +47,6 @@ function deleteFile(fileUrl) {
     try {
       fs.unlinkSync(filePath);
     } catch (_) {}
-  }
-}
-
-/**
- * Write one row to AdminAuditLog. Fire-and-forget — never throws.
- * admin_id has no FK constraint so logs survive GDPR-deleted admin accounts.
- */
-async function logAudit(adminId, action, entityType, entityId, note = null) {
-  try {
-    await prisma.adminAuditLog.create({
-      data: {
-        admin_id: adminId,
-        action,
-        entity_type: entityType,
-        entity_id: entityId,
-        note,
-      },
-    });
-  } catch (err) {
-    console.error("[AUDIT] Failed to write audit log:", err.message);
   }
 }
 
@@ -173,6 +154,46 @@ async function listExperts(req, res) {
 
       data.forEach((e) => {
         if (e.business_info?.iban) e.business_info.iban = decryptIban(e.business_info.iban);
+      });
+
+      // DAC7 threshold flags — single batch query for all experts on this page.
+      const dac7Year = new Date().getFullYear();
+      const dac7From = new Date(`${dac7Year}-01-01T00:00:00.000Z`);
+      const dac7To   = new Date(`${dac7Year + 1}-01-01T00:00:00.000Z`);
+      const dac7Stats = await prisma.booking.groupBy({
+        by:    ["expert_id"],
+        where: {
+          expert_id:    { in: data.map((e) => e.id) },
+          status:       { in: ["CONFIRMED", "COMPLETED"] },
+          scheduled_at: { gte: dac7From, lt: dac7To },
+        },
+        _count: { id: true },
+        _sum:   { amount: true },
+      });
+      const dac7Map = new Map(dac7Stats.map((s) => [s.expert_id, s]));
+
+      // Pending payout flags — one batch query for all experts on this page.
+      const payoutStats = await prisma.booking.groupBy({
+        by:    ["expert_id"],
+        where: {
+          expert_id:       { in: data.map((e) => e.id) },
+          transfer_status: "pending",
+        },
+        _count: { id: true },
+      });
+      const payoutMap = new Map(payoutStats.map((s) => [s.expert_id, s._count.id]));
+
+      data.forEach((e) => {
+        const s       = dac7Map.get(e.id);
+        const txCount = s?._count?.id ?? 0;
+        const gross   = parseFloat(s?._sum?.amount ?? 0);
+        e.dac7 = {
+          year:              dac7Year,
+          transaction_count: txCount,
+          gross_earnings:    gross,
+          threshold_reached: txCount >= 30 || gross >= 2000,
+        };
+        e.pending_payout_count = payoutMap.get(e.id) ?? 0;
       });
 
       return res.json({
@@ -416,6 +437,22 @@ async function requestChanges(req, res) {
 }
 
 // ─── Publish / unpublish ──────────────────────────────────────────────────────
+//
+// Force Unpublish sets is_published = false on an APPROVED expert.
+// Effect: expert is hidden from parent search/browse (listExperts filters on
+//   is_published = true). Status stays APPROVED. Sessions are not invalidated.
+//   The expert retains full login access and their dashboard is unaffected.
+//   Existing and future bookings are not touched — sessions proceed normally.
+//
+// NOTE: createBooking does not check is_published, so a parent with a direct
+//   link can still book an unpublished expert. If blocking all new bookings is
+//   required, add an is_published guard to createBooking.
+//
+// Reinstatement: republishExpert (sets is_published = true). Requires
+//   status = APPROVED; if the expert was subsequently suspended, reactivate first.
+//
+// vs Suspend: Suspend changes status → SUSPENDED and invalidates all sessions.
+//   Use Suspend to prevent login. Use Unpublish only to remove from search.
 
 async function unpublishExpert(req, res) {
   const { id } = req.params;
@@ -602,6 +639,88 @@ async function manuallyVerify(req, res) {
   }
 }
 
+// ─── Parent support tools ─────────────────────────────────────────────────────
+
+async function sendParentPasswordReset(req, res) {
+  const { id } = req.params;
+  try {
+    const user = await prisma.user.findUnique({ where: { id: parseInt(id) } });
+    if (!user || user.role !== "PARENT") return res.status(404).json({ error: "Parent not found" });
+
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const resetTokenExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { reset_token: resetToken, reset_token_expires_at: resetTokenExpiresAt },
+    });
+
+    sendPasswordResetEmail({ to: user.email, name: user.name, resetToken })
+      .catch((err) => console.error("Failed to send parent password reset email:", err.message));
+
+    await logAudit(req.user.id, "SEND_PASSWORD_RESET", "PARENT", parseInt(id));
+
+    return res.json({ sent: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function resendParentVerification(req, res) {
+  const { id } = req.params;
+  try {
+    const user = await prisma.user.findUnique({ where: { id: parseInt(id) } });
+    if (!user || user.role !== "PARENT") return res.status(404).json({ error: "Parent not found" });
+
+    if (user.is_verified) {
+      return res.status(400).json({ error: "Parent email is already verified." });
+    }
+
+    const verificationCode = crypto.randomBytes(32).toString("hex");
+    const verificationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { verification_code: verificationCode, verification_expires_at: verificationExpiresAt },
+    });
+
+    sendVerificationEmail({ to: user.email, name: user.name, userId: user.id, verificationCode })
+      .catch((err) => console.error("Failed to resend parent verification email:", err.message));
+
+    await logAudit(req.user.id, "RESEND_VERIFICATION", "PARENT", parseInt(id));
+
+    return res.json({ sent: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function manuallyVerifyParent(req, res) {
+  const { id } = req.params;
+  try {
+    const user = await prisma.user.findUnique({ where: { id: parseInt(id) } });
+    if (!user || user.role !== "PARENT") return res.status(404).json({ error: "Parent not found" });
+
+    if (user.is_verified) {
+      return res.status(400).json({ error: "Parent email is already verified." });
+    }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { is_verified: true, verification_code: null, verification_expires_at: null },
+    });
+
+    await logAudit(req.user.id, "MANUAL_VERIFY", "PARENT", parseInt(id));
+
+    return res.json({ verified: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 // ─── Tax CSV export ───────────────────────────────────────────────────────────
 
 async function exportTaxData(req, res) {
@@ -683,7 +802,6 @@ async function exportTaxData(req, res) {
         csv += line("Company Reg. Number", bi.company_reg_number);
       csv += line("IBAN", decryptIban(bi.iban));
       csv += line("Business Email", bi.business_email);
-      csv += line("Website", bi.website);
       if (bi.municipality) csv += line("Municipality", bi.municipality);
       if (bi.business_address)
         csv += line("Business Address", bi.business_address);
@@ -775,6 +893,7 @@ async function getExpertDetail(req, res) {
         insurance: true,
         business_info: true,
         services: { orderBy: { sort_order: "asc" } },
+        profile_draft: true,
         _count: { select: { bookings: true } },
       },
     });
@@ -782,7 +901,108 @@ async function getExpertDetail(req, res) {
     if (expert.business_info?.iban) {
       expert.business_info.iban = decryptIban(expert.business_info.iban);
     }
+
+    // DAC7 threshold check for the current calendar year.
+    // Threshold: 30+ qualifying transactions OR gross earnings >= 2,000 (GBP, as
+    // booked amounts are stored in GBP — confirm EUR equivalence with tax adviser).
+    const dac7Year = new Date().getFullYear();
+    const dac7From = new Date(`${dac7Year}-01-01T00:00:00.000Z`);
+    const dac7To   = new Date(`${dac7Year + 1}-01-01T00:00:00.000Z`);
+    const dac7Agg  = await prisma.booking.aggregate({
+      where: {
+        expert_id: expert.id,
+        status:    { in: ["CONFIRMED", "COMPLETED"] },
+        scheduled_at: { gte: dac7From, lt: dac7To },
+      },
+      _count: { id: true },
+      _sum:   { amount: true },
+    });
+    const dac7TxCount = dac7Agg._count.id;
+    const dac7Gross   = parseFloat(dac7Agg._sum.amount ?? 0);
+    const byTx       = dac7TxCount >= 30;
+    const byEarnings = dac7Gross   >= 2000;
+    expert.dac7 = {
+      year:              dac7Year,
+      transaction_count: dac7TxCount,
+      gross_earnings:    dac7Gross,
+      threshold_reached: byTx || byEarnings,
+      threshold_reason:  byTx && byEarnings ? "both"
+                       : byTx              ? "transactions"
+                       : byEarnings        ? "earnings"
+                       : null,
+    };
+
+    expert.pending_payout_count = await prisma.booking.count({
+      where: { expert_id: expert.id, transfer_status: "pending" },
+    });
+
     return res.json(expert);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Profile draft review ─────────────────────────────────────────────────────
+
+async function approveProfileDraft(req, res) {
+  const { id } = req.params;
+  try {
+    const expert = await prisma.expert.findUnique({
+      where: { id: parseInt(id) },
+      include: { profile_draft: true },
+    });
+    if (!expert) return res.status(404).json({ error: "Expert not found" });
+    const draft = expert.profile_draft;
+    if (!draft) return res.status(404).json({ error: "No pending draft found" });
+
+    // Merge draft fields onto live expert record
+    const {
+      bio, summary, position, session_format, address_street, address_city,
+      address_postcode, languages, pending_languages, timezone, instagram,
+      facebook, linkedin, expertise,
+    } = draft;
+
+    await prisma.$transaction([
+      prisma.expert.update({
+        where: { id: parseInt(id) },
+        data: {
+          bio, summary, position, session_format, address_street, address_city,
+          address_postcode, languages, pending_languages, timezone, instagram,
+          facebook, linkedin, expertise,
+        },
+      }),
+      prisma.expertProfileDraft.delete({ where: { expert_id: parseInt(id) } }),
+    ]);
+
+    await logAudit(req.user.id, "APPROVE_PROFILE_DRAFT", "Expert", parseInt(id));
+    return res.json({ message: "Draft approved and published" });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function rejectProfileDraft(req, res) {
+  const { id } = req.params;
+  const { note } = req.body;
+  try {
+    const draft = await prisma.expertProfileDraft.findUnique({
+      where: { expert_id: parseInt(id) },
+    });
+    if (!draft) return res.status(404).json({ error: "No pending draft found" });
+
+    await prisma.expertProfileDraft.update({
+      where: { expert_id: parseInt(id) },
+      data: {
+        status: "REJECTED",
+        rejection_note: note || null,
+        reviewed_at: new Date(),
+      },
+    });
+
+    await logAudit(req.user.id, "REJECT_PROFILE_DRAFT", "Expert", parseInt(id), note);
+    return res.json({ message: "Draft rejected" });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -830,7 +1050,7 @@ async function manualRefund(req, res) {
     });
 
     if (!booking) return res.status(404).json({ error: "Booking not found" });
-    if (booking.status !== "CONFIRMED") {
+    if (!["CONFIRMED", "COMPLETED", "CANCELLED"].includes(booking.status)) {
       return res.status(400).json({
         error: `Booking cannot be refunded (status: ${booking.status})`,
       });
@@ -867,8 +1087,10 @@ async function manualRefund(req, res) {
     let stripeRefund;
     try {
       stripeRefund = await stripe.refunds.create({
-        charge: chargeId,
+        charge:                 chargeId,
         ...(isPartial ? { amount: Math.round(refundAmountValue * 100) } : {}),
+        refund_application_fee: true,
+        reverse_transfer:       booking.transfer_status !== 'completed',
       });
     } catch (stripeErr) {
       const code = stripeErr?.code;
@@ -884,17 +1106,27 @@ async function manualRefund(req, res) {
       return res.status(400).json({ error: stripeErr.message || "Stripe refund failed." });
     }
 
+    // CANCELLED bookings stay CANCELLED (session already cancelled, refund is supplementary).
+    // For CONFIRMED/COMPLETED: partial keeps CONFIRMED, full refund marks REFUNDED.
+    const newStatus = booking.status === "CANCELLED"
+      ? "CANCELLED"
+      : isPartial ? "CONFIRMED" : "REFUNDED";
+    const newCancellationReason = (isPartial || booking.status === "CANCELLED")
+      ? undefined
+      : (reason || "Admin manual refund");
+    const newCancelledAt = (isPartial || booking.status === "CANCELLED") ? undefined : new Date();
+
     await prisma.booking.update({
       where: { id: booking.id },
       data: {
-        // Partial refund keeps booking CONFIRMED; full refund marks it REFUNDED
-        status:              isPartial ? "CONFIRMED" : "REFUNDED",
-        cancellation_reason: isPartial ? undefined : (reason || "Admin manual refund"),
-        cancelled_at:        isPartial ? undefined : new Date(),
+        status:              newStatus,
+        cancellation_reason: newCancellationReason,
+        cancelled_at:        newCancelledAt,
         transfer_status:     "skipped",
         stripe_refund_id:    stripeRefund.id,
         refund_status:       stripeRefund.status,
         refund_amount:       refundAmountValue,
+        refunded_at:         new Date(),
       },
     });
 
@@ -903,6 +1135,7 @@ async function manualRefund(req, res) {
       : `Full refund — ${reason || "Admin manual refund"}`;
 
     await logAudit(req.user.id, "MANUAL_REFUND", "BOOKING", booking.id, auditNote);
+    await logAudit(req.user.id, "REFUND_ISSUED", "PARENT", booking.parent_id, `Booking #${booking.id} · ${auditNote}`);
 
     // Fire-and-forget email notifications
     try {
@@ -997,7 +1230,7 @@ async function listAllBookings(req, res) {
         take,
         include: {
           parent:  { select: { id: true, name: true, email: true } },
-          expert:  { select: { id: true, user: { select: { name: true, email: true } } } },
+          expert:  { select: { id: true, timezone: true, user: { select: { name: true, email: true } } } },
           service: { select: { title: true } },
         },
       }),
@@ -1020,8 +1253,9 @@ async function getBookingDetail(req, res) {
         parent:  { select: { id: true, name: true, email: true, phone: true } },
         expert:  {
           select: {
-            id:   true,
-            user: { select: { name: true, email: true } },
+            id:               true,
+            timezone:         true,
+            user:             { select: { name: true, email: true } },
             stripe_account_id: true,
           },
         },
@@ -1070,7 +1304,11 @@ async function adminCancelBooking(req, res) {
       }
       let stripeRefund = null;
       if (chargeId) {
-        stripeRefund = await stripe.refunds.create({ charge: chargeId });
+        stripeRefund = await stripe.refunds.create({
+          charge:                 chargeId,
+          refund_application_fee: true,
+          reverse_transfer:       booking.transfer_status !== 'completed',
+        });
       }
       const refundedAmount = parseFloat(booking.amount);
       await prisma.booking.update({
@@ -1084,6 +1322,7 @@ async function adminCancelBooking(req, res) {
             stripe_refund_id: stripeRefund.id,
             refund_status:    stripeRefund.status,
             refund_amount:    refundedAmount,
+            refunded_at:      new Date(),
           } : {}),
         },
       });
@@ -1137,6 +1376,7 @@ async function adminCancelBooking(req, res) {
     }
 
     await logAudit(req.user.id, "CANCEL_BOOKING", "BOOKING", booking.id, reason.trim());
+    await logAudit(req.user.id, "BOOKING_CANCELLED", "PARENT", booking.parent_id, `Booking #${booking.id} cancelled by admin — ${reason.trim()}`);
     return res.json({ success: true });
   } catch (err) {
     console.error("[ADMIN] adminCancelBooking error:", err);
@@ -1209,17 +1449,32 @@ async function updateBookingNote(req, res) {
 
 async function getLegalDocuments(req, res) {
   try {
-    const [pp, tc] = await Promise.all([
-      prisma.legalDocument.findFirst({
+    const [ppDocs, tcDocs, ppCounts, tcCounts] = await Promise.all([
+      prisma.legalDocument.findMany({
         where: { type: "PRIVACY_POLICY" },
         orderBy: { effective_from: "desc" },
       }),
-      prisma.legalDocument.findFirst({
+      prisma.legalDocument.findMany({
         where: { type: "TERMS_CONDITIONS" },
         orderBy: { effective_from: "desc" },
       }),
+      prisma.privacyPolicyAcceptance.groupBy({
+        by: ["version"],
+        _count: { version: true },
+      }),
+      prisma.tcAcceptance.groupBy({
+        by: ["version"],
+        _count: { version: true },
+      }),
     ]);
-    return res.json({ privacy_policy: pp, terms_conditions: tc });
+
+    const toMap  = (counts) => Object.fromEntries(counts.map((c) => [c.version, c._count.version]));
+    const enrich = (docs, countMap) => docs.map((d) => ({ ...d, accepted_count: countMap[d.version] ?? 0 }));
+
+    return res.json({
+      privacy_policy:   enrich(ppDocs, toMap(ppCounts)),
+      terms_conditions: enrich(tcDocs, toMap(tcCounts)),
+    });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -1248,14 +1503,24 @@ async function bumpLegalDocument(req, res) {
         .json({ error: `Version ${version} already exists for ${type}` });
     }
 
-    const doc = await prisma.legalDocument.create({
+    await prisma.legalDocument.create({
       data: { type, version: version.trim() },
     });
 
     console.log(
       `[ADMIN] Legal document bumped: ${type} → v${version} by admin ${req.user?.id}`
     );
-    return res.status(201).json(doc);
+
+    // Return the full enriched history for this type so the frontend can
+    // update its list state without a second round-trip.
+    const [allDocs, acceptanceCounts] = await Promise.all([
+      prisma.legalDocument.findMany({ where: { type }, orderBy: { effective_from: "desc" } }),
+      type === "PRIVACY_POLICY"
+        ? prisma.privacyPolicyAcceptance.groupBy({ by: ["version"], _count: { version: true } })
+        : prisma.tcAcceptance.groupBy({ by: ["version"], _count: { version: true } }),
+    ]);
+    const countMap = Object.fromEntries(acceptanceCounts.map((c) => [c.version, c._count.version]));
+    return res.status(201).json(allDocs.map((d) => ({ ...d, accepted_count: countMap[d.version] ?? 0 })));
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -1364,6 +1629,19 @@ async function gdprDeleteExpert(req, res) {
       });
     }
 
+    // Hard block: pending payouts must clear before the account can be erased.
+    // Deleting an account with a pending payout would cause the expert to lose
+    // earned income with no recourse.
+    const pendingPayoutCount = await prisma.booking.count({
+      where: { expert_id: expert.id, transfer_status: "pending" },
+    });
+    if (pendingPayoutCount > 0) {
+      return res.status(409).json({
+        error: `This account cannot be deleted until all pending payouts have cleared. ${pendingPayoutCount} payout${pendingPayoutCount !== 1 ? "s are" : " is"} still pending.`,
+        code: "PENDING_PAYOUTS",
+      });
+    }
+
     // ── 1. Cancel future bookings and refund where payment was captured ────────
     for (const booking of expert.bookings) {
       try {
@@ -1379,7 +1657,14 @@ async function gdprDeleteExpert(req, res) {
             chargeId = pi.latest_charge;
           }
           if (chargeId) {
-            await stripe.refunds.create({ charge: chargeId });
+            // Destination Charges: refund must originate from the expert's
+            // connected account via reverse_transfer, not from Sage Nest's
+            // platform balance. refund_application_fee returns our platform fee.
+            await stripe.refunds.create({
+              charge:                 chargeId,
+              refund_application_fee: true,
+              reverse_transfer:       booking.transfer_status !== 'completed',
+            });
           }
           await prisma.booking.update({
             where: { id: booking.id },
@@ -1644,7 +1929,7 @@ async function listParentBookings(req, res) {
         service: {
           select: { title: true, duration_minutes: true, price: true },
         },
-        expert: { select: { user: { select: { name: true } } } },
+        expert: { select: { timezone: true, user: { select: { name: true } } } },
       },
     });
     return res.json(bookings);
@@ -1907,13 +2192,27 @@ function buildTransactionWhere({ payment_status, from, to, search } = {}) {
         where.stripe_payment_intent_id = { not: null };
         break;
       case "refunded":
-        where.status = "REFUNDED";
+        // Covers explicit REFUNDED status and CANCELLED bookings where payment was captured
+        where.AND = [
+          {
+            OR: [
+              { status: "REFUNDED" },
+              { status: "CANCELLED", stripe_payment_intent_id: { not: null } },
+            ],
+          },
+        ];
         break;
       case "pending":
         where.status = "PENDING_PAYMENT";
         break;
       case "failed":
+        // Only true payment failures: booking cancelled before any payment was captured
         where.status = "CANCELLED";
+        where.stripe_payment_intent_id = null;
+        break;
+      case "transfer_failed":
+        where.status = { in: ["CONFIRMED", "COMPLETED"] };
+        where.transfer_status = "failed";
         break;
     }
   }
@@ -1933,7 +2232,13 @@ function buildTransactionWhere({ payment_status, from, to, search } = {}) {
       { expert: { user: { name: { contains: term, mode: "insensitive" } } } },
     ];
     if (!isNaN(termInt)) orClauses.push({ id: termInt });
-    where.OR = orClauses;
+    // If a payment_status filter already uses where.AND (e.g. "refunded"), nest the
+    // search OR inside AND to avoid clobbering it at the top level
+    if (where.AND) {
+      where.AND.push({ OR: orClauses });
+    } else {
+      where.OR = orClauses;
+    }
   }
 
   return where;
@@ -2101,6 +2406,119 @@ async function rejectLanguage(req, res) {
   }
 }
 
+// ─── Refund audit log ─────────────────────────────────────────────────────────
+
+async function getRefundLog(req, res) {
+  const page  = Math.max(1, parseInt(req.query.page)  || 1);
+  const limit = Math.min(50, parseInt(req.query.limit) || 25);
+  const skip  = (page - 1) * limit;
+
+  try {
+    const [total, logs] = await Promise.all([
+      prisma.adminAuditLog.count({ where: { action: "MANUAL_REFUND" } }),
+      prisma.adminAuditLog.findMany({
+        where:   { action: "MANUAL_REFUND" },
+        orderBy: { created_at: "desc" },
+        skip,
+        take: limit,
+      }),
+    ]);
+
+    // Enrich with booking data (refund_amount, stripe_refund_id, original amount, parent)
+    const bookingIds = [...new Set(logs.map((l) => l.entity_id).filter(Boolean))];
+    const bookings = bookingIds.length
+      ? await prisma.booking.findMany({
+          where:  { id: { in: bookingIds } },
+          select: {
+            id:              true,
+            amount:          true,
+            refund_amount:   true,
+            stripe_refund_id: true,
+            parent: { select: { name: true } },
+          },
+        })
+      : [];
+    const bookingMap = Object.fromEntries(bookings.map((b) => [b.id, b]));
+
+    // Resolve admin names (no FK — intentional, survives account deletion)
+    const adminIds = [...new Set(logs.map((l) => l.admin_id).filter(Boolean))];
+    const admins = adminIds.length
+      ? await prisma.user.findMany({
+          where:  { id: { in: adminIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const adminMap = Object.fromEntries(admins.map((a) => [a.id, a.name]));
+
+    const enriched = logs.map((l) => ({
+      id:              l.id,
+      created_at:      l.created_at,
+      admin_id:        l.admin_id,
+      admin_name:      adminMap[l.admin_id] || "Unknown",
+      booking_id:      l.entity_id,
+      note:            l.note,
+      booking:         bookingMap[l.entity_id] || null,
+    }));
+
+    return res.json({
+      data: enriched,
+      pagination: { total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) },
+    });
+  } catch (err) {
+    console.error("[ADMIN] getRefundLog error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Transfer retry / manual resolution ──────────────────────────────────────
+
+async function retryTransfer(req, res) {
+  const { id } = req.params;
+  try {
+    const booking = await prisma.booking.findUnique({ where: { id: parseInt(id) } });
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (booking.transfer_status !== "failed") {
+      return res.status(400).json({ error: "Only failed transfers can be retried" });
+    }
+    if (!["CONFIRMED", "COMPLETED"].includes(booking.status)) {
+      return res.status(400).json({ error: "Booking must be CONFIRMED or COMPLETED to retry transfer" });
+    }
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: { transfer_status: "pending", transfer_attempts: 0 },
+    });
+    await logAudit(req.user.id, "RETRY_TRANSFER", "BOOKING", booking.id, "Transfer reset to pending by admin");
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[ADMIN] retryTransfer error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function markTransferResolved(req, res) {
+  const { id } = req.params;
+  const { note } = req.body;
+  try {
+    const booking = await prisma.booking.findUnique({ where: { id: parseInt(id) } });
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (booking.transfer_status !== "failed") {
+      return res.status(400).json({ error: "Only failed transfers can be marked resolved" });
+    }
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: {
+        transfer_status:    "resolved",
+        internal_admin_note: note?.trim() || booking.internal_admin_note,
+      },
+    });
+    await logAudit(req.user.id, "TRANSFER_RESOLVED", "BOOKING", booking.id, note?.trim() || "Marked resolved by admin");
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[ADMIN] markTransferResolved error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -2141,4 +2559,12 @@ module.exports = {
   gdprDeleteParent,
   listTransactions,
   exportTransactionsCsv,
+  getRefundLog,
+  retryTransfer,
+  markTransferResolved,
+  approveProfileDraft,
+  rejectProfileDraft,
+  sendParentPasswordReset,
+  resendParentVerification,
+  manuallyVerifyParent,
 };

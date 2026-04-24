@@ -84,29 +84,34 @@ async function runTransfers() {
       continue;
     }
 
-    // ── Create the Stripe transfer ──────────────────────────────────────────
+    // ── Trigger bank payout from the expert's connected account ───────────
+    // With Destination Charges the funds already landed in the expert's Stripe
+    // balance at payment time. Their account has a manual payout schedule, so
+    // we release those funds to their bank 24 h after the session ends by
+    // creating a payout *on their account* via the stripeAccount header.
     try {
-      const transfer = await stripe.transfers.create({
-        amount:             expertAmountPence,
-        currency:           'gbp',
-        destination:        expertStripeId,
-        transfer_group:     String(booking.id),
-        source_transaction: booking.stripe_charge_id,
-        description:        `Payout for booking #${booking.id}`,
-      });
+      const payout = await stripe.payouts.create(
+        {
+          amount:      expertAmountPence,
+          currency:    'gbp',
+          description: `Payout for booking #${booking.id}`,
+          metadata:    { booking_id: String(booking.id) },
+        },
+        { stripeAccount: expertStripeId }
+      );
 
       await prisma.booking.update({
         where: { id: booking.id },
         data: {
-          transfer_status:   'completed',
-          stripe_transfer_id: transfer.id,
+          transfer_status:  'completed',
+          stripe_payout_id: payout.id,
           transfer_attempts: { increment: 1 },
         },
       });
 
       console.log(
-        `[Transfers] Booking ${booking.id} → transfer ${transfer.id} ` +
-        `(${expertAmountPence}p to ${expertStripeId}) ✓`
+        `[Transfers] Booking ${booking.id} → payout ${payout.id} ` +
+        `(${expertAmountPence}p from ${expertStripeId} to bank) ✓`
       );
 
     } catch (stripeErr) {
