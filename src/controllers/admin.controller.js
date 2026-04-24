@@ -1081,7 +1081,7 @@ async function manualRefund(req, res) {
       chargeId = pi.latest_charge;
     }
     if (!chargeId) {
-      return res.status(400).json({ error: "Could not locate charge for this booking" });
+      return res.status(400).json({ error: "No payment was captured for this booking — it can be cancelled without a refund. Use the cancel action instead." });
     }
 
     let stripeRefund;
@@ -1103,7 +1103,21 @@ async function manualRefund(req, res) {
       if (code === "insufficient_funds") {
         return res.status(400).json({ error: "Refund failed: insufficient funds in Stripe balance." });
       }
-      return res.status(400).json({ error: stripeErr.message || "Stripe refund failed." });
+      // Charge has no associated transfer (e.g. pre-Connect bookings or direct charges).
+      // Retry without reverse_transfer so the customer refund still goes through.
+      if (stripeErr?.message?.includes("does not have an associated transfer")) {
+        try {
+          stripeRefund = await stripe.refunds.create({
+            charge:                 chargeId,
+            ...(isPartial ? { amount: Math.round(refundAmountValue * 100) } : {}),
+            refund_application_fee: true,
+          });
+        } catch (retryErr) {
+          return res.status(400).json({ error: retryErr.message || "Stripe refund failed." });
+        }
+      } else {
+        return res.status(400).json({ error: stripeErr.message || "Stripe refund failed." });
+      }
     }
 
     // CANCELLED bookings stay CANCELLED (session already cancelled, refund is supplementary).
@@ -1304,11 +1318,23 @@ async function adminCancelBooking(req, res) {
       }
       let stripeRefund = null;
       if (chargeId) {
-        stripeRefund = await stripe.refunds.create({
-          charge:                 chargeId,
-          refund_application_fee: true,
-          reverse_transfer:       booking.transfer_status !== 'completed',
-        });
+        try {
+          stripeRefund = await stripe.refunds.create({
+            charge:                 chargeId,
+            refund_application_fee: true,
+            reverse_transfer:       booking.transfer_status !== 'completed',
+          });
+        } catch (stripeErr) {
+          if (stripeErr?.message?.includes("does not have an associated transfer")) {
+            // Pre-Connect charge: no transfer to reverse — refund directly to customer.
+            stripeRefund = await stripe.refunds.create({
+              charge:                 chargeId,
+              refund_application_fee: true,
+            });
+          } else {
+            throw stripeErr;
+          }
+        }
       }
       const refundedAmount = parseFloat(booking.amount);
       await prisma.booking.update({
