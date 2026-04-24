@@ -60,6 +60,7 @@ const bookingReminderEmailHtml = ({
       : `${clientUrl}/dashboard/expert/appointments`;
 
   const ctaLabel = role === 'parent' ? 'View My Bookings' : 'View My Calendar';
+  const logoUrl  = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
 
   return `
 <!DOCTYPE html>
@@ -75,7 +76,7 @@ const bookingReminderEmailHtml = ({
       <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;">
 
         <tr><td align="center" style="padding-bottom:24px;">
-          <span style="font-size:20px;font-weight:700;color:#1F2933;letter-spacing:-0.3px;">Sage Nest</span>
+          <img src="${logoUrl}" alt="Sage Nest" width="60" style="display:block;width:60px;height:auto;border:0;" />
         </td></tr>
 
         <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #E4E7E4;padding:40px 36px;">

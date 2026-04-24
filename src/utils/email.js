@@ -216,7 +216,7 @@ const sendPasswordResetEmail = ({ to, name, resetToken }) => {
     to,
     subject: "Reset your Sage Nest password",
     text: `Hi ${name}, reset your password here (expires in 1 hour): ${resetUrl}`,
-    html: passwordResetEmailHtml({ name, resetUrl }),
+    html: passwordResetEmailHtml({ name, resetUrl, clientUrl: process.env.CLIENT_URL }),
   });
 };
 
@@ -234,7 +234,7 @@ const sendVerificationEmail = ({ to, name, userId, verificationCode }) => {
     to,
     subject: "Verify your Sage Nest email address",
     text: `Hi ${name}, please verify your email: ${verificationUrl}`,
-    html: verificationEmailHtml({ name, verificationUrl }),
+    html: verificationEmailHtml({ name, verificationUrl, clientUrl: process.env.CLIENT_URL }),
   });
 };
 
@@ -553,6 +553,7 @@ const sendChangesRequestedEmail = ({ to, name, note }) =>
       name,
       note,
       dashboardUrl: `${process.env.CLIENT_URL}/dashboard/expert/profile`,
+      clientUrl: process.env.CLIENT_URL,
     }),
   });
 
@@ -578,6 +579,7 @@ const sendEmailChangeVerification = ({
     html: verificationEmailHtml({
       name,
       verificationUrl,
+      clientUrl: process.env.CLIENT_URL,
       headingOverride: "Verify your new email address",
       bodyOverride:
         "You recently changed your email address on Sage Nest. Click the button below to verify your new address and restore access to your account.",

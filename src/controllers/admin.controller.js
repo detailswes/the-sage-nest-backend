@@ -2406,6 +2406,70 @@ async function rejectLanguage(req, res) {
   }
 }
 
+// ─── Refund audit log ─────────────────────────────────────────────────────────
+
+async function getRefundLog(req, res) {
+  const page  = Math.max(1, parseInt(req.query.page)  || 1);
+  const limit = Math.min(50, parseInt(req.query.limit) || 25);
+  const skip  = (page - 1) * limit;
+
+  try {
+    const [total, logs] = await Promise.all([
+      prisma.adminAuditLog.count({ where: { action: "MANUAL_REFUND" } }),
+      prisma.adminAuditLog.findMany({
+        where:   { action: "MANUAL_REFUND" },
+        orderBy: { created_at: "desc" },
+        skip,
+        take: limit,
+      }),
+    ]);
+
+    // Enrich with booking data (refund_amount, stripe_refund_id, original amount, parent)
+    const bookingIds = [...new Set(logs.map((l) => l.entity_id).filter(Boolean))];
+    const bookings = bookingIds.length
+      ? await prisma.booking.findMany({
+          where:  { id: { in: bookingIds } },
+          select: {
+            id:              true,
+            amount:          true,
+            refund_amount:   true,
+            stripe_refund_id: true,
+            parent: { select: { name: true } },
+          },
+        })
+      : [];
+    const bookingMap = Object.fromEntries(bookings.map((b) => [b.id, b]));
+
+    // Resolve admin names (no FK — intentional, survives account deletion)
+    const adminIds = [...new Set(logs.map((l) => l.admin_id).filter(Boolean))];
+    const admins = adminIds.length
+      ? await prisma.user.findMany({
+          where:  { id: { in: adminIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const adminMap = Object.fromEntries(admins.map((a) => [a.id, a.name]));
+
+    const enriched = logs.map((l) => ({
+      id:              l.id,
+      created_at:      l.created_at,
+      admin_id:        l.admin_id,
+      admin_name:      adminMap[l.admin_id] || "Unknown",
+      booking_id:      l.entity_id,
+      note:            l.note,
+      booking:         bookingMap[l.entity_id] || null,
+    }));
+
+    return res.json({
+      data: enriched,
+      pagination: { total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) },
+    });
+  } catch (err) {
+    console.error("[ADMIN] getRefundLog error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 // ─── Transfer retry / manual resolution ──────────────────────────────────────
 
 async function retryTransfer(req, res) {
@@ -2495,6 +2559,7 @@ module.exports = {
   gdprDeleteParent,
   listTransactions,
   exportTransactionsCsv,
+  getRefundLog,
   retryTransfer,
   markTransferResolved,
   approveProfileDraft,

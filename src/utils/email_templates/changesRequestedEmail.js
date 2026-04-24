@@ -2,7 +2,7 @@
  * Email sent to a specialist when admin requests profile corrections.
  * @param {{ name: string, note: string, dashboardUrl: string }} param0
  */
-const changesRequestedEmailHtml = ({ name, note, dashboardUrl }) => `
+const changesRequestedEmailHtml = ({ name, note, dashboardUrl, clientUrl }) => `
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -16,10 +16,10 @@ const changesRequestedEmailHtml = ({ name, note, dashboardUrl }) => `
       <td align="center">
         <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;">
 
-          <!-- Header -->
+          <!-- Logo -->
           <tr>
             <td align="center" style="padding-bottom:24px;">
-              <span style="font-size:20px;font-weight:700;color:#1F2933;letter-spacing:-0.3px;">Sage Nest</span>
+              <img src="${clientUrl}/assets/images/Sage-Nest_Final.png" alt="Sage Nest" width="60" style="display:block;width:60px;height:auto;border:0;" />
             </td>
           </tr>
 

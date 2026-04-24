@@ -39,6 +39,7 @@ const {
   gdprDeleteParent,
   listTransactions,
   exportTransactionsCsv,
+  getRefundLog,
   retryTransfer,
   markTransferResolved,
   approveProfileDraft,
@@ -130,5 +131,6 @@ router.post('/parents/:id/gdpr-delete', gdprDeleteParent);
 // ── Transactions (Payment Overview) ──────────────────────────────────────────
 router.get('/transactions',        listTransactions);
 router.get('/transactions/export', exportTransactionsCsv);
+router.get('/refund-log',          getRefundLog);
 
 module.exports = router;
