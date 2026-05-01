@@ -152,7 +152,10 @@ model BusinessInfo {
   entity_type        EntityType
   legal_name         String
   date_of_birth      DateTime?
-  primary_address    String
+  address_street     String
+  address_city       String
+  address_postal_code String
+  address_country    String
   tin                String
   vat_number         String?
   company_reg_number String?
@@ -334,7 +337,6 @@ enum ExpertStatus {
 
 enum ParentStatus {
   ACTIVE
-  DEACTIVATED
   SUSPENDED
 }
 

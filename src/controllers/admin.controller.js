@@ -1,6 +1,7 @@
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
+const ExcelJS = require("exceljs");
 const { decryptIban } = require("../utils/encryption");
 const { logAudit }   = require("../utils/auditLog");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
@@ -259,6 +260,14 @@ async function approveExpert(req, res) {
       where: { id: parseInt(id) },
     });
     if (!expert) return res.status(404).json({ error: "Expert not found" });
+
+    if (!expert.stripe_onboarding_complete) {
+      return res.status(409).json({
+        error: "This expert has not completed Stripe onboarding. They must connect their payment account and have card_payments activated before they can be approved.",
+        code: "STRIPE_ONBOARDING_INCOMPLETE",
+      });
+    }
+
     const updated = await prisma.expert.update({
       where: { id: parseInt(id) },
       data: {
@@ -721,15 +730,13 @@ async function manuallyVerifyParent(req, res) {
   }
 }
 
-// ─── Tax CSV export ───────────────────────────────────────────────────────────
+// ─── Tax XLSX export ────────────────────────────────────────────────────────
 
 async function exportTaxData(req, res) {
   const { id } = req.params;
   const year = parseInt(req.query.year);
   if (!year || year < 2000 || year > 2100) {
-    return res
-      .status(400)
-      .json({ error: "Valid year query parameter is required." });
+    return res.status(400).json({ error: 'Valid year query parameter is required.' });
   }
 
   try {
@@ -740,131 +747,160 @@ async function exportTaxData(req, res) {
         business_info: true,
       },
     });
-    if (!expert) return res.status(404).json({ error: "Expert not found" });
+    if (!expert) return res.status(404).json({ error: 'Expert not found' });
 
     const yearStart = new Date(`${year}-01-01T00:00:00.000Z`);
-    const yearEnd = new Date(`${year + 1}-01-01T00:00:00.000Z`);
+    const yearEnd   = new Date(`${year + 1}-01-01T00:00:00.000Z`);
 
     const bookings = await prisma.booking.findMany({
       where: {
-        expert_id: expert.id,
-        status: { in: ["CONFIRMED", "COMPLETED"] },
+        expert_id:    expert.id,
+        status:       { in: ['CONFIRMED', 'COMPLETED', 'REFUNDED'] },
         scheduled_at: { gte: yearStart, lt: yearEnd },
       },
       include: { service: { select: { title: true } } },
-      orderBy: { scheduled_at: "asc" },
+      orderBy: { scheduled_at: 'asc' },
     });
 
     const bi = expert.business_info;
-    const esc = (v) => {
-      if (v === null || v === undefined) return "";
-      const s = String(v);
-      return s.includes(",") || s.includes('"') || s.includes("\n")
-        ? `"${s.replace(/"/g, '""')}"`
-        : s;
+
+    // ── Shared styles ─────────────────────────────────────────────────────────
+    const HDR_FILL  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD6E0D7' } };
+    const SECT_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0F4F0' } };
+    const BOLD      = { bold: true };
+    const MONEY_FMT = '#,##0.00';
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Sage Nest Admin';
+    workbook.created = new Date();
+
+    // ── Sheet 1: Expert Info ─────────────────────────────────────────────────
+    const infoSheet = workbook.addWorksheet('Expert Info');
+    infoSheet.columns = [
+      { key: 'label', width: 26 },
+      { key: 'value', width: 44 },
+    ];
+
+    const addInfoSection = (title) => {
+      const r = infoSheet.addRow([title, '']);
+      r.font = BOLD;
+      r.fill = SECT_FILL;
     };
-    const row = (...cols) => cols.map(esc).join(",");
-    const line = (...cols) => row(...cols) + "\r\n";
+    const addInfoRow = (label, value) => {
+      const r = infoSheet.addRow([label, value ?? '']);
+      r.getCell(1).font = { color: { argb: 'FF555555' } };
+    };
 
-    let csv = "";
-    csv += line(`EXPERT TAX REPORT — ${year}`);
-    csv += line(`Generated`, new Date().toISOString().split("T")[0]);
-    csv += "\r\n";
-    csv += line("EXPERT IDENTITY");
-    csv += line("Name", "Email", "Joined");
-    csv += line(
-      expert.user?.name || "",
-      expert.user?.email || "",
-      expert.user?.created_at
-        ? new Date(expert.user.created_at).toISOString().split("T")[0]
-        : ""
-    );
-    csv += "\r\n";
-    csv += line("BUSINESS INFORMATION");
+    addInfoSection(`Expert Tax Report — ${year}`);
+    addInfoRow('Generated', new Date().toISOString().split('T')[0]);
+    infoSheet.addRow([]);
+
+    addInfoSection('Expert Identity');
+    addInfoRow('Name',   expert.user?.name  || '');
+    addInfoRow('Email',  expert.user?.email || '');
+    addInfoRow('Joined', expert.user?.created_at
+      ? new Date(expert.user.created_at).toISOString().split('T')[0]
+      : '');
+    infoSheet.addRow([]);
+
+    addInfoSection('Business Information');
     if (bi) {
-      csv += line(
-        "Entity Type",
-        bi.entity_type === "INDIVIDUAL"
-          ? "Individual"
-          : "Company / Legal Entity"
-      );
-      csv += line("Full Legal Name", bi.legal_name);
-      if (bi.entity_type === "INDIVIDUAL" && bi.date_of_birth) {
-        csv += line(
-          "Date of Birth",
-          new Date(bi.date_of_birth).toISOString().split("T")[0]
-        );
+      addInfoRow('Entity Type',       bi.entity_type === 'INDIVIDUAL' ? 'Individual' : 'Company / Legal Entity');
+      addInfoRow('Full Legal Name',   bi.legal_name          || '');
+      if (bi.entity_type === 'INDIVIDUAL' && bi.date_of_birth) {
+        addInfoRow('Date of Birth', new Date(bi.date_of_birth).toISOString().split('T')[0]);
       }
-      csv += line("Primary Address", bi.primary_address);
-      csv += line("TIN", bi.tin);
-      if (bi.vat_number) csv += line("VAT Number", bi.vat_number);
-      if (bi.company_reg_number)
-        csv += line("Company Reg. Number", bi.company_reg_number);
-      csv += line("IBAN", decryptIban(bi.iban));
-      csv += line("Business Email", bi.business_email);
-      if (bi.municipality) csv += line("Municipality", bi.municipality);
-      if (bi.business_address)
-        csv += line("Business Address", bi.business_address);
+      addInfoRow('TIN',               bi.tin                 || '');
+      addInfoRow('VAT Number',        bi.vat_number          || '');
+      if (bi.company_reg_number) addInfoRow('Company Reg. Number', bi.company_reg_number);
+      addInfoRow('Street',            bi.address_street      || '');
+      addInfoRow('City',              bi.address_city        || '');
+      addInfoRow('Postal Code',       bi.address_postal_code || '');
+      addInfoRow('Country',           bi.address_country     || '');
+      addInfoRow('IBAN',              decryptIban(bi.iban)   || '');
+      addInfoRow('Business Email',    bi.business_email      || '');
+      if (bi.municipality)     addInfoRow('Municipality',     bi.municipality);
+      if (bi.business_address) addInfoRow('Business Address', bi.business_address);
     } else {
-      csv += line("No business information on file");
+      infoSheet.addRow(['No business information on file', '']).font = { italic: true, color: { argb: 'FF888888' } };
     }
-    csv += "\r\n";
-    csv += line(`PAYMENTS (${year})`);
-    csv += line(
-      "Date",
-      "Service",
-      "Duration (min)",
-      "Gross Amount (€)",
-      "Platform Fee (€)",
-      "Net Payout (€)",
-      "Status"
-    );
 
-    let totalGross = 0;
-    let totalFee = 0;
+    // ── Sheet 2: Payments ────────────────────────────────────────────────────
+    const paySheet = workbook.addWorksheet(`Payments ${year}`);
+    paySheet.columns = [
+      { header: 'Date',              key: 'date',           width: 14 },
+      { header: 'Service',           key: 'service',        width: 32 },
+      { header: 'Duration (min)',    key: 'duration',       width: 15 },
+      { header: 'Gross Amount (£)',  key: 'gross',          width: 17, style: { numFmt: MONEY_FMT } },
+      { header: 'Platform Fee (£)',  key: 'fee',            width: 17, style: { numFmt: MONEY_FMT } },
+      { header: 'Net Payout (£)',    key: 'net',            width: 17, style: { numFmt: MONEY_FMT } },
+      { header: 'Status',            key: 'status',         width: 13 },
+      { header: 'Refund Amount (£)', key: 'refundAmount',   width: 17, style: { numFmt: MONEY_FMT } },
+      { header: 'Refund Date',       key: 'refundDate',     width: 14 },
+      { header: 'Stripe Refund ID',  key: 'stripeRefundId', width: 30 },
+    ];
+
+    const hdrRow = paySheet.getRow(1);
+    hdrRow.font      = BOLD;
+    hdrRow.fill      = HDR_FILL;
+    hdrRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    hdrRow.height    = 18;
+
+    let totalGross = 0, totalFee = 0, totalNet = 0, totalRefund = 0;
+
     for (const b of bookings) {
-      const gross = parseFloat(b.amount || 0);
-      const fee = parseFloat(b.platform_fee || 0);
-      totalGross += gross;
-      totalFee += fee;
-      csv += line(
-        new Date(b.scheduled_at).toISOString().split("T")[0],
-        b.service?.title || "",
-        b.duration_minutes,
-        gross.toFixed(2),
-        fee.toFixed(2),
-        (gross - fee).toFixed(2),
-        b.status
-      );
-    }
-    csv += "\r\n";
-    csv += line("TOTALS");
-    csv += line(
-      "Total Bookings",
-      "Total Gross (€)",
-      "Total Fees (€)",
-      "Total Net Payout (€)"
-    );
-    csv += line(
-      bookings.length,
-      totalGross.toFixed(2),
-      totalFee.toFixed(2),
-      (totalGross - totalFee).toFixed(2)
-    );
+      const gross  = parseFloat(b.amount       || 0);
+      const fee    = parseFloat(b.platform_fee || 0);
+      const net    = gross - fee;
+      const refAmt = b.refund_amount != null ? parseFloat(b.refund_amount) : null;
 
+      totalGross  += gross;
+      totalFee    += fee;
+      totalNet    += net;
+      if (refAmt != null) totalRefund += refAmt;
+
+      paySheet.addRow({
+        date:           new Date(b.scheduled_at).toISOString().split('T')[0],
+        service:        b.service?.title || '',
+        duration:       b.duration_minutes,
+        gross,
+        fee,
+        net,
+        status:         b.status,
+        refundAmount:   refAmt,
+        refundDate:     b.refunded_at ? new Date(b.refunded_at).toISOString().split('T')[0] : '',
+        stripeRefundId: b.stripe_refund_id || '',
+      });
+    }
+
+    // Totals row
+    paySheet.addRow({});
+    const totRow = paySheet.addRow({
+      date:         'TOTALS',
+      service:      `${bookings.length} booking${bookings.length !== 1 ? 's' : ''}`,
+      gross:        totalGross,
+      fee:          totalFee,
+      net:          totalNet,
+      refundAmount: totalRefund > 0 ? totalRefund : null,
+    });
+    totRow.font = BOLD;
+    totRow.fill = SECT_FILL;
+
+    // ── Stream response ───────────────────────────────────────────────────────
     const safeName = (expert.user?.name || `expert-${id}`)
-      .replace(/[^a-z0-9]/gi, "_")
+      .replace(/[^a-z0-9]/gi, '_')
       .toLowerCase();
 
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="tax_report_${safeName}_${year}.csv"`
-    );
-    return res.send("\uFEFF" + csv);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="tax_report_${safeName}_${year}.xlsx"`);
+
+    await workbook.xlsx.write(res);
+    res.end();
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Server error" });
+    console.error('[exportTaxData]', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Server error' });
+    }
   }
 }
 
@@ -1035,9 +1071,22 @@ async function listExpertBookings(req, res) {
   }
 }
 
+// Shared policy helper — mirrors the three-tier policy in booking.controller.js
+function computeRefundPolicy(booking) {
+  const total = parseFloat(booking.amount);
+  const ref = booking.status === "CANCELLED" && booking.cancelled_at
+    ? new Date(booking.cancelled_at)
+    : new Date();
+  const h = (new Date(booking.scheduled_at).getTime() - ref.getTime()) / 3_600_000;
+  const policyPercent = h >= 24 ? 100 : h >= 12 ? 50 : 0;
+  const policyAmount  = parseFloat((total * policyPercent / 100).toFixed(2));
+  const tier = h >= 24 ? "full refund (>24 h)" : h >= 12 ? "50% refund (12–24 h)" : "no refund (<12 h)";
+  return { policyPercent, policyAmount, tier, bookingTotal: total };
+}
+
 async function manualRefund(req, res) {
   const { id } = req.params;
-  const { reason, amount } = req.body;
+  const { reason, amount, override_reason } = req.body;
 
   try {
     const booking = await prisma.booking.findUnique({
@@ -1073,6 +1122,22 @@ async function manualRefund(req, res) {
           error: `Refund amount (£${refundAmountValue.toFixed(2)}) cannot exceed the booking total (£${bookingTotal.toFixed(2)})`,
         });
       }
+    }
+
+    // ── Policy validation ──────────────────────────────────────────────────────
+    // Require an explicit override_reason when the requested amount differs from
+    // the policy-approved amount so that every deviation is audited.
+    const { policyPercent, policyAmount, tier } = computeRefundPolicy(booking);
+    const isOnPolicy = Math.abs(refundAmountValue - policyAmount) < 0.005;
+    if (!isOnPolicy && !override_reason?.trim()) {
+      return res.status(422).json({
+        error: `The requested amount (£${refundAmountValue.toFixed(2)}) deviates from the cancellation policy (${tier} → £${policyAmount.toFixed(2)}). Provide an override reason to proceed.`,
+        requires_override: true,
+        policy_amount:     policyAmount,
+        policy_percent:    policyPercent,
+        policy_tier:       tier,
+        booking_total:     bookingTotal,
+      });
     }
 
     let chargeId = booking.stripe_charge_id;
@@ -1146,9 +1211,10 @@ async function manualRefund(req, res) {
       },
     });
 
+    const overrideSuffix = override_reason?.trim() ? ` [POLICY OVERRIDE: ${override_reason.trim()}]` : "";
     const auditNote = isPartial
-      ? `Partial refund of £${refundAmountValue.toFixed(2)}${reason ? ` — ${reason}` : ""}`
-      : `Full refund — ${reason || "Admin manual refund"}`;
+      ? `Partial refund of £${refundAmountValue.toFixed(2)}${reason ? ` — ${reason}` : ""}${overrideSuffix}`
+      : `Full refund — ${reason || "Admin manual refund"}${overrideSuffix}`;
 
     await logAudit(req.user.id, "MANUAL_REFUND", "BOOKING", booking.id, auditNote);
     await logAudit(req.user.id, "REFUND_ISSUED", "PARENT", booking.parent_id, `Booking #${booking.id} · ${auditNote}`);
@@ -1163,7 +1229,7 @@ async function manualRefund(req, res) {
         scheduledAt:   booking.scheduled_at,
         refundAmount:  refundAmountValue,
         isPartial,
-        reason:        reason || undefined,
+        reason:        [reason?.trim(), override_reason?.trim()].filter(Boolean).join(' — ') || undefined,
         bookingId:     booking.id,
       });
     } catch (emailErr) {
@@ -1868,7 +1934,7 @@ async function listParents(req, res) {
   const where = { ...baseWhere };
   const andConditions = [];
 
-  if (status && ["ACTIVE", "DEACTIVATED", "SUSPENDED"].includes(status)) {
+  if (status && ["ACTIVE", "SUSPENDED"].includes(status)) {
     if (status === "ACTIVE") {
       // Prisma doesn't allow null in an `in` array for enums — use OR instead
       andConditions.push({ OR: [{ parent_status: "ACTIVE" }, { parent_status: null }] });
@@ -1892,7 +1958,7 @@ async function listParents(req, res) {
   if (andConditions.length > 0) where.AND = andConditions;
 
   try {
-    const [total, data, activeCount, deactivatedCount, suspendedCount] =
+    const [total, data, activeCount, suspendedCount] =
       await Promise.all([
         prisma.user.count({ where }),
         prisma.user.findMany({
@@ -1916,9 +1982,6 @@ async function listParents(req, res) {
           where: { ...baseWhere, AND: [{ OR: [{ parent_status: "ACTIVE" }, { parent_status: null }] }] },
         }),
         prisma.user.count({
-          where: { ...baseWhere, parent_status: "DEACTIVATED" },
-        }),
-        prisma.user.count({
           where: { ...baseWhere, parent_status: "SUSPENDED" },
         }),
       ]);
@@ -1932,9 +1995,8 @@ async function listParents(req, res) {
         totalPages: Math.max(1, Math.ceil(total / limit)),
       },
       counts: {
-        all: activeCount + deactivatedCount + suspendedCount,
+        all: activeCount + suspendedCount,
         ACTIVE: activeCount,
-        DEACTIVATED: deactivatedCount,
         SUSPENDED: suspendedCount,
       },
     });
@@ -1981,24 +2043,6 @@ async function activateParent(req, res) {
     });
     await logAudit(req.user.id, "ACTIVATE_PARENT", "PARENT", parseInt(id));
     return res.json({ message: "Parent account activated" });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Server error" });
-  }
-}
-
-async function deactivateParent(req, res) {
-  const { id } = req.params;
-  try {
-    const user = await prisma.user.findUnique({ where: { id: parseInt(id) } });
-    if (!user || user.role !== "PARENT")
-      return res.status(404).json({ error: "Parent not found" });
-    await prisma.user.update({
-      where: { id: parseInt(id) },
-      data: { parent_status: "DEACTIVATED" },
-    });
-    await logAudit(req.user.id, "DEACTIVATE_PARENT", "PARENT", parseInt(id));
-    return res.json({ message: "Parent account deactivated" });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -2060,56 +2104,29 @@ async function gdprDeleteParent(req, res) {
       });
     }
 
-    // ── 1. Cancel future bookings + refund captured payments ──────────────────
-    for (const booking of user.bookings_as_parent) {
-      try {
-        if (
-          booking.status === "CONFIRMED" &&
-          booking.stripe_payment_intent_id
-        ) {
-          let chargeId = booking.stripe_charge_id;
-          if (!chargeId) {
-            const pi = await stripe.paymentIntents.retrieve(
-              booking.stripe_payment_intent_id
-            );
-            chargeId = pi.latest_charge;
-          }
-          if (chargeId) await stripe.refunds.create({ charge: chargeId });
-          await prisma.booking.update({
-            where: { id: booking.id },
-            data: {
-              status: "REFUNDED",
-              cancellation_reason: "Parent account deleted (GDPR)",
-              cancelled_at: new Date(),
-              transfer_status: "skipped",
-            },
-          });
-        } else if (booking.status === "PENDING_PAYMENT") {
-          if (booking.stripe_payment_intent_id) {
-            try {
-              await stripe.paymentIntents.cancel(
-                booking.stripe_payment_intent_id
-              );
-            } catch (_) {}
-          }
-          await prisma.booking.update({
-            where: { id: booking.id },
-            data: {
-              status: "CANCELLED",
-              cancellation_reason: "Parent account deleted (GDPR)",
-              cancelled_at: new Date(),
-            },
-          });
-        }
-      } catch (refundErr) {
-        console.error(
-          `[GDPR] Failed to process booking ${booking.id}:`,
-          refundErr.message
-        );
-      }
+    // Hard block: upcoming bookings must be resolved before erasure.
+    if (user.bookings_as_parent.length > 0) {
+      return res.status(409).json({
+        error: `This account cannot be erased while there are upcoming bookings. Cancel or complete the ${user.bookings_as_parent.length} upcoming booking${user.bookings_as_parent.length !== 1 ? "s" : ""} first.`,
+        code: "UPCOMING_BOOKINGS",
+      });
     }
 
-    // ── 2. Anonymise User record ───────────────────────────────────────────────
+    // Hard block: pending refunds or open disputes must be resolved first.
+    const pendingTxCount = await prisma.booking.count({
+      where: {
+        parent_id: parseInt(id),
+        OR: [{ refund_status: "pending" }, { is_disputed: true }],
+      },
+    });
+    if (pendingTxCount > 0) {
+      return res.status(409).json({
+        error: `This account cannot be erased until all pending refunds and open disputes are resolved. ${pendingTxCount} unresolved transaction${pendingTxCount !== 1 ? "s" : ""} found.`,
+        code: "PENDING_TRANSACTIONS",
+      });
+    }
+
+    // ── 1. Anonymise User record ───────────────────────────────────────────────
     const ts = Date.now();
     await prisma.user.update({
       where: { id: parseInt(id) },
@@ -2125,10 +2142,10 @@ async function gdprDeleteParent(req, res) {
       },
     });
 
-    // ── 3. Invalidate all sessions ─────────────────────────────────────────────
+    // ── 2. Invalidate all sessions ─────────────────────────────────────────────
     await prisma.refreshToken.deleteMany({ where: { user_id: parseInt(id) } });
 
-    // ── 4. Log audit ───────────────────────────────────────────────────────────
+    // ── 3. Log audit ───────────────────────────────────────────────────────────
     await logAudit(
       req.user.id,
       "GDPR_DELETE_PARENT",
@@ -2547,6 +2564,37 @@ async function markTransferResolved(req, res) {
   }
 }
 
+// ─── Admin notifications (pull-based, computed from live data) ────────────────
+// Each notification type is a simple query; add new types here as needed.
+async function getAdminNotifications(req, res) {
+  try {
+    const pendingDrafts = await prisma.expertProfileDraft.findMany({
+      where: { status: "PENDING_REVIEW" },
+      include: {
+        expert: {
+          include: { user: { select: { name: true } } },
+        },
+      },
+      orderBy: { submitted_at: "desc" },
+    });
+
+    const notifications = pendingDrafts.map((draft) => ({
+      id:        `draft_${draft.expert_id}`,
+      type:      "EXPERT_DRAFT_PENDING",
+      title:     "Profile edit awaiting review",
+      body:      `${draft.expert.user.name} submitted a profile update for review.`,
+      href:      `/dashboard/admin/experts/${draft.expert_id}`,
+      expertId:  draft.expert_id,
+      createdAt: draft.submitted_at,
+    }));
+
+    return res.json(notifications);
+  } catch (err) {
+    console.error("[getAdminNotifications]", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -2582,7 +2630,6 @@ module.exports = {
   listParents,
   listParentBookings,
   activateParent,
-  deactivateParent,
   suspendParent,
   gdprDeleteParent,
   listTransactions,
@@ -2595,4 +2642,5 @@ module.exports = {
   sendParentPasswordReset,
   resendParentVerification,
   manuallyVerifyParent,
+  getAdminNotifications,
 };

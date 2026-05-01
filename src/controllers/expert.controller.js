@@ -564,7 +564,8 @@ const VALID_ENTITY_TYPES = ['INDIVIDUAL', 'COMPANY'];
 async function saveBusinessInfo(req, res) {
   const {
     entity_type, legal_name, date_of_birth,
-    primary_address, tin, vat_number, company_reg_number,
+    address_street, address_city, address_postal_code, address_country,
+    tin, vat_number, company_reg_number,
     iban, business_email, website, municipality, business_address,
   } = req.body;
 
@@ -578,8 +579,17 @@ async function saveBusinessInfo(req, res) {
   if (entity_type === 'INDIVIDUAL' && !date_of_birth) {
     return res.status(400).json({ error: 'Date of birth is required for individual experts.' });
   }
-  if (!primary_address?.trim()) {
-    return res.status(400).json({ error: 'Primary address is required.' });
+  if (!address_street?.trim()) {
+    return res.status(400).json({ error: 'Street address is required.' });
+  }
+  if (!address_city?.trim()) {
+    return res.status(400).json({ error: 'City is required.' });
+  }
+  if (!address_postal_code?.trim()) {
+    return res.status(400).json({ error: 'Postal code is required.' });
+  }
+  if (!address_country?.trim()) {
+    return res.status(400).json({ error: 'Country is required.' });
   }
   if (!tin?.trim()) {
     return res.status(400).json({ error: 'Tax Identification Number (TIN) is required.' });
@@ -612,32 +622,38 @@ async function saveBusinessInfo(req, res) {
       where: { expert_id: expert.id },
       update: {
         entity_type,
-        legal_name:         legal_name.trim(),
-        date_of_birth:      dob,
-        primary_address:    primary_address.trim(),
-        tin:                tin.trim(),
-        vat_number:         vat_number?.trim()          || null,
-        company_reg_number: entity_type === 'COMPANY' ? company_reg_number.trim() : null,
-        iban:               encryptedIban,
-        business_email:     business_email.trim(),
-        website:            website?.trim()          || null,
-        municipality:       municipality?.trim()        || null,
-        business_address:   business_address?.trim()    || null,
+        legal_name:          legal_name.trim(),
+        date_of_birth:       dob,
+        address_street:      address_street.trim(),
+        address_city:        address_city.trim(),
+        address_postal_code: address_postal_code.trim(),
+        address_country:     address_country.trim(),
+        tin:                 tin.trim(),
+        vat_number:          vat_number?.trim()             || null,
+        company_reg_number:  entity_type === 'COMPANY' ? company_reg_number.trim() : null,
+        iban:                encryptedIban,
+        business_email:      business_email.trim(),
+        website:             website?.trim()             || null,
+        municipality:        municipality?.trim()           || null,
+        business_address:    business_address?.trim()       || null,
       },
       create: {
-        expert_id:          expert.id,
+        expert_id:           expert.id,
         entity_type,
-        legal_name:         legal_name.trim(),
-        date_of_birth:      dob,
-        primary_address:    primary_address.trim(),
-        tin:                tin.trim(),
-        vat_number:         vat_number?.trim()          || null,
-        company_reg_number: entity_type === 'COMPANY' ? company_reg_number.trim() : null,
-        iban:               encryptedIban,
-        business_email:     business_email.trim(),
-        website:            website?.trim()          || null,
-        municipality:       municipality?.trim()        || null,
-        business_address:   business_address?.trim()    || null,
+        legal_name:          legal_name.trim(),
+        date_of_birth:       dob,
+        address_street:      address_street.trim(),
+        address_city:        address_city.trim(),
+        address_postal_code: address_postal_code.trim(),
+        address_country:     address_country.trim(),
+        tin:                 tin.trim(),
+        vat_number:          vat_number?.trim()             || null,
+        company_reg_number:  entity_type === 'COMPANY' ? company_reg_number.trim() : null,
+        iban:                encryptedIban,
+        business_email:      business_email.trim(),
+        website:             website?.trim()             || null,
+        municipality:        municipality?.trim()           || null,
+        business_address:    business_address?.trim()       || null,
       },
     });
     return res.json({ ...info, iban: decryptIban(info.iban) });

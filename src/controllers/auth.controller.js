@@ -331,12 +331,10 @@ async function login(req, res) {
       });
     }
 
-    if (user.role === "PARENT" && user.parent_status && user.parent_status !== "ACTIVE") {
+    if (user.role === "PARENT" && user.parent_status === "SUSPENDED") {
       return res.status(403).json({
-        error: user.parent_status === "SUSPENDED"
-          ? "Your account has been suspended. Please contact support."
-          : "Your account has been deactivated. Please contact support.",
-        account_suspended: user.parent_status === "SUSPENDED",
+        error: "Your account has been suspended. Please contact support.",
+        account_suspended: true,
       });
     }
 
@@ -460,9 +458,26 @@ async function refresh(req, res) {
       maxAge: REFRESH_TOKEN_EXPIRES_MS,
     });
 
+    // Check if user needs to re-accept an updated Privacy Policy (all roles)
+    let ppUpdateRequired = false;
+    const [currentPp, lastPpAccepted] = await Promise.all([
+      prisma.legalDocument.findFirst({
+        where: { type: "PRIVACY_POLICY" },
+        orderBy: { effective_from: "desc" },
+      }),
+      prisma.privacyPolicyAcceptance.findFirst({
+        where: { user_id: user.id },
+        orderBy: { accepted_at: "desc" },
+      }),
+    ]);
+    if (currentPp && (!lastPpAccepted || lastPpAccepted.version !== currentPp.version)) {
+      ppUpdateRequired = true;
+    }
+
     return res.json({
       accessToken: newAccessToken,
       user: userPayload(user),
+      ...(ppUpdateRequired && { pp_update_required: true }),
     });
   } catch (err) {
     console.error(err);

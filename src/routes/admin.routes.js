@@ -34,7 +34,6 @@ const {
   listParents,
   listParentBookings,
   activateParent,
-  deactivateParent,
   suspendParent,
   gdprDeleteParent,
   listTransactions,
@@ -47,6 +46,7 @@ const {
   sendParentPasswordReset,
   resendParentVerification,
   manuallyVerifyParent,
+  getAdminNotifications,
 } = require('../controllers/admin.controller');
 
 // ── Public routes (no auth required) ─────────────────────────────────────────
@@ -54,6 +54,9 @@ router.get('/experts', authenticateOptional, listExperts);
 
 // All admin routes require authentication + admin role
 router.use(authenticate, requireAdmin);
+
+// ── Notifications ─────────────────────────────────────────────────────────────
+router.get('/notifications', getAdminNotifications);
 
 // ── Status actions ────────────────────────────────────────────────────────────
 router.post('/experts/:id/approve',              approveExpert);
@@ -121,9 +124,8 @@ router.post('/parents/:id/resend-verification', resendParentVerification);
 router.post('/parents/:id/verify',              manuallyVerifyParent);
 
 // ── Parent status actions ─────────────────────────────────────────────────────
-router.post('/parents/:id/activate',   activateParent);
-router.post('/parents/:id/deactivate', deactivateParent);
-router.post('/parents/:id/suspend',    suspendParent);
+router.post('/parents/:id/activate', activateParent);
+router.post('/parents/:id/suspend',  suspendParent);
 
 // ── Parent GDPR ───────────────────────────────────────────────────────────────
 router.post('/parents/:id/gdpr-delete', gdprDeleteParent);
