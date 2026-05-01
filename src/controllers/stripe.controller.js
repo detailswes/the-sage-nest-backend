@@ -64,9 +64,12 @@ async function handleStripeReturn(req, res) {
     }
 
     const account = await stripe.accounts.retrieve(expert.stripe_account_id);
-    const onboardingComplete = account.details_submitted;
+    const detailsSubmitted   = account.details_submitted === true;
+    const cardPaymentsActive = account.capabilities?.card_payments === 'active';
+    const onboardingComplete = detailsSubmitted && cardPaymentsActive;
 
-    // Persist the completion flag so listExperts can filter without a Stripe call
+    // Persist the flag only once both conditions are met. card_payments can lag
+    // behind details_submitted by a few seconds while Stripe activates it.
     if (onboardingComplete && !expert.stripe_onboarding_complete) {
       await prisma.expert.update({
         where: { id: expert.id },
@@ -75,8 +78,10 @@ async function handleStripeReturn(req, res) {
     }
 
     return res.json({
-      stripe_account_id: expert.stripe_account_id,
-      onboarding_complete: onboardingComplete,
+      stripe_account_id:    expert.stripe_account_id,
+      onboarding_complete:  onboardingComplete,
+      details_submitted:    detailsSubmitted,
+      card_payments_active: cardPaymentsActive,
     });
   } catch (err) {
     console.error(err);
@@ -280,12 +285,14 @@ async function handleWebhook(req, res) {
       // ── Account updated (expert onboarding / capability changes) ──────────
       case 'account.updated': {
         const account = event.data.object;
-        console.log(`[Webhook] account.updated: ${account.id}, details_submitted=${account.details_submitted}`);
+        const cardPaymentsActive = account.capabilities?.card_payments === 'active';
+        console.log(`[Webhook] account.updated: ${account.id}, details_submitted=${account.details_submitted}, card_payments=${account.capabilities?.card_payments}`);
 
-        // Keep DB flag in sync with Stripe's source of truth
+        // Both details_submitted AND card_payments active are required for the
+        // expert to be usable as a destination charge MoR with on_behalf_of.
         await prisma.expert.updateMany({
           where: { stripe_account_id: account.id },
-          data:  { stripe_onboarding_complete: account.details_submitted === true },
+          data:  { stripe_onboarding_complete: account.details_submitted === true && cardPaymentsActive },
         });
         break;
       }

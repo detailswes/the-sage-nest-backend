@@ -31,7 +31,7 @@ async function createBooking(req, res) {
   if (tcAccepted !== true) {
     return res.status(400).json({ error: 'You must accept the Terms & Conditions to proceed with payment.' });
   }
-
+ 
   const scheduledDate = new Date(scheduledAt);
   if (isNaN(scheduledDate.getTime())) {
     return res.status(400).json({ error: 'Invalid scheduledAt date' });
@@ -52,6 +52,20 @@ async function createBooking(req, res) {
     if (!expert) return res.status(404).json({ error: 'Expert not found' });
     if (!expert.stripe_account_id) {
       return res.status(400).json({ error: 'Expert has not connected their Stripe account yet' });
+    }
+
+    // Verify the connected account has card_payments active — required for
+    // on_behalf_of (destination charge with expert as Merchant of Record).
+    try {
+      const stripeAccount = await stripe.accounts.retrieve(expert.stripe_account_id);
+      if (stripeAccount.capabilities?.card_payments !== 'active') {
+        return res.status(400).json({
+          error: "This expert's payment account is not fully activated yet. They may need to complete their Stripe onboarding. Please try again later or choose another specialist.",
+        });
+      }
+    } catch (e) {
+      console.warn('[createBooking] Could not retrieve Stripe account capabilities:', e.message);
+      // If Stripe is unreachable, let the PI creation fail naturally with a clear error.
     }
 
     // ── Load service ────────────────────────────────────────────────────────
@@ -761,8 +775,10 @@ async function expertCancelBooking(req, res) {
 }
 
 // ─── GET /bookings/tc-version ─────────────────────────────────────────────────
-// Returns the current T&C version and whether this user's last accepted
-// version differs (so the frontend can show a "T&C updated" notice).
+// Returns whether this user must explicitly accept T&C before booking.
+// Triggers for two cases:
+//   1. First-time booker — no prior acceptance on record
+//   2. Returning booker — T&C was updated since their last acceptance
 async function getCurrentTcVersion(req, res) {
   try {
     const [currentTc, lastAccepted] = await Promise.all([
@@ -776,11 +792,13 @@ async function getCurrentTcVersion(req, res) {
       }),
     ]);
 
+    const isFirstBooking = !lastAccepted;
+    const versionUpdated = !!(currentTc && lastAccepted && lastAccepted.version !== currentTc.version);
+
     return res.json({
-      version:         currentTc?.version ?? null,
-      version_updated: currentTc && lastAccepted
-                         ? lastAccepted.version !== currentTc.version
-                         : false,
+      version:          currentTc?.version ?? null,
+      version_updated:  currentTc ? (isFirstBooking || versionUpdated) : false,
+      is_first_booking: isFirstBooking,
     });
   } catch (err) {
     console.error('[getCurrentTcVersion] Error:', err);

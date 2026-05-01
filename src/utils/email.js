@@ -91,7 +91,7 @@ const layout = (bodyContent) => `
           <!-- Header -->
           <tr>
             <td align="center" style="padding-bottom:24px;">
-              <span style="font-size:20px;font-weight:700;color:#1F2933;letter-spacing:-0.3px;">Sage Nest</span>
+              <img src="${process.env.CLIENT_URL}/assets/images/Sage-Nest_Final.png" alt="Sage Nest" width="60" style="display:block;width:60px;height:auto;border:0;margin:0 auto;" />
             </td>
           </tr>
 
