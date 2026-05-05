@@ -1307,6 +1307,7 @@ async function listAllBookings(req, res) {
     const [bookings, total] = await Promise.all([
       prisma.booking.findMany({
         where,
+        omit:    { expert_note: true },
         orderBy: { scheduled_at: "desc" },
         skip,
         take,
@@ -1345,6 +1346,7 @@ async function getBookingDetail(req, res) {
       },
     });
     if (!booking) return res.status(404).json({ error: "Booking not found" });
+    delete booking.expert_note;
     return res.json(booking);
   } catch (err) {
     console.error("[ADMIN] getBookingDetail error:", err);
@@ -1726,6 +1728,21 @@ async function gdprDeleteExpert(req, res) {
     // Hard block: pending payouts must clear before the account can be erased.
     // Deleting an account with a pending payout would cause the expert to lose
     // earned income with no recourse.
+    const upcomingBookingCount = await prisma.booking.count({
+      where: {
+        expert_id: expert.id,
+        status: "CONFIRMED",
+        scheduled_at: { gt: new Date() },
+      },
+    });
+    if (upcomingBookingCount > 0) {
+      return res.status(409).json({
+        error: `This account cannot be deleted. The expert has ${upcomingBookingCount} upcoming confirmed booking${upcomingBookingCount !== 1 ? "s" : ""} that must be cancelled first.`,
+        code: "UPCOMING_BOOKINGS",
+        upcoming_booking_count: upcomingBookingCount,
+      });
+    }
+
     const pendingPayoutCount = await prisma.booking.count({
       where: { expert_id: expert.id, transfer_status: "pending" },
     });
@@ -2012,7 +2029,8 @@ async function listParentBookings(req, res) {
   const { id } = req.params;
   try {
     const bookings = await prisma.booking.findMany({
-      where: { parent_id: parseInt(id) },
+      where:   { parent_id: parseInt(id) },
+      omit:    { expert_note: true },
       orderBy: { scheduled_at: "desc" },
       take: 50,
       include: {

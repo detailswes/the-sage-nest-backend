@@ -63,6 +63,7 @@ async function runReminders() {
           durationMinutes: booking.duration_minutes,
           reminderType:    '24h',
           bookingId:       booking.id,
+          timezone:        booking.expert?.timezone,
         };
 
         if (parentEmail) {
@@ -104,6 +105,7 @@ async function runReminders() {
           durationMinutes: booking.duration_minutes,
           reminderType:    '1h',
           bookingId:       booking.id,
+          timezone:        booking.expert?.timezone,
         };
 
         if (parentEmail) {

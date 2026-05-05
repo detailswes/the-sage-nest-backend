@@ -26,8 +26,8 @@ const {
   sendPasswordChangedEmail,
 } = require("../utils/email");
 
-const OTP_EXPIRY_MS   = 60 * 1000;        // 1 minute
-const OTP_RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds between resends
+const OTP_EXPIRY_MS   = 300 * 1000;       // 5 minutes
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000; // 60 seconds between resends
 const OTP_MAX_ATTEMPTS = 5;
 
 function generateOtpCode() {
@@ -879,6 +879,22 @@ async function deleteAccount(req, res) {
     });
 
     if (expert) {
+      // Block: upcoming confirmed bookings — parents have paid for these sessions
+      const upcomingBookingCount = await prisma.booking.count({
+        where: {
+          expert_id: expert.id,
+          status: "CONFIRMED",
+          scheduled_at: { gt: new Date() },
+        },
+      });
+      if (upcomingBookingCount > 0) {
+        return res.status(409).json({
+          error: `You have ${upcomingBookingCount} upcoming confirmed booking${upcomingBookingCount !== 1 ? "s" : ""}. Please cancel ${upcomingBookingCount !== 1 ? "them" : "it"} before deleting your account.`,
+          has_upcoming_bookings: true,
+          upcoming_booking_count: upcomingBookingCount,
+        });
+      }
+
       // Block: pending payout (DAC7 — transfer must clear before account can be deleted)
       const pendingPayoutCount = await prisma.booking.count({
         where: { expert_id: expert.id, transfer_status: "pending" },
