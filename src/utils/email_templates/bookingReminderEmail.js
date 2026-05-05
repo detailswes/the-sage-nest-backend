@@ -14,6 +14,15 @@
  *   clientUrl: string
  * }} params
  */
+function fmtTime(date, timezone) {
+  const tz = timezone || 'UTC';
+  const d  = new Date(date);
+  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: tz });
+  const abbr = new Intl.DateTimeFormat('en-GB', { timeZone: tz, timeZoneName: 'short' })
+    .formatToParts(d).find((p) => p.type === 'timeZoneName')?.value || tz;
+  return `${time} ${abbr}`;
+}
+
 const bookingReminderEmailHtml = ({
   recipientName,
   role,
@@ -24,14 +33,13 @@ const bookingReminderEmailHtml = ({
   durationMinutes,
   reminderType,
   bookingId,
+  timezone,
   clientUrl,
 }) => {
   const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
   });
-  const timeStr = new Date(scheduledAt).toLocaleTimeString('en-GB', {
-    hour: '2-digit', minute: '2-digit', timeZone: 'UTC',
-  });
+  const timeStr = fmtTime(scheduledAt, timezone);
   const formatLabel = format === 'ONLINE' ? 'Online Session' : 'In-Person Session';
   const durationLabel =
     durationMinutes < 60
@@ -107,7 +115,7 @@ const bookingReminderEmailHtml = ({
               <tr>
                 <td style="padding-bottom:12px;border-top:1px solid #E4E7E4;padding-top:12px;">
                   <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Date &amp; Time</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${dateStr} at ${timeStr} UTC</span>
+                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${dateStr} at ${timeStr}</span>
                 </td>
               </tr>
               <tr>

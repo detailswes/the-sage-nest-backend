@@ -222,6 +222,8 @@ model Booking {
   dispute_reason           String?
   disputed_at              DateTime?
   internal_admin_note      String?
+  expert_note              String?
+  completed_at             DateTime?
   is_disputed              Boolean        @default(false)
   is_reschedule            Boolean        @default(false)
   expert                   Expert         @relation("ExpertBookings", fields: [expert_id], references: [id], onDelete: Cascade)

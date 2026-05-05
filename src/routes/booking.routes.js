@@ -9,8 +9,11 @@ const {
   rescheduleBooking,
   expertCancelBooking,
   getUpcomingAppointments,
+  getPastAppointments,
   getCalendarBookings,
   markSessionLinkSent,
+  markBookingComplete,
+  saveExpertNote,
   verifyPayment,
   getCurrentTcVersion,
 } = require('../controllers/booking.controller');
@@ -26,8 +29,11 @@ router.patch('/:id/reschedule', rescheduleBooking);       // PATCH  /bookings/:i
 
 // ── Expert routes ─────────────────────────────────────────────────────────────
 router.get('/upcoming',              getUpcomingAppointments); // GET    /bookings/upcoming
+router.get('/past',                  getPastAppointments);     // GET    /bookings/past
 router.get('/calendar',              getCalendarBookings);     // GET    /bookings/calendar
 router.patch('/:id/link-sent',       markSessionLinkSent);     // PATCH  /bookings/:id/link-sent
+router.patch('/:id/complete',        markBookingComplete);     // PATCH  /bookings/:id/complete
+router.patch('/:id/expert-note',     saveExpertNote);          // PATCH  /bookings/:id/expert-note
 router.post('/:id/expert-cancel',    expertCancelBooking);     // POST   /bookings/:id/expert-cancel
 
 // ── Shared ────────────────────────────────────────────────────────────────────

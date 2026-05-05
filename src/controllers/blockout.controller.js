@@ -5,114 +5,118 @@ async function getExpertIdForUser(userId) {
   return expert ? expert.id : null;
 }
 
-// POST /blockouts — create a block-out (full day or specific time slot)
-async function createBlockout(req, res) {
-  const { date, start_time, end_time } = req.body;
+// Parse "YYYY-MM-DD" as a UTC midnight Date
+function parseUTCDate(str) {
+  const [y, m, d] = str.split('-').map(Number);
+  return new Date(Date.UTC(y, m - 1, d));
+}
 
-  if (!date) {
-    return res.status(400).json({ error: 'date is required' });
+// POST /blockouts — create block-outs for a date range (date_from to date_to, inclusive)
+async function createBlockout(req, res) {
+  const { date_from, date_to, start_time, end_time } = req.body;
+
+  if (!date_from || !date_to) {
+    return res.status(400).json({ error: 'date_from and date_to are required' });
   }
 
-  // If either time is set, both must be set
   if ((start_time && !end_time) || (!start_time && end_time)) {
     return res.status(400).json({ error: 'Both start_time and end_time are required for a time-slot block' });
   }
-
   if (start_time && end_time && start_time >= end_time) {
     return res.status(400).json({ error: 'end_time must be after start_time' });
   }
 
-  const parsedDate = new Date(date);
-  if (isNaN(parsedDate.getTime())) {
+  const fromDate = parseUTCDate(date_from);
+  const toDate   = parseUTCDate(date_to);
+  if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
     return res.status(400).json({ error: 'Invalid date format — use YYYY-MM-DD' });
+  }
+  if (fromDate > toDate) {
+    return res.status(400).json({ error: 'date_from must be on or before date_to' });
+  }
+
+  const dayCount = Math.round((toDate - fromDate) / (24 * 60 * 60 * 1000)) + 1;
+  if (dayCount > 90) {
+    return res.status(400).json({ error: 'Date range cannot exceed 90 days' });
   }
 
   try {
     const expert_id = await getExpertIdForUser(req.user.id);
     if (!expert_id) return res.status(404).json({ error: 'Expert profile not found' });
 
-    // Fetch all existing blocks on this date for this expert
-    const existing = await prisma.availabilityBlock.findMany({
-      where: { expert_id, date: parsedDate },
-    });
+    const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const isFullDay = !start_time;
+    const created = [];
+    let removedCount = 0;
+    let skipped = 0;
 
-    const hasFullDay   = existing.some((b) => !b.start_time);
-    const hasTimeSlots = existing.some((b) => !!b.start_time);
-    const isFullDay    = !start_time;
+    const cursor = new Date(fromDate);
+    while (cursor <= toDate) {
+      const dateForDay = new Date(cursor);
 
-    if (isFullDay) {
-      if (hasFullDay) {
-        return res.status(409).json({
-          error: 'This day is already marked as a Day Off. No changes were made.',
-        });
-      }
-
-      // Full Day supersedes any existing time-slot blocks — auto-remove them
-      if (hasTimeSlots) {
-        await prisma.availabilityBlock.deleteMany({
-          where: { expert_id, date: parsedDate, start_time: { not: null } },
-        });
-      }
-    } else {
-      // Adding a time slot
-      if (hasFullDay) {
-        return res.status(409).json({
-          error:
-            'This day is already fully blocked as a Day Off. You cannot add a time slot on top of it. If you only want to block part of the day, restore the Day Off first and then add your time-slot block.',
-        });
-      }
-
-      // Reject if the expert has no weekly availability for this day of the week
-      const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
-      const dayOfWeek = parsedDate.getDay();
-      const dayAvailability = await prisma.availability.findFirst({
-        where: { expert_id, day_of_week: dayOfWeek },
-      });
-      if (!dayAvailability) {
-        const dayName = DAY_NAMES[dayOfWeek];
-        return res.status(409).json({
-          error: `You have no availability set for ${dayName}s, so there is nothing to block on this day. Add ${dayName} availability to your Weekly Schedule first, or use a Full Day block if you want to mark the entire day as unavailable.`,
-        });
-      }
-
-      // Check for overlap with existing time-slot blocks
-      const [newStart, newEnd] = [start_time, end_time].map((t) => {
-        const [h, m] = t.split(':').map(Number);
-        return h * 60 + m;
+      const existing = await prisma.availabilityBlock.findMany({
+        where: { expert_id, date: dateForDay },
       });
 
-      const overlapping = existing.filter((b) => {
-        const [bh, bm] = b.start_time.split(':').map(Number);
-        const [eh, em] = b.end_time.split(':').map(Number);
-        const bStart = bh * 60 + bm;
-        const bEnd   = eh * 60 + em;
-        return newStart < bEnd && newEnd > bStart;
-      });
+      const hasFullDay   = existing.some((b) => !b.start_time);
+      const hasTimeSlots = existing.some((b) => !!b.start_time);
 
-      if (overlapping.length > 0) {
-        const times = overlapping
-          .map((b) => `${b.start_time}–${b.end_time}`)
-          .join(', ');
-        return res.status(409).json({
-          error: `This time slot overlaps with an existing block (${times}). Please choose a different time or remove the existing block first.`,
-        });
+      if (isFullDay) {
+        if (hasFullDay) {
+          // Already a full-day block — skip silently
+          skipped++;
+        } else {
+          // Auto-remove any time-slot blocks superseded by this full-day block
+          if (hasTimeSlots) {
+            await prisma.availabilityBlock.deleteMany({
+              where: { expert_id, date: dateForDay, start_time: { not: null } },
+            });
+            removedCount += existing.filter((b) => !!b.start_time).length;
+          }
+          const blockout = await prisma.availabilityBlock.create({
+            data: { expert_id, date: dateForDay, start_time: null, end_time: null },
+          });
+          created.push(blockout);
+        }
+      } else {
+        // Time-slot block
+        if (hasFullDay) {
+          skipped++;
+        } else {
+          const dayOfWeek = dateForDay.getUTCDay();
+          const dayAvailability = await prisma.availability.findFirst({
+            where: { expert_id, day_of_week: dayOfWeek },
+          });
+          if (!dayAvailability) {
+            skipped++;
+          } else {
+            const [newStart, newEnd] = [start_time, end_time].map((t) => {
+              const [h, m] = t.split(':').map(Number);
+              return h * 60 + m;
+            });
+            const hasOverlap = existing.some((b) => {
+              if (!b.start_time) return false;
+              const [bh, bm] = b.start_time.split(':').map(Number);
+              const [eh, em] = b.end_time.split(':').map(Number);
+              return newStart < (eh * 60 + em) && newEnd > (bh * 60 + bm);
+            });
+
+            if (hasOverlap) {
+              skipped++;
+            } else {
+              const blockout = await prisma.availabilityBlock.create({
+                data: { expert_id, date: dateForDay, start_time, end_time },
+              });
+              created.push(blockout);
+            }
+          }
+        }
       }
+
+      cursor.setUTCDate(cursor.getUTCDate() + 1);
     }
 
-    const blockout = await prisma.availabilityBlock.create({
-      data: {
-        expert_id,
-        date: parsedDate,
-        start_time: start_time || null,
-        end_time:   end_time   || null,
-      },
-    });
-
-    // Tell the frontend how many time-slot blocks were removed so it can
-    // refresh the list and show a helpful message if needed
-    const removedCount = isFullDay && hasTimeSlots ? existing.filter((b) => !!b.start_time).length : 0;
-
-    return res.status(201).json({ ...blockout, removedCount });
+    return res.status(201).json({ blockouts: created, removedCount, skipped });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Server error' });

@@ -194,6 +194,7 @@ async function getBookingById(req, res) {
       return res.status(403).json({ error: 'Access denied' });
     }
 
+    if (!isExpert) delete booking.expert_note;
     return res.json(booking);
   } catch (err) {
     console.error(err);
@@ -206,6 +207,7 @@ async function getMyBookings(req, res) {
   try {
     const bookings = await prisma.booking.findMany({
       where: { parent_id: req.user.id },
+      omit:  { expert_note: true },
       orderBy: { scheduled_at: 'desc' },
       include: {
         expert:  { select: { profile_image: true, user: { select: { name: true, account_deleted: true } } } },
@@ -365,6 +367,7 @@ async function cancelBooking(req, res) {
       cancellationReason: reason || null,
       refundPercent,
       amount:             booking.amount,
+      timezone:           booking.expert.timezone,
     }).catch((e) => console.error('[Email] Cancellation notification failed:', e.message));
 
     return res.json({ success: true, refund_initiated: refundInitiated, refund_percent: refundPercent });
@@ -559,6 +562,110 @@ async function getCalendarBookings(req, res) {
     });
 
     return res.json(bookings);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+// ─── PATCH /bookings/:id/complete — expert marks a past CONFIRMED booking done ─
+async function markBookingComplete(req, res) {
+  const { id } = req.params;
+  const { note } = req.body;
+
+  try {
+    const expert_id = await getExpertIdForUser(req.user.id);
+    if (!expert_id) return res.status(404).json({ error: 'Expert profile not found' });
+
+    const booking = await prisma.booking.findUnique({ where: { id: parseInt(id) } });
+    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+    if (booking.expert_id !== expert_id) return res.status(403).json({ error: 'Access denied' });
+    if (booking.status !== 'CONFIRMED') {
+      return res.status(400).json({ error: 'Only CONFIRMED bookings can be marked complete' });
+    }
+    if (new Date(booking.scheduled_at) > new Date()) {
+      return res.status(400).json({ error: 'Cannot mark a future booking as complete' });
+    }
+
+    const data = { status: 'COMPLETED', completed_at: new Date() };
+    if (typeof note === 'string') data.expert_note = note.trim() || null;
+
+    const updated = await prisma.booking.update({ where: { id: parseInt(id) }, data });
+    return res.json({
+      status:       updated.status,
+      completed_at: updated.completed_at,
+      expert_note:  updated.expert_note,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+// ─── PATCH /bookings/:id/expert-note — save/update expert private notes ───────
+async function saveExpertNote(req, res) {
+  const { id } = req.params;
+  const { note } = req.body;
+
+  if (typeof note !== 'string') {
+    return res.status(400).json({ error: 'note must be a string' });
+  }
+
+  try {
+    const expert_id = await getExpertIdForUser(req.user.id);
+    if (!expert_id) return res.status(404).json({ error: 'Expert profile not found' });
+
+    const booking = await prisma.booking.findUnique({ where: { id: parseInt(id) } });
+    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+    if (booking.expert_id !== expert_id) return res.status(403).json({ error: 'Access denied' });
+
+    const updated = await prisma.booking.update({
+      where: { id: parseInt(id) },
+      data:  { expert_note: note.trim() || null },
+    });
+    return res.json({ expert_note: updated.expert_note });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+// ─── GET /bookings/past — paginated session history for the expert ────────────
+async function getPastAppointments(req, res) {
+  try {
+    const expert_id = await getExpertIdForUser(req.user.id);
+    if (!expert_id) return res.status(404).json({ error: 'Expert profile not found' });
+
+    const page  = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = 20;
+    const skip  = (page - 1) * limit;
+    const now   = new Date();
+
+    const where = {
+      expert_id,
+      OR: [
+        { status: 'CONFIRMED',  scheduled_at: { lt: now } },
+        { status: 'COMPLETED' },
+        { status: 'CANCELLED' },
+        { status: 'REFUNDED'  },
+      ],
+    };
+
+    const [total, bookings] = await Promise.all([
+      prisma.booking.count({ where }),
+      prisma.booking.findMany({
+        where,
+        orderBy: { scheduled_at: 'desc' },
+        skip,
+        take: limit,
+        include: {
+          parent:  { select: { name: true, email: true } },
+          service: { select: { title: true, duration_minutes: true } },
+        },
+      }),
+    ]);
+
+    return res.json({ bookings, total, page, pages: Math.ceil(total / limit) });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Server error' });
@@ -815,7 +922,10 @@ module.exports = {
   rescheduleBooking,
   expertCancelBooking,
   getUpcomingAppointments,
+  getPastAppointments,
   getCalendarBookings,
   markSessionLinkSent,
+  markBookingComplete,
+  saveExpertNote,
   getCurrentTcVersion,
 };

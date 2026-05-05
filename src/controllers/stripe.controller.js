@@ -150,7 +150,7 @@ async function handleWebhook(req, res) {
           where: { stripe_payment_intent_id: pi.id },
           include: {
             parent:  { select: { name: true, email: true } },
-            expert:  { select: { address_street: true, address_city: true, address_postcode: true, user: { select: { name: true, email: true } } } },
+            expert:  { select: { address_street: true, address_city: true, address_postcode: true, timezone: true, user: { select: { name: true, email: true } } } },
             service: { select: { title: true } },
           },
         });
@@ -209,6 +209,7 @@ async function handleWebhook(req, res) {
             scheduledAt:     booking.scheduled_at,
             durationMinutes: booking.duration_minutes,
             bookingId:       booking.id,
+            timezone:        booking.expert.timezone,
           }).catch((e) => console.error('[Email] Expert notification email failed:', e.message));
         } else {
           console.log(`[Webhook] Booking ${booking.id} already has status=${booking.status} — skipping update`);
@@ -230,7 +231,7 @@ async function handleWebhook(req, res) {
         }
         break;
       }
-
+    
       // ── Payment intent canceled (e.g. by cleanup job or Stripe expiry) ──────
       case 'payment_intent.canceled': {
         const pi = event.data.object;

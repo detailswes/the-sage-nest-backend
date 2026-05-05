@@ -11,6 +11,25 @@ function timeToMinutes(timeStr) {
   return h * 60 + m;
 }
 
+// ─── Helper: UTC date → { timeStr "HH:MM", dayOfWeek 0–6 } in a given timezone
+function getZonedParts(date, timezone) {
+  const parts = {};
+  new Intl.DateTimeFormat('en-US', {
+    timeZone: timezone,
+    weekday: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).formatToParts(date).forEach(({ type, value }) => { parts[type] = value; });
+
+  const h = parts.hour === '24' ? 0 : parseInt(parts.hour, 10);
+  const m = parseInt(parts.minute, 10);
+  const timeStr = `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+  const dayMap = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  const dayOfWeek = dayMap[parts.weekday] ?? date.getDay();
+  return { timeStr, dayOfWeek };
+}
+
 // ─── Helper: minutes from midnight → "HH:MM" ─────────────────────────────────
 function minutesToTime(mins) {
   const h = Math.floor(mins / 60);
@@ -200,6 +219,23 @@ async function addAvailability(req, res) {
     return res.status(400).json({ error: 'day_of_week, start_time, and end_time are required' });
   }
 
+  const TIME_RE = /^\d{2}:\d{2}$/;
+  if (!TIME_RE.test(start_time) || !TIME_RE.test(end_time)) {
+    return res.status(400).json({ error: 'Times must be in HH:MM format' });
+  }
+
+  const MIN_TIME = '06:00';
+  const MAX_TIME = '22:00';
+  if (start_time < MIN_TIME || start_time >= MAX_TIME) {
+    return res.status(400).json({ error: 'Start time must be between 06:00 and 21:59' });
+  }
+  if (end_time <= MIN_TIME || end_time > MAX_TIME) {
+    return res.status(400).json({ error: 'End time must be between 06:01 and 22:00' });
+  }
+  if (start_time >= end_time) {
+    return res.status(400).json({ error: 'End time must be after start time' });
+  }
+
   try {
     const expert = await prisma.expert.findUnique({
       where: { user_id: req.user.id },
@@ -210,8 +246,21 @@ async function addAvailability(req, res) {
       return res.status(400).json({ error: 'Please set your timezone in your profile before adding availability.' });
     }
 
+    const dayInt = parseInt(day_of_week);
+    const existing = await prisma.availability.findMany({
+      where: { expert_id: expert.id, day_of_week: dayInt },
+    });
+    const conflict = existing.find(
+      (s) => start_time < s.end_time && end_time > s.start_time
+    );
+    if (conflict) {
+      return res.status(409).json({
+        error: `This slot overlaps with an existing slot on that day: ${conflict.start_time}–${conflict.end_time}`,
+      });
+    }
+
     const availability = await prisma.availability.create({
-      data: { expert_id: expert.id, day_of_week: parseInt(day_of_week), start_time, end_time },
+      data: { expert_id: expert.id, day_of_week: dayInt, start_time, end_time },
     });
     return res.status(201).json(availability);
   } catch (err) {
@@ -256,4 +305,55 @@ async function removeAvailability(req, res) {
   }
 }
 
-module.exports = { addAvailability, listAvailability, removeAvailability, getAvailableSlots };
+// ─── GET /availability/:id/conflicts — bookings affected by removing a slot ───
+async function getAvailabilityConflicts(req, res) {
+  const { id } = req.params;
+
+  try {
+    const expert = await prisma.expert.findUnique({
+      where: { user_id: req.user.id },
+      select: { id: true, timezone: true },
+    });
+    if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
+
+    const slot = await prisma.availability.findUnique({ where: { id: parseInt(id) } });
+    if (!slot || slot.expert_id !== expert.id) {
+      return res.status(404).json({ error: 'Availability slot not found' });
+    }
+
+    const tz = expert.timezone || 'UTC';
+
+    const bookings = await prisma.booking.findMany({
+      where: {
+        expert_id: expert.id,
+        scheduled_at: { gt: new Date() },
+        status: { in: ['CONFIRMED', 'PENDING_PAYMENT'] },
+      },
+      select: {
+        id: true,
+        scheduled_at: true,
+        duration_minutes: true,
+        status: true,
+        parent: { select: { name: true } },
+        service: { select: { title: true } },
+      },
+      orderBy: { scheduled_at: 'asc' },
+    });
+
+    const conflicts = bookings.filter((bk) => {
+      const { timeStr, dayOfWeek } = getZonedParts(bk.scheduled_at, tz);
+      return (
+        dayOfWeek === slot.day_of_week &&
+        timeStr >= slot.start_time &&
+        timeStr < slot.end_time
+      );
+    });
+
+    return res.json({ bookings: conflicts });
+  } catch (err) {
+    console.error('[getAvailabilityConflicts]', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+module.exports = { addAvailability, listAvailability, removeAvailability, getAvailableSlots, getAvailabilityConflicts };
