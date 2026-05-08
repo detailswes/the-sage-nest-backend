@@ -10,6 +10,7 @@
  *   cancellationReason?: string,
  *   refundPercent: 0 | 50 | 100,
  *   amount: number | string,
+ *   currency?: string,
  *   clientUrl: string
  * }} params
  */
@@ -31,6 +32,7 @@ const cancellationNotificationEmailHtml = ({
   cancellationReason,
   refundPercent,
   amount,
+  currency = 'EUR',
   timezone,
   clientUrl,
 }) => {
@@ -48,7 +50,7 @@ const cancellationNotificationEmailHtml = ({
 
   const totalAmount   = Number(amount) || 0;
   const halfAmount    = totalAmount * 0.5;
-  const fmt           = (n) => `£${n.toFixed(2)}`;
+  const fmt           = (n) => new Intl.NumberFormat('en', { style: 'currency', currency }).format(n);
 
   const refundOutcome = refundPercent === 100
     ? `As the cancellation was made more than 24 hours before the session, ${parentFirstName} has received a full refund of ${fmt(totalAmount)}.`

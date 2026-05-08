@@ -7,6 +7,7 @@
  *   serviceTitle: string,
  *   scheduledAt: Date,
  *   refundAmount: number,
+ *   currency?: string,
  *   isPartial: boolean,
  *   reason?: string,
  *   bookingId: number,
@@ -19,6 +20,7 @@ const refundParentEmailHtml = ({
   serviceTitle,
   scheduledAt,
   refundAmount,
+  currency = 'EUR',
   isPartial,
   reason,
   bookingId,
@@ -35,7 +37,7 @@ const refundParentEmailHtml = ({
     minute: '2-digit',
     timeZone: 'UTC',
   });
-  const amountStr = `£${parseFloat(refundAmount).toFixed(2)}`;
+  const amountStr = new Intl.NumberFormat('en', { style: 'currency', currency }).format(parseFloat(refundAmount));
   const refundLabel = isPartial ? `Partial refund of ${amountStr}` : `Full refund of ${amountStr}`;
   const logoUrl     = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
 

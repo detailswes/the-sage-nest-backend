@@ -108,6 +108,7 @@ model Service {
   title            String
   duration_minutes Int
   price            Decimal         @db.Decimal(10, 2)
+  currency         String          @default("EUR")
   is_active        Boolean         @default(true)
   cluster          ServiceCluster?
   description      String?
@@ -201,6 +202,7 @@ model Booking {
   created_at               DateTime       @default(now())
   updated_at               DateTime       @updatedAt
   amount                   Decimal?       @db.Decimal(10, 2)
+  currency                 String         @default("EUR")
   cancellation_reason      String?
   cancelled_at             DateTime?
   platform_fee             Decimal?       @db.Decimal(10, 2)

@@ -82,6 +82,7 @@ async function createBooking(req, res) {
     // truth for concurrency. Abandoned/failed bookings are DELETED (not CANCELLED)
     // so the unique slot is freed and another parent can book it.
     const platformFee = (Number(service.price) * 0.20).toFixed(2);
+    const currency    = (service.currency || 'EUR').toLowerCase();
 
     let booking;
     try {
@@ -95,6 +96,7 @@ async function createBooking(req, res) {
           format,
           status:           'PENDING_PAYMENT',
           amount:           service.price,
+          currency:         currency.toUpperCase(),
           platform_fee:     platformFee,
         },
       });
@@ -122,7 +124,7 @@ async function createBooking(req, res) {
     try {
       paymentIntent = await stripe.paymentIntents.create({
         amount:                 amountInPence,
-        currency:               'gbp',
+        currency,
         on_behalf_of:           expert.stripe_account_id,
         transfer_data:          { destination: expert.stripe_account_id },
         application_fee_amount: applicationFeePence,
@@ -151,19 +153,23 @@ async function createBooking(req, res) {
       where: { type: 'TERMS_CONDITIONS' },
       orderBy: { effective_from: 'desc' },
     });
+    const tcVersion = currentTc?.version ?? '1.0';
     await prisma.tcAcceptance.create({
       data: {
         user_id:    req.user.id,
         booking_id: booking.id,
-        version:    currentTc?.version ?? '1.0',
+        version:    tcVersion,
       },
     });
+    logAudit(req.user.id, 'TC_ACCEPTED', 'PARENT', req.user.id,
+      `T&C v${tcVersion} accepted · Booking #${booking.id}`);
 
     console.log(`[Payment] Booking ${booking.id} ready — clientSecret issued to parent`);
 
     return res.status(201).json({
       bookingId:    booking.id,
       clientSecret: paymentIntent.client_secret,
+      currency:     currency.toUpperCase(),
     });
   } catch (err) {
     console.error('[createBooking] Error:', err);
@@ -367,6 +373,7 @@ async function cancelBooking(req, res) {
       cancellationReason: reason || null,
       refundPercent,
       amount:             booking.amount,
+      currency:           booking.currency || 'EUR',
       timezone:           booking.expert.timezone,
     }).catch((e) => console.error('[Email] Cancellation notification failed:', e.message));
 
@@ -755,7 +762,7 @@ async function verifyPayment(req, res) {
       bookingId:       booking.id,
     }).catch((e) => console.error('[verifyPayment] Expert notification email failed:', e.message));
 
-    return res.json({ status: 'CONFIRMED', reconciled: true });
+    return res.json({ status: 'CONFIRMED' });
   } catch (err) {
     console.error('[verifyPayment]', err);
     return res.status(500).json({ error: 'Server error' });
@@ -871,6 +878,7 @@ async function expertCancelBooking(req, res) {
         serviceTitle: booking.service.title,
         scheduledAt:  booking.scheduled_at,
         amount:       refundedAmount,
+        currency:     booking.currency || 'EUR',
       }).catch((e) => console.error('[Email] Expert cancel parent email failed:', e.message));
     }
 
