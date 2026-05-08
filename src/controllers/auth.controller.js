@@ -154,7 +154,10 @@ async function register(req, res) {
     });
 
     if (assignedRole === "EXPERT") {
-      await prisma.expert.create({ data: { user_id: user.id } });
+      const expert = await prisma.expert.create({ data: { user_id: user.id } });
+      logAudit(user.id, 'REGISTERED', 'EXPERT', expert.id, 'Account created');
+    } else {
+      logAudit(user.id, 'REGISTERED', 'PARENT', user.id, 'Account created');
     }
 
     // Store Privacy Policy acceptance (GDPR requirement)

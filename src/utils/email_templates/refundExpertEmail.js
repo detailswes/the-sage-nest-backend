@@ -7,6 +7,7 @@
  *   serviceTitle: string,
  *   scheduledAt: Date,
  *   refundAmount: number,
+ *   currency?: string,
  *   isPartial: boolean,
  *   bookingId: number,
  *   clientUrl: string
@@ -18,6 +19,7 @@ const refundExpertEmailHtml = ({
   serviceTitle,
   scheduledAt,
   refundAmount,
+  currency = 'EUR',
   isPartial,
   bookingId,
   clientUrl,
@@ -33,7 +35,7 @@ const refundExpertEmailHtml = ({
     minute: '2-digit',
     timeZone: 'UTC',
   });
-  const amountStr = `£${parseFloat(refundAmount).toFixed(2)}`;
+  const amountStr = new Intl.NumberFormat('en', { style: 'currency', currency }).format(parseFloat(refundAmount));
   const logoUrl   = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
 
   return `

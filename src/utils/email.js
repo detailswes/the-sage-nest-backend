@@ -359,6 +359,7 @@ const sendBookingCancellationNotification = ({
   cancellationReason,
   refundPercent,
   amount,
+  currency = 'EUR',
   timezone,
 }) => {
   const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
@@ -377,6 +378,7 @@ const sendBookingCancellationNotification = ({
       cancellationReason,
       refundPercent,
       amount,
+      currency,
       timezone,
       clientUrl: process.env.CLIENT_URL,
     }),
@@ -515,26 +517,30 @@ const sendRefundNotificationToParent = ({
   serviceTitle,
   scheduledAt,
   refundAmount,
+  currency = 'EUR',
   isPartial,
   reason,
   bookingId,
-}) =>
-  sendEmail({
+}) => {
+  const amountStr = new Intl.NumberFormat('en', { style: 'currency', currency }).format(parseFloat(refundAmount));
+  return sendEmail({
     to,
-    subject: `Your refund of £${parseFloat(refundAmount).toFixed(2)} has been processed`,
-    text: `Hi ${parentName}, a ${isPartial ? "partial" : "full"} refund of £${parseFloat(refundAmount).toFixed(2)} has been issued for your booking #${bookingId} with ${expertName}. Funds will appear within 3–5 business days.`,
+    subject: `Your refund of ${amountStr} has been processed`,
+    text: `Hi ${parentName}, a ${isPartial ? "partial" : "full"} refund of ${amountStr} has been issued for your booking #${bookingId} with ${expertName}. Funds will appear within 3–5 business days.`,
     html: refundParentEmailHtml({
       parentName,
       expertName,
       serviceTitle,
       scheduledAt,
       refundAmount,
+      currency,
       isPartial,
       reason,
       bookingId,
       clientUrl: process.env.CLIENT_URL,
     }),
   });
+};
 
 /**
  * Notify an expert that a refund has been issued for one of their bookings.
@@ -551,24 +557,28 @@ const sendRefundNotificationToExpert = ({
   serviceTitle,
   scheduledAt,
   refundAmount,
+  currency = 'EUR',
   isPartial,
   bookingId,
-}) =>
-  sendEmail({
+}) => {
+  const amountStr = new Intl.NumberFormat('en', { style: 'currency', currency }).format(parseFloat(refundAmount));
+  return sendEmail({
     to,
     subject: `A refund has been issued for booking #${bookingId}`,
-    text: `Hi ${expertName}, a ${isPartial ? "partial" : "full"} refund of £${parseFloat(refundAmount).toFixed(2)} has been issued to ${parentName} for booking #${bookingId}. The payout for this booking will not be processed.`,
+    text: `Hi ${expertName}, a ${isPartial ? "partial" : "full"} refund of ${amountStr} has been issued to ${parentName} for booking #${bookingId}. The payout for this booking will not be processed.`,
     html: refundExpertEmailHtml({
       expertName,
       parentName,
       serviceTitle,
       scheduledAt,
       refundAmount,
+      currency,
       isPartial,
       bookingId,
       clientUrl: process.env.CLIENT_URL,
     }),
   });
+};
 
 /**
  * Reschedule notification — sent to the expert when a parent reschedules.
@@ -740,20 +750,23 @@ const sendExpertCancelledSessionEmail = ({
   serviceTitle,
   scheduledAt,
   amount,
+  currency = 'EUR',
 }) => {
   const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
   });
+  const amountStr = new Intl.NumberFormat('en', { style: 'currency', currency }).format(Number(amount));
   return sendEmail({
     to,
     subject: `Your session on ${dateStr} has been cancelled — full refund issued`,
-    text: `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. A full refund of £${Number(amount).toFixed(2)} has been issued to your original payment method.`,
+    text: `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. A full refund of ${amountStr} has been issued to your original payment method.`,
     html: expertCancelledSessionEmailHtml({
       parentName,
       expertName,
       serviceTitle,
       scheduledAt,
       amount,
+      currency,
       clientUrl: process.env.CLIENT_URL,
     }),
   });

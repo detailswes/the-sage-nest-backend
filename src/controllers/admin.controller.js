@@ -62,7 +62,7 @@ async function listExperts(req, res) {
     Math.max(1, parseInt(req.query.limit) || PAGE_LIMIT)
   );
   const skip = (page - 1) * limit;
-  const { status, search, city, qualification, cluster } = req.query;
+  const { status, search, city, qualification, cluster, from, to } = req.query;
 
   const baseWhere = { user: { role: "EXPERT" } };
   const where = { ...baseWhere };
@@ -90,6 +90,15 @@ async function listExperts(req, res) {
   }
   if (cluster && VALID_CLUSTERS.includes(cluster)) {
     where.services = { some: { cluster } };
+  }
+  if (isAdmin && (from || to)) {
+    where.user = {
+      ...where.user,
+      created_at: {
+        ...(from ? { gte: new Date(from) } : {}),
+        ...(to   ? { lte: new Date(to + "T23:59:59.999Z") } : {}),
+      },
+    };
   }
 
   const adminInclude = {
@@ -828,6 +837,7 @@ async function exportTaxData(req, res) {
     // ── Sheet 2: Payments ────────────────────────────────────────────────────
     const paySheet = workbook.addWorksheet(`Payments ${year}`);
     paySheet.columns = [
+      { header: 'Booking ID',        key: 'booking_id',     width: 12 },
       { header: 'Date',              key: 'date',           width: 14 },
       { header: 'Service',           key: 'service',        width: 32 },
       { header: 'Duration (min)',    key: 'duration',       width: 15 },
@@ -860,6 +870,7 @@ async function exportTaxData(req, res) {
       if (refAmt != null) totalRefund += refAmt;
 
       paySheet.addRow({
+        booking_id:     b.id,
         date:           new Date(b.scheduled_at).toISOString().split('T')[0],
         service:        b.service?.title || '',
         duration:       b.duration_minutes,
@@ -1228,6 +1239,7 @@ async function manualRefund(req, res) {
         serviceTitle:  booking.service?.title || "the session",
         scheduledAt:   booking.scheduled_at,
         refundAmount:  refundAmountValue,
+        currency:      booking.currency || 'EUR',
         isPartial,
         reason:        [reason?.trim(), override_reason?.trim()].filter(Boolean).join(' — ') || undefined,
         bookingId:     booking.id,
@@ -1244,6 +1256,7 @@ async function manualRefund(req, res) {
         serviceTitle: booking.service?.title || "the session",
         scheduledAt:  booking.scheduled_at,
         refundAmount: refundAmountValue,
+        currency:     booking.currency || 'EUR',
         isPartial,
         bookingId:    booking.id,
       });
@@ -1432,6 +1445,7 @@ async function adminCancelBooking(req, res) {
           serviceTitle: booking.service?.title || "the session",
           scheduledAt:  booking.scheduled_at,
           refundAmount: refundedAmount,
+          currency:     booking.currency || 'EUR',
           isPartial:    false,
           reason:       reason.trim(),
           bookingId:    booking.id,
@@ -1447,6 +1461,7 @@ async function adminCancelBooking(req, res) {
           serviceTitle: booking.service?.title || "the session",
           scheduledAt:  booking.scheduled_at,
           refundAmount: refundedAmount,
+          currency:     booking.currency || 'EUR',
           isPartial:    false,
           bookingId:    booking.id,
         });
@@ -1937,6 +1952,105 @@ async function getParentDetail(req, res) {
   }
 }
 
+// ─── Expert XLSX export ────────────────────────────────────────────────────────
+
+const QUAL_LABELS = {
+  LACTATION_CONSULTANT:      "Lactation Consultant (IBCLC)",
+  BREASTFEEDING_COUNSELLOR:  "Breastfeeding Counsellor",
+  INFANT_SLEEP_CONSULTANT:   "Infant Sleep Consultant",
+  DOULA:                     "Doula",
+  MIDWIFE:                   "Midwife",
+  BABY_OSTEOPATH:            "Baby Osteopath",
+  PAEDIATRIC_NUTRITIONIST:   "Paediatric Nutritionist",
+  EARLY_YEARS_SPECIALIST:    "Early Years Specialist",
+  POSTNATAL_PHYSIOTHERAPIST: "Postnatal Physiotherapist",
+  PARENTING_COACH:           "Parenting Coach",
+  OTHER:                     "Other",
+};
+
+async function exportExperts(req, res) {
+  const { status, search, city, qualification, from, to } = req.query;
+
+  const where = { user: { role: "EXPERT" } };
+
+  if (status && VALID_STATUSES.includes(status)) where.status = status;
+  if (search?.trim()) {
+    where.user = { ...where.user, name: { contains: search.trim(), mode: "insensitive" } };
+  }
+  if (city?.trim()) where.address_city = { contains: city.trim(), mode: "insensitive" };
+  if (qualification && VALID_QUALIFICATION_TYPES.includes(qualification)) {
+    where.qualifications = { some: { type: qualification } };
+  }
+  if (from || to) {
+    where.user = {
+      ...where.user,
+      created_at: {
+        ...(from ? { gte: new Date(from) } : {}),
+        ...(to   ? { lte: new Date(to + "T23:59:59.999Z") } : {}),
+      },
+    };
+  }
+
+  try {
+    const experts = await prisma.expert.findMany({
+      where,
+      select: {
+        status: true,
+        user: { select: { name: true, email: true, created_at: true } },
+        qualifications: { select: { type: true } },
+      },
+      orderBy: { user: { created_at: "desc" } },
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "Sage Nest";
+    const sheet = workbook.addWorksheet("Experts");
+
+    sheet.columns = [
+      { header: "First Name",           key: "first_name",    width: 20 },
+      { header: "Surname",              key: "surname",       width: 20 },
+      { header: "Email",                key: "email",         width: 32 },
+      { header: "Date of Registration", key: "registered_at", width: 22 },
+      { header: "Qualifications",       key: "qualifications",width: 48 },
+      { header: "Status",               key: "status",        width: 16 },
+    ];
+
+    sheet.getRow(1).eachCell((cell) => {
+      cell.font      = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill      = { type: "pattern", pattern: "solid", fgColor: { argb: "FF445446" } };
+      cell.alignment = { vertical: "middle" };
+    });
+
+    experts.forEach((e) => {
+      const parts    = (e.user.name || "").trim().split(/\s+/);
+      const surname  = parts.length > 1 ? parts.pop() : "";
+      const firstName = parts.join(" ");
+      const quals    = e.qualifications
+        .map((q) => QUAL_LABELS[q.type] || q.type)
+        .join(", ") || "—";
+
+      sheet.addRow({
+        first_name:    firstName,
+        surname,
+        email:         e.user.email,
+        registered_at: e.user.created_at
+          ? new Date(e.user.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+          : "—",
+        qualifications: quals,
+        status:        e.status,
+      });
+    });
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="experts_export_${new Date().toISOString().slice(0, 10)}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error("[exportExperts]", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 async function listParents(req, res) {
   const page = Math.max(1, parseInt(req.query.page) || 1);
   const limit = Math.min(
@@ -2019,6 +2133,88 @@ async function listParents(req, res) {
     });
   } catch (err) {
     console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Parent XLSX export ────────────────────────────────────────────────────────
+
+async function exportParents(req, res) {
+  const { status, search, from, to } = req.query;
+
+  const baseWhere = { role: "PARENT", account_deleted: false };
+  const where = { ...baseWhere };
+  const andConditions = [];
+
+  if (status && ["ACTIVE", "SUSPENDED"].includes(status)) {
+    if (status === "ACTIVE") {
+      andConditions.push({ OR: [{ parent_status: "ACTIVE" }, { parent_status: null }] });
+    } else {
+      where.parent_status = status;
+    }
+  }
+  if (search?.trim()) {
+    andConditions.push({
+      OR: [
+        { name:  { contains: search.trim(), mode: "insensitive" } },
+        { email: { contains: search.trim(), mode: "insensitive" } },
+      ],
+    });
+  }
+  if (from || to) {
+    where.created_at = {};
+    if (from) where.created_at.gte = new Date(from);
+    if (to)   where.created_at.lte = new Date(to + "T23:59:59.999Z");
+  }
+  if (andConditions.length > 0) where.AND = andConditions;
+
+  try {
+    const rows = await prisma.user.findMany({
+      where,
+      select: { name: true, email: true, created_at: true, parent_status: true },
+      orderBy: { created_at: "desc" },
+    });
+
+    const workbook  = new ExcelJS.Workbook();
+    workbook.creator = "Sage Nest";
+    const sheet = workbook.addWorksheet("Parents");
+
+    sheet.columns = [
+      { header: "First Name",          key: "first_name",   width: 20 },
+      { header: "Surname",             key: "surname",      width: 20 },
+      { header: "Email",               key: "email",        width: 32 },
+      { header: "Date of Registration",key: "registered_at",width: 22 },
+      { header: "Status",              key: "status",       width: 14 },
+    ];
+
+    // Style header row
+    sheet.getRow(1).eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF445446" } };
+      cell.alignment = { vertical: "middle" };
+    });
+
+    rows.forEach((r) => {
+      const parts     = (r.name || "").trim().split(/\s+/);
+      const surname   = parts.length > 1 ? parts.pop() : "";
+      const firstName = parts.join(" ");
+      sheet.addRow({
+        first_name:   firstName,
+        surname,
+        email:        r.email,
+        registered_at: r.created_at
+          ? new Date(r.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+          : "—",
+        status: r.parent_status || "ACTIVE",
+      });
+    });
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="parents_export_${new Date().toISOString().slice(0,10)}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error("[exportParents]", err);
     return res.status(500).json({ error: "Server error" });
   }
 }
@@ -2631,6 +2827,7 @@ module.exports = {
   unpublishExpert,
   republishExpert,
   exportTaxData,
+  exportExperts,
   getExpertYearlySummary,
   getExpertDetail,
   listExpertBookings,
@@ -2646,6 +2843,7 @@ module.exports = {
   gdprDeleteExpert,
   getParentDetail,
   listParents,
+  exportParents,
   listParentBookings,
   activateParent,
   suspendParent,

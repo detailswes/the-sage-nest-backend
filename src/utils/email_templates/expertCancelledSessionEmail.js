@@ -8,6 +8,7 @@
  *   serviceTitle: string,
  *   scheduledAt: Date,
  *   amount: number,
+ *   currency?: string,
  *   clientUrl: string
  * }} params
  */
@@ -17,6 +18,7 @@ const expertCancelledSessionEmailHtml = ({
   serviceTitle,
   scheduledAt,
   amount,
+  currency = 'EUR',
   clientUrl,
 }) => {
   const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
@@ -33,7 +35,7 @@ const expertCancelledSessionEmailHtml = ({
 
   const parentFirstName = parentName.split(' ')[0];
   const expertFirstName = expertName.split(' ')[0];
-  const amountFormatted = `£${Number(amount).toFixed(2)}`;
+  const amountFormatted = new Intl.NumberFormat('en', { style: 'currency', currency }).format(Number(amount));
   const logoUrl = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
 
   return `

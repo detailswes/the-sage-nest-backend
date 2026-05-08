@@ -17,6 +17,7 @@ const {
   unpublishExpert,
   republishExpert,
   exportTaxData,
+  exportExperts,
   getExpertYearlySummary,
   getExpertDetail,
   listExpertBookings,
@@ -32,6 +33,7 @@ const {
   gdprDeleteExpert,
   getParentDetail,
   listParents,
+  exportParents,
   listParentBookings,
   activateParent,
   suspendParent,
@@ -81,6 +83,9 @@ router.post('/experts/:id/send-password-reset',  sendPasswordReset);
 router.post('/experts/:id/resend-verification',  resendVerification);
 router.post('/experts/:id/verify',               manuallyVerify);
 
+// ── Expert list export ────────────────────────────────────────────────────────
+router.get('/experts/export', exportExperts);
+
 // ── Expert detail (single) ────────────────────────────────────────────────────
 router.get('/experts/:id', getExpertDetail);
 
@@ -110,7 +115,8 @@ router.post('/legal-documents/bump', bumpLegalDocument);
 router.get('/audit-log', getAuditLog);   // ?entityId=X&entityType=EXPERT&page=1
 
 // ── Parent list ───────────────────────────────────────────────────────────────
-router.get('/parents', listParents);
+router.get('/parents',        listParents);
+router.get('/parents/export', exportParents);
 
 // ── Parent detail (single) ────────────────────────────────────────────────────
 router.get('/parents/:id', getParentDetail);
