@@ -1920,10 +1920,11 @@ async function gdprDeleteExpert(req, res) {
     });
 
     // ── 6. Anonymise User record ───────────────────────────────────────────────
+    // name is intentionally kept — DAC7 requires the seller's name to remain
+    // identifiable for tax authority reporting for a minimum of 5 years.
     await prisma.user.update({
       where: { id: expert.user_id },
       data: {
-        name: "Deleted User",
         email: `deleted_${expert.user_id}_${Date.now()}@erasure.local`,
         phone: null,
         password_hash: null,
@@ -1933,6 +1934,7 @@ async function gdprDeleteExpert(req, res) {
         reset_token: null,
         reset_token_expires_at: null,
         account_deleted: true,
+        // name kept for DAC7 tax reporting
       },
     });
 
