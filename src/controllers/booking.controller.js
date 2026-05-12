@@ -50,6 +50,9 @@ async function createBooking(req, res) {
       include: { user: { select: { name: true } } },
     });
     if (!expert) return res.status(404).json({ error: 'Expert not found' });
+    if (expert.status !== 'APPROVED') {
+      return res.status(400).json({ error: 'This specialist is not currently accepting bookings.' });
+    }
     if (!expert.stripe_account_id) {
       return res.status(400).json({ error: 'Expert has not connected their Stripe account yet' });
     }
@@ -216,7 +219,7 @@ async function getMyBookings(req, res) {
       omit:  { expert_note: true },
       orderBy: { scheduled_at: 'desc' },
       include: {
-        expert:  { select: { profile_image: true, user: { select: { name: true, account_deleted: true } } } },
+        expert:  { select: { profile_image: true, address_street: true, address_city: true, address_postcode: true, user: { select: { name: true, account_deleted: true } } } },
         service: { select: { title: true, duration_minutes: true } },
       },
     });
@@ -484,7 +487,7 @@ async function rescheduleBooking(req, res) {
       format:          booking.format,
       scheduledAt:     newDate,
       durationMinutes: booking.duration_minutes,
-      location:        expertAddress || undefined,
+      location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
     }).catch((e) => console.error('[Email] Reschedule parent confirmation failed:', e.message));
 
     // ── Notify expert (reschedule-specific notification) ───────────────────
@@ -747,7 +750,7 @@ async function verifyPayment(req, res) {
       format:          booking.format,
       scheduledAt:     booking.scheduled_at,
       durationMinutes: booking.duration_minutes,
-      location:        expertAddressVerify || undefined,
+      location:        booking.format === 'IN_PERSON' ? (expertAddressVerify || undefined) : undefined,
     }).catch((e) => console.error('[verifyPayment] Parent confirmation email failed:', e.message));
 
     sendNewBookingNotificationEmail({

@@ -196,7 +196,7 @@ async function handleWebhook(req, res) {
             format:          booking.format,
             scheduledAt:     booking.scheduled_at,
             durationMinutes: booking.duration_minutes,
-            location:        expertAddress || undefined,
+            location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
           }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));
 
           sendNewBookingNotificationEmail({

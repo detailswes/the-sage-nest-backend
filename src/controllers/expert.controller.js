@@ -71,18 +71,24 @@ async function getMyProfile(req, res) {
 async function updateMyProfile(req, res) {
   const {
     bio, expertise, profile_image,
-    summary, position, session_format,
+    summary, position, // session_format — managed per-service
     address_street, address_city, address_postcode,
     languages, pending_languages, timezone,
     instagram, facebook, linkedin,
     buffer_minutes, advance_booking_days, min_notice_hours,
   } = req.body;
 
-  // Validate session_format if provided
-  if (session_format !== undefined && session_format !== null && session_format !== '') {
-    if (!VALID_SESSION_FORMATS.includes(session_format)) {
-      return res.status(400).json({ error: 'Invalid session_format value.' });
-    }
+  // session_format validation removed — managed per-service via Service.format
+
+  // Practice address is required on all profile saves
+  if (address_street !== undefined && !address_street?.trim()) {
+    return res.status(400).json({ error: 'Street address is required.' });
+  }
+  if (address_city !== undefined && !address_city?.trim()) {
+    return res.status(400).json({ error: 'City is required.' });
+  }
+  if (address_postcode !== undefined && !address_postcode?.trim()) {
+    return res.status(400).json({ error: 'Postcode is required.' });
   }
 
   // Validate bio length
@@ -170,7 +176,7 @@ async function updateMyProfile(req, res) {
         ...(expertise        !== undefined && { expertise:        expertise        || null }),
         ...(summary          !== undefined && { summary:          summary          || null }),
         ...(position         !== undefined && { position:         position         || null }),
-        ...(session_format   !== undefined && { session_format:   session_format   || null }),
+        // ...(session_format !== undefined && { session_format: session_format || null }),  // managed per-service
         ...(address_street   !== undefined && { address_street:   address_street   || null }),
         ...(address_city     !== undefined && { address_city:     address_city     || null }),
         ...(address_postcode !== undefined && { address_postcode: address_postcode || null }),
@@ -221,9 +227,7 @@ async function updateMyProfile(req, res) {
         ...(profile_image !== undefined && { profile_image }),
         ...(summary !== undefined && { summary }),
         ...(position !== undefined && { position }),
-        ...(session_format !== undefined && {
-          session_format: session_format || null,
-        }),
+        // session_format excluded — managed per-service via Service.format
         ...(address_street !== undefined && { address_street }),
         ...(address_city !== undefined && { address_city }),
         ...(address_postcode !== undefined && { address_postcode }),
@@ -638,7 +642,7 @@ async function saveBusinessInfo(req, res) {
         business_address:    business_address?.trim()       || null,
       },
       create: {
-        expert_id:           expert.id,
+        expert:              { connect: { id: expert.id } },
         entity_type,
         legal_name:          legal_name.trim(),
         date_of_birth:       dob,
@@ -677,7 +681,7 @@ async function listExperts(_req, res) {
         profile_image:  true,
         summary:        true,
         position:       true,
-        session_format:    true,
+        // session_format — managed per-service
         address_street:    true,
         address_city:      true,
         address_postcode:  true,
