@@ -384,7 +384,7 @@ async function login(req, res) {
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: REFRESH_TOKEN_EXPIRES_MS,
     });
 
@@ -457,7 +457,7 @@ async function refresh(req, res) {
     res.cookie("refreshToken", newRefreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: REFRESH_TOKEN_EXPIRES_MS,
     });
 
@@ -503,7 +503,7 @@ async function logout(req, res) {
   res.clearCookie("refreshToken", {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
   });
 
   return res.json({ message: "Logged out successfully" });
@@ -966,9 +966,22 @@ async function deleteAccount(req, res) {
       await prisma.availabilityBlock.deleteMany({ where: { expert_id: expert.id } });
       await prisma.savedExpert.deleteMany({ where: { expert_id: expert.id } });
 
-      // 4. Wipe Expert profile fields — row is KEPT for booking foreign key integrity
-      //    BusinessInfo is intentionally NOT touched — retained per DAC7
-      //    (legal_name, TIN, IBAN required for tax authority reporting for 5+ years)
+      // 4a. Partial-erase BusinessInfo — keep DAC7 fields, wipe operational contact PII
+      if (expert.business_info) {
+        await prisma.businessInfo.update({
+          where: { expert_id: expert.id },
+          data: {
+            business_email:   null,
+            website:          null,
+            municipality:     null,
+            business_address: null,
+            // Retained: legal_name, tin, iban, entity_type, date_of_birth,
+            //           address fields, vat_number, company_reg_number (DAC7)
+          },
+        });
+      }
+
+      // 4b. Wipe Expert profile fields — row is KEPT for booking foreign key integrity
       await prisma.expert.update({
         where: { id: expert.id },
         data: {
@@ -1107,7 +1120,7 @@ async function verifyOtp(req, res) {
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: REFRESH_TOKEN_EXPIRES_MS,
     });
 

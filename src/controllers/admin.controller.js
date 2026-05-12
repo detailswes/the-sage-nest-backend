@@ -110,6 +110,7 @@ async function listExperts(req, res) {
         is_verified: true,
         login_attempts: true,
         locked_until: true,
+        account_deleted: true,
       },
     },
     qualifications: { orderBy: { created_at: "asc" } },
@@ -346,15 +347,40 @@ async function suspendExpert(req, res) {
   try {
     const expert = await prisma.expert.findUnique({
       where: { id: parseInt(id) },
+      select: { id: true, user_id: true, status: true },
     });
     if (!expert) return res.status(404).json({ error: "Expert not found" });
     if (expert.status === "SUSPENDED") {
       return res.status(400).json({ error: "Expert is already suspended." });
     }
-    const updated = await prisma.expert.update({
-      where: { id: parseInt(id) },
-      data: { status: "SUSPENDED" },
+
+    // Block suspension while the expert has upcoming confirmed bookings.
+    // Parents have paid for these sessions and the expert must be available
+    // to fulfil them. Cancel or reschedule those bookings before suspending.
+    const upcomingCount = await prisma.booking.count({
+      where: {
+        expert_id: expert.id,
+        status: "CONFIRMED",
+        scheduled_at: { gt: new Date() },
+      },
     });
+    if (upcomingCount > 0) {
+      return res.status(409).json({
+        error: `This expert has ${upcomingCount} upcoming confirmed booking${upcomingCount !== 1 ? "s" : ""}. Cancel or reschedule ${upcomingCount !== 1 ? "them" : "it"} before suspending.`,
+        code: "UPCOMING_BOOKINGS",
+        upcoming_booking_count: upcomingCount,
+      });
+    }
+
+    const [updated] = await Promise.all([
+      prisma.expert.update({
+        where: { id: parseInt(id) },
+        data: { status: "SUSPENDED", is_published: false },
+      }),
+      // Force immediate logout — existing sessions can no longer be refreshed
+      prisma.refreshToken.deleteMany({ where: { user_id: expert.user_id } }),
+    ]);
+
     await logAudit(req.user.id, "SUSPEND", "EXPERT", parseInt(id));
     return res.json({ message: "Expert suspended", expert: updated });
   } catch (err) {
@@ -1848,9 +1874,23 @@ async function gdprDeleteExpert(req, res) {
       deleteFile(fileUrl);
     }
 
-    // ── 4. Delete BusinessInfo (pure PII — no accounting value) ───────────────
+    // ── 4. Partial-anonymise BusinessInfo ─────────────────────────────────────
+    // DAC7 (EU Directive 2021/514) requires platforms to retain seller identity
+    // and financial data for a minimum of 5 years for tax reporting purposes.
+    // GDPR Art. 17(3)(b) exempts this data from the right to erasure.
+    // Retained: legal_name, tin, iban, entity_type, date_of_birth, address fields,
+    //           vat_number, company_reg_number.
+    // Erased:   business_email, website, municipality, business_address (no DAC7 value).
     if (expert.business_info) {
-      await prisma.businessInfo.delete({ where: { expert_id: expert.id } });
+      await prisma.businessInfo.update({
+        where: { expert_id: expert.id },
+        data: {
+          business_email:   null,
+          website:          null,
+          municipality:     null,
+          business_address: null,
+        },
+      });
     }
 
     // ── 5. Anonymise Expert record ─────────────────────────────────────────────
@@ -1880,10 +1920,11 @@ async function gdprDeleteExpert(req, res) {
     });
 
     // ── 6. Anonymise User record ───────────────────────────────────────────────
+    // name is intentionally kept — DAC7 requires the seller's name to remain
+    // identifiable for tax authority reporting for a minimum of 5 years.
     await prisma.user.update({
       where: { id: expert.user_id },
       data: {
-        name: "Deleted User",
         email: `deleted_${expert.user_id}_${Date.now()}@erasure.local`,
         phone: null,
         password_hash: null,
@@ -1893,6 +1934,7 @@ async function gdprDeleteExpert(req, res) {
         reset_token: null,
         reset_token_expires_at: null,
         account_deleted: true,
+        // name kept for DAC7 tax reporting
       },
     });
 
