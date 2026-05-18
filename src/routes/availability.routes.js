@@ -1,11 +1,13 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth.middleware');
-const { addAvailability, listAvailability, removeAvailability, getAvailableSlots, getAvailabilityConflicts } = require('../controllers/availability.controller');
+const { addAvailability, listAvailability, removeAvailability, getAvailableSlots, getAvailabilityConflicts, getAvailableDatesInMonth } = require('../controllers/availability.controller');
 
-// ── Public route — must be declared BEFORE router.use(authenticate) ───────────
+// ── Public routes — must be declared BEFORE router.use(authenticate) ──────────
 // GET /availability/slots?expertId=X&date=YYYY-MM-DD&serviceId=Y
 router.get('/slots', getAvailableSlots);
+// GET /availability/available-dates?expertId=X&year=YYYY&month=M&serviceId=Y
+router.get('/available-dates', getAvailableDatesInMonth);
 
 // All routes below require authentication
 router.use(authenticate);

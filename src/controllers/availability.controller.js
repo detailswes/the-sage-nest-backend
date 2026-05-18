@@ -356,4 +356,142 @@ async function getAvailabilityConflicts(req, res) {
   }
 }
 
-module.exports = { addAvailability, listAvailability, removeAvailability, getAvailableSlots, getAvailabilityConflicts };
+// ─── GET /availability/available-dates — which days in a month have ≥1 slot ───
+//
+// Query params: expertId (required), year (required), month (required, 1-12),
+//               serviceId (optional — uses service duration for slot-fit check)
+//
+// Returns: { available_dates: ["YYYY-MM-DD", ...] }
+// All DB round-trips are batched to ~5 queries total regardless of month length.
+//
+async function getAvailableDatesInMonth(req, res) {
+  const { expertId, serviceId, year, month } = req.query;
+  const y = parseInt(year);
+  const m = parseInt(month);
+
+  if (!expertId || !y || !m || m < 1 || m > 12) {
+    return res.status(400).json({ error: 'expertId, year, and month are required' });
+  }
+
+  try {
+    const expert = await prisma.expert.findUnique({
+      where: { id: parseInt(expertId) },
+      select: { id: true, timezone: true, buffer_minutes: true, advance_booking_days: true, min_notice_hours: true },
+    });
+    if (!expert) return res.status(404).json({ error: 'Expert not found' });
+
+    const tz                 = expert.timezone             || 'UTC';
+    const bufferMinutes      = expert.buffer_minutes       || 0;
+    const advanceBookingDays = expert.advance_booking_days || 60;
+    const noticeMs           = (expert.min_notice_hours ?? 24) * 60 * 60 * 1000;
+
+    let durationMinutes = 60;
+    if (serviceId) {
+      const svc = await prisma.service.findUnique({ where: { id: parseInt(serviceId) } });
+      if (svc && svc.expert_id === expert.id) durationMinutes = svc.duration_minutes;
+    }
+
+    // All availability rules for this expert, grouped by day-of-week
+    const allRules = await prisma.availability.findMany({ where: { expert_id: expert.id } });
+    const rulesByDow = {};
+    for (const rule of allRules) {
+      if (!rulesByDow[rule.day_of_week]) rulesByDow[rule.day_of_week] = [];
+      rulesByDow[rule.day_of_week].push(rule);
+    }
+
+    // Fetch all blockouts and bookings for the month in a single query each.
+    // Pad the UTC range by ±1 day to handle European UTC+ offset (local midnight ≠ UTC midnight).
+    const rangeStart = new Date(Date.UTC(y, m - 1, 0));           // last day of prev month
+    const rangeEnd   = new Date(Date.UTC(y, m, 2));               // 2nd day of next month
+    const [blockouts, existingBookings] = await Promise.all([
+      prisma.availabilityBlock.findMany({
+        where: { expert_id: expert.id, date: { gte: rangeStart, lt: rangeEnd } },
+      }),
+      prisma.booking.findMany({
+        where: {
+          expert_id: expert.id,
+          scheduled_at: { gte: rangeStart, lt: rangeEnd },
+          status: { in: ['CONFIRMED', 'PENDING_PAYMENT'] },
+        },
+        select: { scheduled_at: true, duration_minutes: true },
+      }),
+    ]);
+
+    const todayUTC = new Date();
+    todayUTC.setUTCHours(0, 0, 0, 0);
+    const maxBookingDate = new Date(todayUTC);
+    maxBookingDate.setDate(maxBookingDate.getDate() + advanceBookingDays);
+    const now = new Date();
+
+    const daysInMonth    = new Date(y, m, 0).getDate();
+    const availableDates = [];
+
+    for (let d = 1; d <= daysInMonth; d++) {
+      const targetDateUTC = new Date(Date.UTC(y, m - 1, d));
+
+      // Skip past and out-of-window dates
+      if (targetDateUTC < todayUTC || targetDateUTC > maxBookingDate) continue;
+
+      // Skip days with no availability rule
+      const dow      = new Date(y, m - 1, d).getDay();
+      const dayRules = rulesByDow[dow];
+      if (!dayRules || dayRules.length === 0) continue;
+
+      // UTC window for this calendar day in the expert's timezone
+      const dayStart = zonedToUTC(y, m, d, 0, 0, tz);
+      const dayEnd   = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
+
+      const dayBlockouts = blockouts.filter((b) => b.date >= dayStart && b.date < dayEnd);
+      if (dayBlockouts.some((b) => b.start_time === null)) continue; // full-day blockout
+
+      const dayBookings = existingBookings.filter(
+        (bk) => bk.scheduled_at >= dayStart && bk.scheduled_at < dayEnd,
+      );
+
+      // Early-exit slot search — stop as soon as one valid slot is found
+      let found = false;
+      outer: for (const rule of dayRules) {
+        const availStart = timeToMinutes(rule.start_time);
+        const availEnd   = timeToMinutes(rule.end_time);
+        let cursor = availStart;
+        while (cursor + durationMinutes <= availEnd) {
+          const slotEndMins = cursor + durationMinutes;
+          const slotStart   = zonedToUTC(y, m, d, Math.floor(cursor / 60),      cursor % 60,      tz);
+          const slotEnd     = zonedToUTC(y, m, d, Math.floor(slotEndMins / 60), slotEndMins % 60, tz);
+
+          if (slotStart.getTime() - now.getTime() < noticeMs) { cursor += durationMinutes; continue; }
+
+          const blockedByBlockout = dayBlockouts.some((b) => {
+            if (!b.start_time) return false;
+            const bS = timeToMinutes(b.start_time), bE = timeToMinutes(b.end_time);
+            return cursor < bE && slotEndMins > bS;
+          });
+          if (blockedByBlockout) { cursor += durationMinutes; continue; }
+
+          const blockedByBooking = dayBookings.some((bk) => {
+            const bkS = bk.scheduled_at.getTime();
+            const bkE = bkS + (bk.duration_minutes + bufferMinutes) * 60 * 1000;
+            return slotStart.getTime() < bkE && slotEnd.getTime() > bkS;
+          });
+          if (blockedByBooking) { cursor += durationMinutes; continue; }
+
+          found = true;
+          break outer;
+        }
+      }
+
+      if (found) {
+        availableDates.push(
+          `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')}`,
+        );
+      }
+    }
+
+    return res.json({ available_dates: availableDates });
+  } catch (err) {
+    console.error('[getAvailableDatesInMonth]', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+module.exports = { addAvailability, listAvailability, removeAvailability, getAvailableSlots, getAvailabilityConflicts, getAvailableDatesInMonth };

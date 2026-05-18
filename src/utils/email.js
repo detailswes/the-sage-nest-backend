@@ -480,14 +480,16 @@ const sendBookingReminderEmail = ({
  * @param {{ to: string, name: string, unlockAt: Date }} param0
  */
 const sendAccountLockedEmail = ({ to, name, unlockAt }) => {
-  const unlockTime = unlockAt.toLocaleTimeString("en-GB", {
+  const unlockTime = unlockAt.toLocaleString("en-GB", {
+    day: "numeric",
+    month: "short",
     hour: "2-digit",
     minute: "2-digit",
   });
   return sendEmail({
     to,
     subject: "Your Sage Nest account has been temporarily locked",
-    text: `Hi ${name}, your account has been locked for 15 minutes due to too many failed login attempts. It will unlock at ${unlockTime}.`,
+    text: `Hi ${name}, your account has been locked for 30 minutes due to too many failed login attempts. It will unlock at ${unlockTime}.`,
     html: layout(`
       <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">Account temporarily locked</h1>
       <p style="margin:0 0 20px;font-size:15px;color:#4B5563;line-height:1.6;">

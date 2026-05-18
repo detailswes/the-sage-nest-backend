@@ -45,9 +45,10 @@ app.get('/', (_req, res) => {
 });
 
 const { verifyEmailConnection } = require('./utils/email');
-const { startCleanupJob }   = require('./jobs/cleanupPendingBookings');
-const { startTransferJob }  = require('./jobs/processTransfers');
-const { startReminderJob }  = require('./jobs/sendReminders');
+const { startCleanupJob }        = require('./jobs/cleanupPendingBookings');
+const { startTransferJob }       = require('./jobs/processTransfers');
+const { startReminderJob }       = require('./jobs/sendReminders');
+const { startMarkCompletedJob }  = require('./jobs/markCompletedBookings');
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
@@ -58,4 +59,5 @@ app.listen(PORT, () => {
   startCleanupJob();
   startTransferJob();
   startReminderJob();
+  startMarkCompletedJob();
 });

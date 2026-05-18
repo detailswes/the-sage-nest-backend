@@ -101,6 +101,15 @@ function userPayload(user) {
   return { id: user.id, name: user.name, email: user.email, role: user.role };
 }
 
+// ─── European phone validator ─────────────────────────────────────────────────
+function validateEuropeanPhone(phone) {
+  const normalized = phone.trim().replace(/[\s\-().]/g, '');
+  if (normalized.startsWith('+')) {
+    return /^\+[34]\d{7,13}$/.test(normalized);
+  }
+  return /^0?\d{6,14}$/.test(normalized);
+}
+
 // ─── Password strength validator ─────────────────────────────────────────────
 function validatePasswordStrength(password) {
   if (!password || password.length < 8)      return "Password must be at least 8 characters.";
@@ -113,7 +122,7 @@ function validatePasswordStrength(password) {
 
 // ─── Register ───────────────────────────────────────────────────────────────
 async function register(req, res) {
-  const { email, password, role, name, phone, privacyPolicyAccepted, marketingConsent } = req.body;
+  const { email, password, role, name, phone, privacyPolicyAccepted, termsAccepted, marketingConsent } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
@@ -123,9 +132,23 @@ async function register(req, res) {
   if (privacyPolicyAccepted !== true) {
     return res.status(400).json({ error: "You must accept the Privacy Policy to create an account." });
   }
+  if (termsAccepted !== true) {
+    return res.status(400).json({ error: "You must accept the Terms & Conditions to create an account." });
+  }
 
   const pwError = validatePasswordStrength(password);
   if (pwError) return res.status(400).json({ error: pwError });
+
+  const assignedRole = ["EXPERT", "PARENT"].includes(role) ? role : "EXPERT";
+
+  if (assignedRole === "PARENT") {
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({ error: "Phone number is required for parent accounts." });
+    }
+    if (!validateEuropeanPhone(phone)) {
+      return res.status(400).json({ error: "Please enter a valid phone number (e.g. +44 7700 900000)." });
+    }
+  }
 
   try {
     const existing = await prisma.user.findUnique({ where: { email } });
@@ -134,7 +157,6 @@ async function register(req, res) {
     }
 
     const password_hash = await hashPassword(password);
-    const assignedRole = ["EXPERT", "PARENT"].includes(role) ? role : "EXPERT";
 
     // Both EXPERTs and PARENTs require email verification before login
     const verificationCode = crypto.randomBytes(32).toString("hex");
@@ -160,17 +182,27 @@ async function register(req, res) {
       logAudit(user.id, 'REGISTERED', 'PARENT', user.id, 'Account created');
     }
 
-    // Store Privacy Policy acceptance (GDPR requirement)
-    const currentPp = await prisma.legalDocument.findFirst({
-      where: { type: "PRIVACY_POLICY" },
-      orderBy: { effective_from: "desc" },
-    });
+    // Store Privacy Policy + T&C acceptance (GDPR Art. 6(1)(b) — contract performance)
+    const [currentPp, currentTc] = await Promise.all([
+      prisma.legalDocument.findFirst({
+        where: { type: "PRIVACY_POLICY" },
+        orderBy: { effective_from: "desc" },
+      }),
+      prisma.legalDocument.findFirst({
+        where: { type: "TERMS_CONDITIONS" },
+        orderBy: { effective_from: "desc" },
+      }),
+    ]);
+    const consentTimestamp = new Date();
     await prisma.privacyPolicyAcceptance.create({
       data: {
-        user_id: user.id,
-        version: currentPp?.version ?? "1.0",
-        marketing_consent: marketingConsent === true,
-        marketing_accepted_at: marketingConsent === true ? new Date() : null,
+        user_id:               user.id,
+        version:               currentPp?.version ?? "1.0",
+        accepted_at:           consentTimestamp,
+        tc_version:            currentTc?.version ?? "1.0",
+        tc_accepted_at:        consentTimestamp,
+        marketing_consent:     marketingConsent === true,
+        marketing_accepted_at: marketingConsent === true ? consentTimestamp : null,
       },
     });
 
@@ -670,7 +702,16 @@ async function updateProfile(req, res) {
   const { name, phone } = req.body;
 
   if (!name || !name.trim()) {
-    return res.status(400).json({ error: "Name is required" });
+    return res.status(400).json({ error: "Name is required." });
+  }
+
+  if (req.user.role === "PARENT") {
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({ error: "Phone number is required." });
+    }
+    if (!validateEuropeanPhone(phone)) {
+      return res.status(400).json({ error: "Please enter a valid phone number (e.g. +44 7700 900000)." });
+    }
   }
 
   try {

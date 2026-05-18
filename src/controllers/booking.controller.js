@@ -220,7 +220,7 @@ async function getMyBookings(req, res) {
       orderBy: { scheduled_at: 'desc' },
       include: {
         expert:  { select: { profile_image: true, address_street: true, address_city: true, address_postcode: true, user: { select: { name: true, account_deleted: true } } } },
-        service: { select: { title: true, duration_minutes: true } },
+        service: { select: { title: true, duration_minutes: true, is_active: true, format: true, price: true, currency: true } },
       },
     });
     return res.json(bookings);
@@ -578,10 +578,15 @@ async function getCalendarBookings(req, res) {
   }
 }
 
-// ─── PATCH /bookings/:id/complete — expert marks a past CONFIRMED booking done ─
+// ─── PATCH /bookings/:id/complete — save expert session note (status unchanged) ─
+// Status is managed automatically by the markCompletedBookings cron job.
 async function markBookingComplete(req, res) {
   const { id } = req.params;
   const { note } = req.body;
+
+  if (typeof note !== 'string') {
+    return res.status(400).json({ error: 'note must be a string' });
+  }
 
   try {
     const expert_id = await getExpertIdForUser(req.user.id);
@@ -590,21 +595,17 @@ async function markBookingComplete(req, res) {
     const booking = await prisma.booking.findUnique({ where: { id: parseInt(id) } });
     if (!booking) return res.status(404).json({ error: 'Booking not found' });
     if (booking.expert_id !== expert_id) return res.status(403).json({ error: 'Access denied' });
-    if (booking.status !== 'CONFIRMED') {
-      return res.status(400).json({ error: 'Only CONFIRMED bookings can be marked complete' });
-    }
-    if (new Date(booking.scheduled_at) > new Date()) {
-      return res.status(400).json({ error: 'Cannot mark a future booking as complete' });
+    if (!['CONFIRMED', 'COMPLETED'].includes(booking.status)) {
+      return res.status(400).json({ error: 'Notes can only be added to confirmed or completed bookings' });
     }
 
-    const data = { status: 'COMPLETED', completed_at: new Date() };
-    if (typeof note === 'string') data.expert_note = note.trim() || null;
-
-    const updated = await prisma.booking.update({ where: { id: parseInt(id) }, data });
+    const updated = await prisma.booking.update({
+      where: { id: parseInt(id) },
+      data:  { expert_note: note.trim() || null },
+    });
     return res.json({
-      status:       updated.status,
-      completed_at: updated.completed_at,
-      expert_note:  updated.expert_note,
+      status:      updated.status,
+      expert_note: updated.expert_note,
     });
   } catch (err) {
     console.error(err);
@@ -892,6 +893,49 @@ async function expertCancelBooking(req, res) {
   }
 }
 
+// ─── POST /bookings/:id/abandon — parent exits checkout, releases the slot ────
+//
+// Called when the parent clicks "Edit booking" on the payment screen.
+// Cancels the Stripe PaymentIntent (so no money is collected) and deletes the
+// PENDING_PAYMENT booking row so the slot is immediately available for others.
+// Deletion (not cancellation) is intentional — same pattern as PaymentIntent
+// failure cleanup — so the unique-constraint slot is truly freed.
+//
+async function abandonBooking(req, res) {
+  const { id } = req.params;
+
+  try {
+    const booking = await prisma.booking.findUnique({ where: { id: parseInt(id) } });
+
+    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+    if (booking.parent_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (booking.status !== 'PENDING_PAYMENT') {
+      return res.status(400).json({ error: 'Only pending-payment bookings can be abandoned' });
+    }
+
+    // Cancel the PaymentIntent so Stripe never charges the card
+    if (booking.stripe_payment_intent_id) {
+      try {
+        await stripe.paymentIntents.cancel(booking.stripe_payment_intent_id);
+      } catch (e) {
+        // PI may already be expired/cancelled — log and continue
+        console.warn(`[abandonBooking] PI cancel skipped for ${booking.stripe_payment_intent_id}:`, e.message);
+      }
+    }
+
+    // Delete the row — frees the unique (expert_id, scheduled_at) slot
+    await prisma.booking.delete({ where: { id: booking.id } });
+
+    console.log(`[abandonBooking] booking=${booking.id} deleted — slot released for parent=${req.user.id}`);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('[abandonBooking] Error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
 // ─── GET /bookings/tc-version ─────────────────────────────────────────────────
 // Returns whether this user must explicitly accept T&C before booking.
 // Triggers for two cases:
@@ -930,6 +974,7 @@ module.exports = {
   getMyBookings,
   verifyPayment,
   cancelBooking,
+  abandonBooking,
   rescheduleBooking,
   expertCancelBooking,
   getUpcomingAppointments,

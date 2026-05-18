@@ -6,6 +6,7 @@ const {
   getBookingById,
   getMyBookings,
   cancelBooking,
+  abandonBooking,
   rescheduleBooking,
   expertCancelBooking,
   getUpcomingAppointments,
@@ -25,6 +26,7 @@ router.get('/tc-version',      getCurrentTcVersion);     // GET    /bookings/tc-
 router.post('/',               requireEmailVerified, createBooking); // POST   /bookings
 router.get('/my',              getMyBookings);           // GET    /bookings/my
 router.delete('/:id',          cancelBooking);           // DELETE /bookings/:id
+router.post('/:id/abandon',    abandonBooking);           // POST   /bookings/:id/abandon
 router.patch('/:id/reschedule', rescheduleBooking);       // PATCH  /bookings/:id/reschedule
 
 // ── Expert routes ─────────────────────────────────────────────────────────────

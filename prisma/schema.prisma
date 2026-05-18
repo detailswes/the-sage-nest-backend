@@ -217,6 +217,7 @@ model Booking {
   transfer_attempts        Int            @default(0)
   transfer_due_at          DateTime?
   transfer_status          String?
+  payment_expires_at       DateTime?
   stripe_refund_id         String?
   refund_status            String?
   refund_amount            Decimal?       @db.Decimal(10, 2)
@@ -256,6 +257,8 @@ model PrivacyPolicyAcceptance {
   accepted_at           DateTime  @default(now())
   marketing_consent     Boolean   @default(false)
   marketing_accepted_at DateTime?
+  tc_version            String?
+  tc_accepted_at        DateTime?
   user                  User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
 }
 

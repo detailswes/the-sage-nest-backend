@@ -18,7 +18,7 @@ async function runTransfers() {
     where: {
       transfer_status: 'pending',
       transfer_due_at: { lte: now },
-      status:          'CONFIRMED',
+      status:          { in: ['CONFIRMED', 'COMPLETED'] },
       transfer_attempts: { lt: MAX_ATTEMPTS },
       is_disputed:     false,
     },
