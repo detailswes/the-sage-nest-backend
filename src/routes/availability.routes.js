@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate } = require('../middleware/auth.middleware');
-const { addAvailability, listAvailability, removeAvailability, getAvailableSlots, getAvailabilityConflicts, getAvailableDatesInMonth } = require('../controllers/availability.controller');
+const { addAvailability, listAvailability, removeAvailability, getAvailableSlots, getAvailabilityConflicts, getAvailableDatesInMonth, lockSlot, releaseLock } = require('../controllers/availability.controller');
 
 // ── Public routes — must be declared BEFORE router.use(authenticate) ──────────
 // GET /availability/slots?expertId=X&date=YYYY-MM-DD&serviceId=Y
@@ -17,6 +17,12 @@ router.get('/', listAvailability);
 
 // POST /availability — add an availability slot
 router.post('/', addAvailability);
+
+// POST /availability/lock-slot — reserve a slot before payment
+router.post('/lock-slot', lockSlot);
+
+// DELETE /availability/lock-slot/:lockId — release a reserved slot
+router.delete('/lock-slot/:lockId', releaseLock);
 
 // GET /availability/:id/conflicts — bookings affected by removing a slot
 router.get('/:id/conflicts', getAvailabilityConflicts);

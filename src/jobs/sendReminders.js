@@ -26,7 +26,7 @@ async function runReminders() {
       ],
     },
     include: {
-      parent:  { select: { name: true, email: true } },
+      parent:  { select: { name: true, email: true, notify_session_reminder: true } },
       expert:  { include: { user: { select: { name: true, email: true } } } },
       service: { select: { title: true } },
     },
@@ -66,7 +66,7 @@ async function runReminders() {
           timezone:        booking.expert?.timezone,
         };
 
-        if (parentEmail) {
+        if (parentEmail && booking.parent.notify_session_reminder !== false) {
           sendBookingReminderEmail({
             ...sharedArgs,
             to:             parentEmail,
@@ -108,7 +108,7 @@ async function runReminders() {
           timezone:        booking.expert?.timezone,
         };
 
-        if (parentEmail) {
+        if (parentEmail && booking.parent.notify_session_reminder !== false) {
           sendBookingReminderEmail({
             ...sharedArgs,
             to:             parentEmail,

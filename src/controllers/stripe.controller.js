@@ -149,7 +149,7 @@ async function handleWebhook(req, res) {
         const booking = await prisma.booking.findFirst({
           where: { stripe_payment_intent_id: pi.id },
           include: {
-            parent:  { select: { name: true, email: true } },
+            parent:  { select: { name: true, email: true, notify_booking_confirmation: true } },
             expert:  { select: { address_street: true, address_city: true, address_postcode: true, timezone: true, user: { select: { name: true, email: true } } } },
             service: { select: { title: true } },
           },
@@ -188,16 +188,18 @@ async function handleWebhook(req, res) {
 
           // Fire-and-forget: parent confirmation + expert new-booking notification
           const expertAddress = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
-          sendBookingConfirmationEmail({
-            to:              booking.parent.email,
-            name:            booking.parent.name,
-            expertName:      booking.expert.user.name,
-            serviceTitle:    booking.service.title,
-            format:          booking.format,
-            scheduledAt:     booking.scheduled_at,
-            durationMinutes: booking.duration_minutes,
-            location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
-          }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));
+          if (booking.parent.notify_booking_confirmation !== false) {
+            sendBookingConfirmationEmail({
+              to:              booking.parent.email,
+              name:            booking.parent.name,
+              expertName:      booking.expert.user.name,
+              serviceTitle:    booking.service.title,
+              format:          booking.format,
+              scheduledAt:     booking.scheduled_at,
+              durationMinutes: booking.duration_minutes,
+              location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
+            }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));
+          }
 
           sendNewBookingNotificationEmail({
             to:              booking.expert.user.email,

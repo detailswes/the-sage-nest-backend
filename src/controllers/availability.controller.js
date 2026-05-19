@@ -142,17 +142,28 @@ async function getAvailableSlots(req, res) {
     if (blockouts.some((b) => b.start_time === null)) return res.json([]);
 
     // ── Existing bookings for this date ──────────────────────────────────────
-    const existingBookings = await prisma.booking.findMany({
-      where: {
-        expert_id: expert.id,
-        scheduled_at: { gte: dayStart, lt: dayEnd },
-        status: { in: ['CONFIRMED', 'PENDING_PAYMENT'] },
-      },
-      select: { scheduled_at: true, duration_minutes: true },
-    });
+    const now = new Date();
+    const [existingBookings, activeLocks] = await Promise.all([
+      prisma.booking.findMany({
+        where: {
+          expert_id: expert.id,
+          scheduled_at: { gte: dayStart, lt: dayEnd },
+          status: { in: ['CONFIRMED', 'PENDING_PAYMENT'] },
+        },
+        select: { scheduled_at: true, duration_minutes: true },
+      }),
+      prisma.slotLock.findMany({
+        where: {
+          expert_id: expert.id,
+          slot_start: { gte: dayStart, lt: dayEnd },
+          expires_at: { gt: now },
+        },
+        select: { slot_start: true },
+      }),
+    ]);
+    const lockedSlotMs = new Set(activeLocks.map((l) => l.slot_start.getTime()));
 
     // ── Generate candidate slots ─────────────────────────────────────────────
-    const now = new Date();
 
     const slots = [];
 
@@ -191,6 +202,9 @@ async function getAvailableSlots(req, res) {
           return slotStart.getTime() < bkEnd && slotEnd.getTime() > bkStart;
         });
         if (blockedByBooking) { cursor += durationMinutes; continue; }
+
+        // Skip slots held by an active lock from another parent
+        if (lockedSlotMs.has(slotStart.getTime())) { cursor += durationMinutes; continue; }
 
         slots.push({
           start:     slotStart.toISOString(),
@@ -494,4 +508,74 @@ async function getAvailableDatesInMonth(req, res) {
   }
 }
 
-module.exports = { addAvailability, listAvailability, removeAvailability, getAvailableSlots, getAvailabilityConflicts, getAvailableDatesInMonth };
+const SLOT_LOCK_MINUTES = 10;
+
+// ─── POST /availability/lock-slot ────────────────────────────────────────────
+// Atomically reserves a slot for the requesting parent for SLOT_LOCK_MINUTES.
+// @@unique([expert_id, slot_start]) means concurrent inserts → one P2002 → 409.
+async function lockSlot(req, res) {
+  const { expertId, slotStart } = req.body;
+  if (!expertId || !slotStart) {
+    return res.status(400).json({ error: 'expertId and slotStart are required' });
+  }
+  const slotStartDate = new Date(slotStart);
+  if (isNaN(slotStartDate.getTime())) {
+    return res.status(400).json({ error: 'slotStart must be a valid ISO datetime' });
+  }
+
+  const expertIdInt = parseInt(expertId);
+  const now         = new Date();
+  const expiresAt   = new Date(now.getTime() + SLOT_LOCK_MINUTES * 60 * 1000);
+
+  try {
+    // Release any existing lock this parent holds for this expert (slot change)
+    await prisma.slotLock.deleteMany({
+      where: { expert_id: expertIdInt, parent_id: req.user.id },
+    });
+
+    const lock = await prisma.slotLock.create({
+      data: { expert_id: expertIdInt, slot_start: slotStartDate, parent_id: req.user.id, expires_at: expiresAt },
+    });
+    return res.status(201).json({ lockId: lock.id, expiresAt: lock.expires_at });
+  } catch (err) {
+    if (err.code === 'P2002') {
+      // A lock exists — check if it's expired and we can claim it
+      const existing = await prisma.slotLock.findUnique({
+        where: { expert_id_slot_start: { expert_id: expertIdInt, slot_start: slotStartDate } },
+      });
+      if (existing && existing.expires_at <= now) {
+        try {
+          await prisma.slotLock.delete({ where: { id: existing.id } });
+          const lock = await prisma.slotLock.create({
+            data: { expert_id: expertIdInt, slot_start: slotStartDate, parent_id: req.user.id, expires_at: expiresAt },
+          });
+          return res.status(201).json({ lockId: lock.id, expiresAt: lock.expires_at });
+        } catch (_) {
+          // Race: another request claimed the expired slot first
+        }
+      }
+      return res.status(409).json({ error: 'This slot is currently reserved. Please select a different time.' });
+    }
+    console.error('[lockSlot]', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+// ─── DELETE /availability/lock-slot/:lockId ───────────────────────────────────
+// Releases a slot lock. Called on: slot change, page exit, payment failure.
+async function releaseLock(req, res) {
+  const { lockId } = req.params;
+  try {
+    const lock = await prisma.slotLock.findUnique({ where: { id: parseInt(lockId) } });
+    if (!lock || lock.parent_id !== req.user.id) {
+      return res.status(404).json({ error: 'Lock not found' });
+    }
+    await prisma.slotLock.delete({ where: { id: parseInt(lockId) } });
+    return res.json({ message: 'Slot released' });
+  } catch (err) {
+    console.error('[releaseLock]', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+module.exports = { addAvailability, listAvailability, removeAvailability, getAvailableSlots, getAvailabilityConflicts, getAvailableDatesInMonth, lockSlot, releaseLock };

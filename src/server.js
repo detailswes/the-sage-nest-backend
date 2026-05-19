@@ -9,9 +9,12 @@ require('dotenv').config({
 
 const app = express();
 
+app.set('trust proxy', 1); // trust first hop (Render's reverse proxy) for correct IP detection
+
 app.use(cors({
   origin: process.env.CLIENT_URL,
   credentials: true,
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-By'],
 }));
 
 app.use(cookieParser());

@@ -49,6 +49,7 @@ const {
   resendParentVerification,
   manuallyVerifyParent,
   getAdminNotifications,
+  getParentComplianceList,
 } = require('../controllers/admin.controller');
 
 // ── Public routes (no auth required) ─────────────────────────────────────────
@@ -135,6 +136,9 @@ router.post('/parents/:id/suspend',  suspendParent);
 
 // ── Parent GDPR ───────────────────────────────────────────────────────────────
 router.post('/parents/:id/gdpr-delete', gdprDeleteParent);
+
+// ── Compliance ────────────────────────────────────────────────────────────────
+router.get('/compliance/parents', getParentComplianceList);
 
 // ── Transactions (Payment Overview) ──────────────────────────────────────────
 router.get('/transactions',        listTransactions);

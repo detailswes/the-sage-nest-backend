@@ -56,7 +56,7 @@ function verifyOtpToken(token) {
 const ACCESS_TOKEN_EXPIRES = "15m";
 const REFRESH_TOKEN_EXPIRES_MS = 30 * 24 * 60 * 60 * 1000; // 30 days (sliding via rotation)
 const MAX_LOGIN_ATTEMPTS = 5;
-const LOCKOUT_DURATION_MS = 30 * 60 * 1000; // 30 minutes
+const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 
 // Argon2id — OWASP recommended settings (64 MB memory cost)
 const ARGON2_OPTIONS = {
@@ -122,7 +122,7 @@ function validatePasswordStrength(password) {
 
 // ─── Register ───────────────────────────────────────────────────────────────
 async function register(req, res) {
-  const { email, password, role, name, phone, privacyPolicyAccepted, termsAccepted, marketingConsent } = req.body;
+  const { email, password, role, name, phone, timezone, privacyPolicyAccepted, termsAccepted, marketingConsent } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
@@ -167,6 +167,7 @@ async function register(req, res) {
         email,
         name,
         phone: phone || null,
+        timezone: timezone?.trim() || null,
         password_hash,
         role: assignedRole,
         is_verified: false,
@@ -293,8 +294,13 @@ async function login(req, res) {
       include: { expert: { select: { status: true } } },
     });
 
-    // Return the same generic error whether the email exists or not
+    // Return the same generic error whether the email exists or not.
+    // Run a dummy hash verify so timing is indistinguishable from a real verify.
     if (!user) {
+      await argon2.verify(
+        '$argon2id$v=19$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        password,
+      ).catch(() => {});
       return res.status(401).json({ error: INVALID_CREDENTIALS_ERROR });
     }
 
@@ -320,7 +326,7 @@ async function login(req, res) {
       const attempts = user.login_attempts + 1;
 
       if (attempts >= MAX_LOGIN_ATTEMPTS) {
-        // Lock the account for 30 minutes
+        // Lock the account for 15 minutes
         const lockedUntil = new Date(Date.now() + LOCKOUT_DURATION_MS);
         await prisma.user.update({
           where: { id: user.id },
@@ -337,7 +343,7 @@ async function login(req, res) {
         );
 
         return res.status(423).json({
-          error: "Account locked due to too many failed attempts. Try again in 30 minutes.",
+          error: "Account locked due to too many failed attempts. Try again in 15 minutes.",
           locked: true,
         });
       }
@@ -453,6 +459,13 @@ async function login(req, res) {
 
 // ─── Refresh ─────────────────────────────────────────────────────────────────
 async function refresh(req, res) {
+  // CSRF defense-in-depth: this endpoint is cookie-authenticated (no Bearer token),
+  // so we require a custom header that HTML forms cannot set and that cross-origin
+  // fetch() cannot send without a CORS preflight (which our CORS config will reject).
+  if (req.headers['x-requested-by'] !== 'sage-nest') {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
   console.log('[refresh] cookies received:', req.cookies);
   console.log('[refresh] headers origin:', req.headers.origin);
   const refreshToken = req.cookies?.refreshToken;
@@ -687,7 +700,7 @@ async function getProfile(req, res) {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
-      select: { id: true, name: true, email: true, phone: true, is_verified: true, role: true },
+      select: { id: true, name: true, email: true, phone: true, city: true, timezone: true, is_verified: true, role: true },
     });
     if (!user) return res.status(404).json({ error: "User not found" });
     return res.json(user);
@@ -699,7 +712,7 @@ async function getProfile(req, res) {
 
 // ─── Update Profile (name + phone) ────────────────────────────────────────────
 async function updateProfile(req, res) {
-  const { name, phone } = req.body;
+  const { name, phone, city, timezone } = req.body;
 
   if (!name || !name.trim()) {
     return res.status(400).json({ error: "Name is required." });
@@ -714,11 +727,24 @@ async function updateProfile(req, res) {
     }
   }
 
+  if (timezone?.trim()) {
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: timezone.trim() });
+    } catch {
+      return res.status(400).json({ error: "Invalid timezone." });
+    }
+  }
+
   try {
     const updated = await prisma.user.update({
       where: { id: req.user.id },
-      data: { name: name.trim(), phone: phone?.trim() || null },
-      select: { id: true, name: true, email: true, phone: true, role: true },
+      data: {
+        name:     name.trim(),
+        phone:    phone?.trim() || null,
+        city:     city?.trim()  || null,
+        timezone: timezone?.trim() || null,
+      },
+      select: { id: true, name: true, email: true, phone: true, city: true, timezone: true, role: true },
     });
     return res.json(updated);
   } catch (err) {
@@ -1375,6 +1401,245 @@ async function acceptPrivacyPolicy(req, res) {
   }
 }
 
+// ─── Legal consents history ───────────────────────────────────────────────────
+async function getLegalConsents(req, res) {
+  try {
+    const [ppAcceptances, tcAcceptances] = await Promise.all([
+      prisma.privacyPolicyAcceptance.findMany({
+        where: { user_id: req.user.id },
+        orderBy: { accepted_at: "desc" },
+        select: {
+          id: true,
+          version: true,
+          accepted_at: true,
+          marketing_consent: true,
+          marketing_accepted_at: true,
+          tc_version: true,
+          tc_accepted_at: true,
+        },
+      }),
+      prisma.tcAcceptance.findMany({
+        where: { user_id: req.user.id },
+        orderBy: { accepted_at: "desc" },
+        select: { id: true, version: true, accepted_at: true },
+      }),
+    ]);
+
+    const latest = ppAcceptances[0] ?? null;
+
+    return res.json({
+      privacy_policy: ppAcceptances.map((a) => ({
+        version: a.version,
+        accepted_at: a.accepted_at,
+      })),
+      terms_registration: ppAcceptances
+        .filter((a) => a.tc_version)
+        .map((a) => ({ version: a.tc_version, accepted_at: a.tc_accepted_at })),
+      terms_per_booking: tcAcceptances.map((a) => ({
+        version: a.version,
+        accepted_at: a.accepted_at,
+      })),
+      marketing_consent: latest?.marketing_consent ?? false,
+      marketing_accepted_at: latest?.marketing_accepted_at ?? null,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Update marketing consent (withdraw or re-grant) ─────────────────────────
+async function updateMarketingConsent(req, res) {
+  const { consent } = req.body;
+  if (typeof consent !== "boolean") {
+    return res.status(400).json({ error: "consent must be a boolean" });
+  }
+
+  try {
+    const latest = await prisma.privacyPolicyAcceptance.findFirst({
+      where: { user_id: req.user.id },
+      orderBy: { accepted_at: "desc" },
+    });
+
+    if (!latest) {
+      return res.status(404).json({ error: "No consent record found" });
+    }
+
+    const updated = await prisma.privacyPolicyAcceptance.update({
+      where: { id: latest.id },
+      data: {
+        marketing_consent: consent,
+        marketing_accepted_at: consent ? new Date() : null,
+      },
+      select: { marketing_consent: true, marketing_accepted_at: true },
+    });
+
+    return res.json(updated);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Parent notification preferences ─────────────────────────────────────────
+const PARENT_NOTIF_FIELDS = [
+  "notify_booking_confirmation",
+  "notify_session_reminder",
+  "notify_expert_cancellation",
+  "notify_reschedule",
+  "notify_platform_updates",
+];
+
+async function getParentNotificationPrefs(req, res) {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: Object.fromEntries(PARENT_NOTIF_FIELDS.map((f) => [f, true])),
+    });
+    if (!user) return res.status(404).json({ error: "User not found" });
+    return res.json(user);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function updateParentNotificationPrefs(req, res) {
+  const data = {};
+  for (const field of PARENT_NOTIF_FIELDS) {
+    if (typeof req.body[field] === "boolean") data[field] = req.body[field];
+  }
+  if (Object.keys(data).length === 0) {
+    return res.status(400).json({ error: "No valid preference fields provided" });
+  }
+  try {
+    const updated = await prisma.user.update({
+      where: { id: req.user.id },
+      data,
+      select: Object.fromEntries(PARENT_NOTIF_FIELDS.map((f) => [f, true])),
+    });
+    return res.json(updated);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── GDPR Article 20 — Data Export ───────────────────────────────────────────
+async function exportMyData(req, res) {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        created_at: true,
+        is_verified: true,
+        two_factor_enabled: true,
+        oauth_accounts: {
+          select: { provider: true, created_at: true },
+        },
+        bookings_as_parent: {
+          select: {
+            id: true,
+            scheduled_at: true,
+            duration_minutes: true,
+            format: true,
+            status: true,
+            amount: true,
+            currency: true,
+            created_at: true,
+            cancelled_at: true,
+            cancellation_reason: true,
+            refund_amount: true,
+            refunded_at: true,
+            service: { select: { title: true } },
+            expert: { select: { user: { select: { name: true } } } },
+            review: { select: { rating: true, comment: true, created_at: true } },
+            tc_acceptance: { select: { version: true, accepted_at: true } },
+          },
+          orderBy: { scheduled_at: "desc" },
+        },
+        pp_acceptances: {
+          select: {
+            version: true,
+            accepted_at: true,
+            marketing_consent: true,
+            marketing_accepted_at: true,
+            tc_version: true,
+            tc_accepted_at: true,
+          },
+          orderBy: { accepted_at: "desc" },
+        },
+      },
+    });
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const payload = {
+      exported_at: new Date().toISOString(),
+      gdpr_basis: "Article 20 — Right to data portability",
+      personal_information: {
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        account_created: user.created_at,
+        email_verified: user.is_verified,
+        two_factor_enabled: user.two_factor_enabled,
+      },
+      login_providers: user.oauth_accounts.map((a) => ({
+        provider: a.provider,
+        linked_at: a.created_at,
+      })),
+      booking_history: user.bookings_as_parent.map((b) => ({
+        booking_id: b.id,
+        service: b.service.title,
+        specialist: b.expert.user.name,
+        scheduled_at: b.scheduled_at,
+        duration_minutes: b.duration_minutes,
+        format: b.format,
+        status: b.status,
+        amount: b.amount,
+        currency: b.currency,
+        booked_at: b.created_at,
+        cancelled_at: b.cancelled_at,
+        cancellation_reason: b.cancellation_reason,
+        refund_amount: b.refund_amount,
+        refunded_at: b.refunded_at,
+        review: b.review
+          ? { rating: b.review.rating, comment: b.review.comment, submitted_at: b.review.created_at }
+          : null,
+        terms_accepted: b.tc_acceptance
+          ? { version: b.tc_acceptance.version, accepted_at: b.tc_acceptance.accepted_at }
+          : null,
+      })),
+      consent_records: {
+        privacy_policy: user.pp_acceptances.map((a) => ({
+          version: a.version,
+          accepted_at: a.accepted_at,
+          marketing_consent: a.marketing_consent,
+          marketing_accepted_at: a.marketing_accepted_at,
+        })),
+        terms_and_conditions: user.pp_acceptances
+          .filter((a) => a.tc_version)
+          .map((a) => ({ version: a.tc_version, accepted_at: a.tc_accepted_at })),
+      },
+    };
+
+    const filename = `sage-nest-data-export-${new Date().toISOString().split("T")[0]}.json`;
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Type", "application/json");
+    return res.json(payload);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 module.exports = {
   register,
   login,
@@ -1397,4 +1662,9 @@ module.exports = {
   sendSetupOtp,
   enable2FA,
   disable2FA,
+  exportMyData,
+  getParentNotificationPrefs,
+  updateParentNotificationPrefs,
+  getLegalConsents,
+  updateMarketingConsent,
 };
