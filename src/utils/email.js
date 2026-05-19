@@ -1,4 +1,4 @@
-const sgMail = require("@sendgrid/mail");
+const nodemailer = require("nodemailer");
 const {
   verificationEmailHtml,
 } = require("./email_templates/verificationEmail");
@@ -33,77 +33,46 @@ const {
   expertCancelledSessionEmailHtml,
 } = require("./email_templates/expertCancelledSessionEmail");
 
-// ─── Init (lazy — called after dotenv has loaded) ─────────────────────────────
-let _initialized = false;
+// ─── Transporter (lazy — created after dotenv has loaded) ────────────────────
+let _transporter = null;
 
-const initSendGrid = () => {
-  if (_initialized) return;
-  if (!process.env.SENDGRID_API_KEY) {
-    throw new Error("SENDGRID_API_KEY is not set in environment");
+const getTransporter = () => {
+  if (_transporter) return _transporter;
+
+  const required = ['BREVO_SMTP_SERVER', 'BREVO_LOGIN', 'BREVO_SMTP_KEY', 'EMAIL_FROM'];
+  const missing  = required.filter((k) => !process.env[k]);
+  if (missing.length) {
+    throw new Error(`Brevo SMTP not configured — missing env vars: ${missing.join(', ')}`);
   }
-  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-  _initialized = true;
+
+  _transporter = nodemailer.createTransport({
+    host:   process.env.BREVO_SMTP_SERVER,
+    port:   587,
+    secure: false, // STARTTLS on 587
+    auth: {
+      user: process.env.BREVO_LOGIN,
+      pass: process.env.BREVO_SMTP_KEY,
+    },
+  });
+
+  return _transporter;
 };
 
 // ─── Verify config (call once at server startup) ──────────────────────────────
 const verifyEmailConnection = async () => {
+  let transporter;
   try {
-    initSendGrid();
+    transporter = getTransporter();
   } catch (err) {
-    console.warn("⚠️  SendGrid not configured:", err.message);
+    console.warn('⚠️  Brevo SMTP not configured:', err.message);
     return;
   }
 
-  // Probe the verified-senders endpoint — a fast, side-effect-free call that
-  // confirms both that the API key is valid and that the from address is
-  // authorised to send. Logs a clear diagnostic on any failure.
   try {
-    const https = require('https');
-    await new Promise((resolve, reject) => {
-      const req = https.request({
-        hostname: 'api.sendgrid.com',
-        path:     '/v3/verified_senders',
-        method:   'GET',
-        headers:  { Authorization: `Bearer ${process.env.SENDGRID_API_KEY}` },
-      }, (res) => {
-        let body = '';
-        res.on('data', (d) => { body += d; });
-        res.on('end', () => {
-          if (res.statusCode === 200) {
-            try {
-              const json   = JSON.parse(body);
-              const fromEmail = (process.env.EMAIL_FROM || '').toLowerCase();
-              const verified = (json.results || []).some(
-                (s) => s.from_email?.toLowerCase() === fromEmail && s.verified
-              );
-              if (verified) {
-                console.log(`✅ SendGrid OK — sender ${fromEmail} verified`);
-              } else {
-                console.warn(
-                  `⚠️  SendGrid: sender "${fromEmail}" is NOT verified. ` +
-                  `Emails will fail with 403 until this address is verified at ` +
-                  `https://app.sendgrid.com/settings/sender_auth`
-                );
-              }
-            } catch {
-              console.log('✅ SendGrid API key accepted');
-            }
-          } else if (res.statusCode === 401) {
-            console.warn('⚠️  SendGrid: API key is invalid or lacks permissions (401 Unauthorized)');
-          } else if (res.statusCode === 403) {
-            console.warn('⚠️  SendGrid: API key does not have Sender Verification read permission (403 Forbidden)');
-            console.log('✅ SendGrid API key accepted (limited scope — sender verification unchecked)');
-          } else {
-            console.warn(`⚠️  SendGrid: unexpected status ${res.statusCode} during startup check`);
-          }
-          resolve();
-        });
-      });
-      req.on('error', reject);
-      req.end();
-    });
+    await transporter.verify();
+    console.log(`✅ Brevo SMTP OK — sending as ${process.env.EMAIL_FROM}`);
   } catch (err) {
-    console.warn('⚠️  SendGrid startup check failed:', err.message);
+    console.warn('⚠️  Brevo SMTP connection failed:', err.message);
   }
 };
 
@@ -112,29 +81,14 @@ const verifyEmailConnection = async () => {
  * @param {{ to: string, subject: string, html: string, text?: string }} options
  */
 const sendEmail = async ({ to, subject, html, text }) => {
-  initSendGrid();
-  try {
-    return await sgMail.send({
-      from: { name: "Sage Nest", email: process.env.EMAIL_FROM },
-      to,
-      subject,
-      text: text || subject,
-      html,
-    });
-  } catch (err) {
-    // Enrich with the full SendGrid response body so callers see the real reason
-    // (e.g. "The from address does not match a verified Sender Identity")
-    // instead of just the HTTP status word ("Forbidden").
-    const sgErrors = err.response?.body?.errors;
-    if (sgErrors?.length) {
-      const detail = sgErrors.map((e) => e.message).join(' | ');
-      const enriched = new Error(`${err.message}: ${detail}`);
-      enriched.code = err.code;
-      enriched.statusCode = err.code;
-      throw enriched;
-    }
-    throw err;
-  }
+  const transporter = getTransporter();
+  await transporter.sendMail({
+    from:    `"Sage Nest" <${process.env.EMAIL_FROM}>`,
+    to,
+    subject,
+    text:    text || subject,
+    html,
+  });
 };
 
 
@@ -480,7 +434,9 @@ const sendBookingReminderEmail = ({
  * @param {{ to: string, name: string, unlockAt: Date }} param0
  */
 const sendAccountLockedEmail = ({ to, name, unlockAt }) => {
-  const unlockTime = unlockAt.toLocaleTimeString("en-GB", {
+  const unlockTime = unlockAt.toLocaleString("en-GB", {
+    day: "numeric",
+    month: "short",
     hour: "2-digit",
     minute: "2-digit",
   });
@@ -491,7 +447,7 @@ const sendAccountLockedEmail = ({ to, name, unlockAt }) => {
     html: layout(`
       <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">Account temporarily locked</h1>
       <p style="margin:0 0 20px;font-size:15px;color:#4B5563;line-height:1.6;">
-        Hi ${name}, we detected 5 consecutive failed login attempts on your account and have temporarily locked it for <strong>30 minutes</strong>.
+        Hi ${name}, we detected 5 consecutive failed login attempts on your account and have temporarily locked it for <strong>15 minutes</strong>.
       </p>
       <p style="margin:0 0 28px;font-size:14px;color:#6B7280;line-height:1.6;">
         Your account will automatically unlock at <strong>${unlockTime}</strong>. If this wasn't you, we recommend resetting your password immediately.

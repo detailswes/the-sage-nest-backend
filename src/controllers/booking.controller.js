@@ -15,21 +15,64 @@ async function getExpertIdForUser(userId) {
   return expert ? expert.id : null;
 }
 
+// Stripe error codes that mean the connected account has no usable balance.
+// When these occur with reverse_transfer:true, we fall back to funding the
+// refund from the platform balance and flag it for admin follow-up.
+const ZERO_BALANCE_CODES = new Set([
+  'insufficient_funds',
+  'transfer_reversal_too_large',
+  'account_invalid',       // deauthorised / disconnected account
+  'account_closed',
+]);
+
+// ─── createRefundWithFallback ─────────────────────────────────────────────────
+// Issues a Stripe refund with an idempotency key.
+// When reverse_transfer would be needed but fails due to zero/blocked balance,
+// automatically retries without the reversal (platform absorbs the cost) and
+// writes an admin note so the funds can be recovered manually.
+//
+// Returns { refund, platformFunded }
+async function createRefundWithFallback({ bookingId, chargeId, amountPence, idempotencyKey, shouldReverseTransfer }) {
+  const baseParams = {
+    charge:                 chargeId,
+    refund_application_fee: true,
+    ...(amountPence !== undefined ? { amount: amountPence } : {}),
+  };
+
+  try {
+    const refund = await stripe.refunds.create(
+      { ...baseParams, reverse_transfer: shouldReverseTransfer },
+      { idempotencyKey },
+    );
+    return { refund, platformFunded: false };
+  } catch (err) {
+    // Only fall back when the transfer reversal is the specific failure point.
+    // For any other Stripe error (card_error, API outage, etc.) re-throw so
+    // the caller can handle it appropriately.
+    if (shouldReverseTransfer && ZERO_BALANCE_CODES.has(err.code)) {
+      console.warn(`[createRefundWithFallback] booking=${bookingId} reverse_transfer failed (${err.code}) — retrying without reversal (platform-funded)`);
+      // Use a distinct idempotency key so Stripe doesn't return the previous error
+      const fallbackKey = `${idempotencyKey}-platform`;
+      const refund = await stripe.refunds.create(
+        { ...baseParams, reverse_transfer: false },
+        { idempotencyKey: fallbackKey },
+      );
+      return { refund, platformFunded: true };
+    }
+    throw err;
+  }
+}
+
 // ─── POST /bookings — parent creates a booking + payment intent ───────────────
 //
 // Body: { expertId, serviceId, scheduledAt (ISO string), format }
 // Returns: { bookingId, clientSecret }
 //
 async function createBooking(req, res) {
-  const { expertId, serviceId, scheduledAt, format, tcAccepted } = req.body;
+  const { expertId, serviceId, scheduledAt, format, lockId } = req.body;
 
-  if (!expertId || !serviceId || !scheduledAt || !format) {
-    return res.status(400).json({ error: 'expertId, serviceId, scheduledAt, and format are required' });
-  }
-
-  // GDPR hard block — T&Cs must be accepted before a PaymentIntent is created
-  if (tcAccepted !== true) {
-    return res.status(400).json({ error: 'You must accept the Terms & Conditions to proceed with payment.' });
+  if (!expertId || !serviceId || !scheduledAt || !format || !lockId) {
+    return res.status(400).json({ error: 'expertId, serviceId, scheduledAt, format, and lockId are required' });
   }
  
   const scheduledDate = new Date(scheduledAt);
@@ -80,29 +123,60 @@ async function createBooking(req, res) {
       return res.status(400).json({ error: 'This service is no longer available' });
     }
 
-    // ── Create booking atomically (unique constraint prevents double booking) ─
-    // The @@unique([expert_id, scheduled_at]) constraint is the single source of
-    // truth for concurrency. Abandoned/failed bookings are DELETED (not CANCELLED)
-    // so the unique slot is freed and another parent can book it.
+    // ── Verify T&C accepted for the current version ─────────────────────────
+    const currentTcDoc = await prisma.legalDocument.findFirst({
+      where: { type: 'TERMS_CONDITIONS' },
+      orderBy: { effective_from: 'desc' },
+    });
+    if (currentTcDoc) {
+      const accepted = await prisma.tcAcceptance.findUnique({
+        where: { user_id_version: { user_id: req.user.id, version: currentTcDoc.version } },
+      });
+      if (!accepted) {
+        return res.status(400).json({ error: 'You must accept the current Terms & Conditions before proceeding.' });
+      }
+    }
+
+    // ── Verify slot lock ────────────────────────────────────────────────────
+    const now  = new Date();
+    const lock = await prisma.slotLock.findUnique({ where: { id: parseInt(lockId) } });
+    if (!lock || lock.parent_id !== req.user.id || lock.expert_id !== expert.id) {
+      return res.status(400).json({ error: 'Invalid slot reservation. Please select your slot again.' });
+    }
+    if (lock.expires_at <= now) {
+      await prisma.slotLock.delete({ where: { id: lock.id } }).catch(() => {});
+      return res.status(400).json({ error: 'Your slot reservation has expired. Please select your slot again.' });
+    }
+    if (lock.slot_start.getTime() !== scheduledDate.getTime()) {
+      return res.status(400).json({ error: 'Slot reservation does not match the selected time.' });
+    }
+
+    // ── Create booking + release lock atomically ────────────────────────────
+    // Both in one transaction: @@unique([expert_id, scheduled_at]) is the final
+    // race-condition guard; the lock is consumed only once the booking is committed.
     const platformFee = (Number(service.price) * 0.20).toFixed(2);
     const currency    = (service.currency || 'EUR').toLowerCase();
 
     let booking;
     try {
-      booking = await prisma.booking.create({
-        data: {
-          expert_id:        expert.id,
-          parent_id:        req.user.id,
-          service_id:       service.id,
-          scheduled_at:     scheduledDate,
-          duration_minutes: service.duration_minutes,
-          format,
-          status:           'PENDING_PAYMENT',
-          amount:           service.price,
-          currency:         currency.toUpperCase(),
-          platform_fee:     platformFee,
-        },
-      });
+      [booking] = await prisma.$transaction([
+        prisma.booking.create({
+          data: {
+            expert_id:          expert.id,
+            parent_id:          req.user.id,
+            service_id:         service.id,
+            scheduled_at:       scheduledDate,
+            duration_minutes:   service.duration_minutes,
+            format,
+            status:             'PENDING_PAYMENT',
+            amount:             service.price,
+            currency:           currency.toUpperCase(),
+            platform_fee:       platformFee,
+            payment_expires_at: new Date(now.getTime() + 30 * 60 * 1000),
+          },
+        }),
+        prisma.slotLock.delete({ where: { id: lock.id } }),
+      ]);
     } catch (err) {
       if (err.code === 'P2002') {
         return res.status(409).json({ error: 'This time slot is no longer available. Please choose another.' });
@@ -151,21 +225,6 @@ async function createBooking(req, res) {
       data: { stripe_payment_intent_id: paymentIntent.id },
     });
 
-    // ── Store T&C acceptance — per booking as required by client ────────────
-    const currentTc = await prisma.legalDocument.findFirst({
-      where: { type: 'TERMS_CONDITIONS' },
-      orderBy: { effective_from: 'desc' },
-    });
-    const tcVersion = currentTc?.version ?? '1.0';
-    await prisma.tcAcceptance.create({
-      data: {
-        user_id:    req.user.id,
-        booking_id: booking.id,
-        version:    tcVersion,
-      },
-    });
-    logAudit(req.user.id, 'TC_ACCEPTED', 'PARENT', req.user.id,
-      `T&C v${tcVersion} accepted · Booking #${booking.id}`);
 
     console.log(`[Payment] Booking ${booking.id} ready — clientSecret issued to parent`);
 
@@ -220,7 +279,7 @@ async function getMyBookings(req, res) {
       orderBy: { scheduled_at: 'desc' },
       include: {
         expert:  { select: { profile_image: true, address_street: true, address_city: true, address_postcode: true, user: { select: { name: true, account_deleted: true } } } },
-        service: { select: { title: true, duration_minutes: true } },
+        service: { select: { title: true, duration_minutes: true, is_active: true, format: true, price: true, currency: true } },
       },
     });
     return res.json(bookings);
@@ -304,10 +363,8 @@ async function cancelBooking(req, res) {
     console.log(`[cancelBooking] booking=${booking.id} marked CANCELLED`);
 
     // ── Initiate Stripe refund based on tier ────────────────────────────────
-    // Use stored stripe_charge_id to avoid an extra Stripe API call.
-    // Fall back to retrieving from the PaymentIntent for older bookings that
-    // predate the stripe_charge_id storage (migration safety).
-    // Always pass an explicit amount so Stripe creates a partial refund correctly.
+    // Idempotency key: stable per booking + refund tier so a network-timeout
+    // retry always returns the same Stripe refund object, never a duplicate.
     let refundInitiated = false;
     if (refundPercent > 0 && wasConfirmed && booking.stripe_payment_intent_id) {
       console.log(`[cancelBooking] Initiating ${refundPercent}% refund for booking=${booking.id}`);
@@ -320,37 +377,47 @@ async function cancelBooking(req, res) {
           console.log(`[cancelBooking] Retrieved chargeId=${chargeId}`);
         }
         if (chargeId) {
-          // Compute the exact pence amount to refund so both 100% and 50%
-          // go through the same code path, reducing the risk of silent errors.
-          // refund_application_fee refunds our platform fee proportionally.
-          // reverse_transfer reclaims the expert's net amount from their Stripe
-          // balance (skipped if we already triggered their bank payout).
-          const refundAmountPence    = Math.round(Number(booking.amount) * 100 * refundPercent / 100);
+          const refundAmountPence     = Math.round(Number(booking.amount) * 100 * refundPercent / 100);
           const shouldReverseTransfer = booking.transfer_status !== 'completed';
-          const stripeRefund = await stripe.refunds.create({
-            charge:                 chargeId,
-            amount:                 refundAmountPence,
-            refund_application_fee: true,
-            reverse_transfer:       shouldReverseTransfer,
+          const idempotencyKey        = `booking-${booking.id}-cancel-${refundPercent}pct`;
+
+          const { refund: stripeRefund, platformFunded } = await createRefundWithFallback({
+            bookingId:             booking.id,
+            chargeId,
+            amountPence:           refundAmountPence,
+            idempotencyKey,
+            shouldReverseTransfer,
           });
+
           refundInitiated = true;
-          const refundedAt = new Date();
           await prisma.booking.update({
             where: { id: booking.id },
             data: {
-              stripe_refund_id: stripeRefund.id,
-              refund_status:    stripeRefund.status,
-              refund_amount:    refundAmountPence / 100,
-              refunded_at:      refundedAt,
+              stripe_refund_id:    stripeRefund.id,
+              refund_status:       stripeRefund.status,
+              refund_amount:       refundAmountPence / 100,
+              refunded_at:         new Date(),
+              ...(platformFunded ? {
+                internal_admin_note: `Platform-funded refund (${refundPercent}%): expert transfer reversal failed — expert balance recovery required.`,
+              } : {}),
             },
           });
-          console.log(`[cancelBooking] Stripe refund of ${refundAmountPence}p created for chargeId=${chargeId} reverse_transfer=${shouldReverseTransfer} — waiting for charge.refunded webhook`);
+          if (platformFunded) {
+            logAudit(req.user.id, 'REFUND_PLATFORM_FUNDED', 'PARENT', booking.expert_id,
+              `Booking #${booking.id}: ${refundPercent}% refund platform-funded — expert balance/account issue. Manual recovery needed.`);
+          }
+          console.log(`[cancelBooking] Stripe refund ${stripeRefund.id} (${refundAmountPence}p, ${refundPercent}%) — platform_funded=${platformFunded}`);
         } else {
           console.warn(`[cancelBooking] No chargeId found — refund skipped for booking=${booking.id}`);
         }
       } catch (stripeErr) {
-        // Refund failure must not block the cancellation response
-        console.error('[cancelBooking] Stripe refund failed:', stripeErr.message);
+        // Refund failure must not block the cancellation — booking is already CANCELLED.
+        // Admin must manually process the refund.
+        console.error('[cancelBooking] Stripe refund failed:', stripeErr.message, stripeErr.code);
+        await prisma.booking.update({
+          where: { id: booking.id },
+          data: { internal_admin_note: `Stripe refund failed (${stripeErr.code || stripeErr.message}) — manual refund required.` },
+        }).catch(() => {});
       }
     } else {
       console.log(`[cancelBooking] No refund — refundPercent=${refundPercent}% wasConfirmed=${wasConfirmed} hasPaymentIntent=${!!booking.stripe_payment_intent_id}`);
@@ -419,7 +486,7 @@ async function rescheduleBooking(req, res) {
     const booking = await prisma.booking.findUnique({
       where: { id: parseInt(id) },
       include: {
-        parent:  { select: { name: true, email: true } },
+        parent:  { select: { name: true, email: true, notify_reschedule: true } },
         expert:  { select: { address_street: true, address_city: true, address_postcode: true, user: { select: { name: true, email: true } } } },
         service: { select: { title: true, duration_minutes: true } },
       },
@@ -479,16 +546,18 @@ async function rescheduleBooking(req, res) {
 
     // ── Notify parent (updated confirmation) ───────────────────────────────
     const expertAddress = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
-    sendBookingConfirmationEmail({
-      to:              booking.parent.email,
-      name:            booking.parent.name,
-      expertName:      booking.expert.user.name,
-      serviceTitle:    booking.service.title,
-      format:          booking.format,
-      scheduledAt:     newDate,
-      durationMinutes: booking.duration_minutes,
-      location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
-    }).catch((e) => console.error('[Email] Reschedule parent confirmation failed:', e.message));
+    if (booking.parent.notify_reschedule !== false) {
+      sendBookingConfirmationEmail({
+        to:              booking.parent.email,
+        name:            booking.parent.name,
+        expertName:      booking.expert.user.name,
+        serviceTitle:    booking.service.title,
+        format:          booking.format,
+        scheduledAt:     newDate,
+        durationMinutes: booking.duration_minutes,
+        location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
+      }).catch((e) => console.error('[Email] Reschedule parent confirmation failed:', e.message));
+    }
 
     // ── Notify expert (reschedule-specific notification) ───────────────────
     sendRescheduleNotificationEmail({
@@ -578,10 +647,15 @@ async function getCalendarBookings(req, res) {
   }
 }
 
-// ─── PATCH /bookings/:id/complete — expert marks a past CONFIRMED booking done ─
+// ─── PATCH /bookings/:id/complete — save expert session note (status unchanged) ─
+// Status is managed automatically by the markCompletedBookings cron job.
 async function markBookingComplete(req, res) {
   const { id } = req.params;
   const { note } = req.body;
+
+  if (typeof note !== 'string') {
+    return res.status(400).json({ error: 'note must be a string' });
+  }
 
   try {
     const expert_id = await getExpertIdForUser(req.user.id);
@@ -590,21 +664,17 @@ async function markBookingComplete(req, res) {
     const booking = await prisma.booking.findUnique({ where: { id: parseInt(id) } });
     if (!booking) return res.status(404).json({ error: 'Booking not found' });
     if (booking.expert_id !== expert_id) return res.status(403).json({ error: 'Access denied' });
-    if (booking.status !== 'CONFIRMED') {
-      return res.status(400).json({ error: 'Only CONFIRMED bookings can be marked complete' });
-    }
-    if (new Date(booking.scheduled_at) > new Date()) {
-      return res.status(400).json({ error: 'Cannot mark a future booking as complete' });
+    if (!['CONFIRMED', 'COMPLETED'].includes(booking.status)) {
+      return res.status(400).json({ error: 'Notes can only be added to confirmed or completed bookings' });
     }
 
-    const data = { status: 'COMPLETED', completed_at: new Date() };
-    if (typeof note === 'string') data.expert_note = note.trim() || null;
-
-    const updated = await prisma.booking.update({ where: { id: parseInt(id) }, data });
+    const updated = await prisma.booking.update({
+      where: { id: parseInt(id) },
+      data:  { expert_note: note.trim() || null },
+    });
     return res.json({
-      status:       updated.status,
-      completed_at: updated.completed_at,
-      expert_note:  updated.expert_note,
+      status:      updated.status,
+      expert_note: updated.expert_note,
     });
   } catch (err) {
     console.error(err);
@@ -696,7 +766,7 @@ async function verifyPayment(req, res) {
     const booking = await prisma.booking.findUnique({
       where: { id: parseInt(id) },
       include: {
-        parent:  { select: { id: true, name: true, email: true } },
+        parent:  { select: { id: true, name: true, email: true, notify_booking_confirmation: true } },
         expert:  { select: { address_street: true, address_city: true, address_postcode: true, user: { select: { name: true, email: true } } } },
         service: { select: { title: true } },
       },
@@ -742,16 +812,18 @@ async function verifyPayment(req, res) {
 
     // Fire confirmation emails (same as webhook handler)
     const expertAddressVerify = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
-    sendBookingConfirmationEmail({
-      to:              booking.parent.email,
-      name:            booking.parent.name,
-      expertName:      booking.expert.user.name,
-      serviceTitle:    booking.service.title,
-      format:          booking.format,
-      scheduledAt:     booking.scheduled_at,
-      durationMinutes: booking.duration_minutes,
-      location:        booking.format === 'IN_PERSON' ? (expertAddressVerify || undefined) : undefined,
-    }).catch((e) => console.error('[verifyPayment] Parent confirmation email failed:', e.message));
+    if (booking.parent.notify_booking_confirmation !== false) {
+      sendBookingConfirmationEmail({
+        to:              booking.parent.email,
+        name:            booking.parent.name,
+        expertName:      booking.expert.user.name,
+        serviceTitle:    booking.service.title,
+        format:          booking.format,
+        scheduledAt:     booking.scheduled_at,
+        durationMinutes: booking.duration_minutes,
+        location:        booking.format === 'IN_PERSON' ? (expertAddressVerify || undefined) : undefined,
+      }).catch((e) => console.error('[verifyPayment] Parent confirmation email failed:', e.message));
+    }
 
     sendNewBookingNotificationEmail({
       to:              booking.expert.user.email,
@@ -809,7 +881,7 @@ async function expertCancelBooking(req, res) {
     const booking = await prisma.booking.findUnique({
       where: { id: parseInt(id) },
       include: {
-        parent:  { select: { name: true, email: true } },
+        parent:  { select: { name: true, email: true, notify_expert_cancellation: true } },
         expert:  { select: { user_id: true, user: { select: { name: true, email: true } } } },
         service: { select: { title: true } },
       },
@@ -826,24 +898,42 @@ async function expertCancelBooking(req, res) {
       return res.status(400).json({ error: `Booking cannot be cancelled (current status: ${booking.status})` });
     }
 
-    let stripeRefund = null;
+    let stripeRefund  = null;
+    let platformFunded = false;
     const refundedAmount = parseFloat(booking.amount) || 0;
 
     if (booking.status === 'CONFIRMED' && booking.stripe_payment_intent_id) {
       let chargeId = booking.stripe_charge_id;
       if (!chargeId) {
-        const pi = await stripe.paymentIntents.retrieve(booking.stripe_payment_intent_id);
-        chargeId = pi.latest_charge;
+        try {
+          const pi = await stripe.paymentIntents.retrieve(booking.stripe_payment_intent_id);
+          chargeId = pi.latest_charge;
+        } catch (piErr) {
+          console.error('[expertCancelBooking] Failed to retrieve PaymentIntent:', piErr.message);
+        }
       }
       if (chargeId) {
-        // Expert cancellations always receive a full refund — no partial tiers.
-        // refund_application_fee returns our 20% fee; reverse_transfer reclaims
-        // the expert's net amount from their Stripe balance.
-        stripeRefund = await stripe.refunds.create({
-          charge:                 chargeId,
-          refund_application_fee: true,
-          reverse_transfer:       booking.transfer_status !== 'completed',
-        });
+        // Expert cancellations always issue a full refund (no amount = full charge).
+        // Idempotency key is stable per booking so a retry returns the same refund.
+        try {
+          const result = await createRefundWithFallback({
+            bookingId:             booking.id,
+            chargeId,
+            amountPence:           undefined, // full refund
+            idempotencyKey:        `booking-${booking.id}-expert-cancel`,
+            shouldReverseTransfer: booking.transfer_status !== 'completed',
+          });
+          stripeRefund   = result.refund;
+          platformFunded = result.platformFunded;
+        } catch (refundErr) {
+          // Refund failure must NOT block the cancellation — the booking is still
+          // marked CANCELLED below. Admin must manually process the refund.
+          console.error('[expertCancelBooking] Stripe refund failed:', refundErr.message, refundErr.code);
+          await prisma.booking.update({
+            where: { id: booking.id },
+            data: { internal_admin_note: `Expert cancel: Stripe refund failed (${refundErr.code || refundErr.message}) — manual full refund required for parent.` },
+          }).catch(() => {});
+        }
       }
     } else if (booking.status === 'PENDING_PAYMENT' && booking.stripe_payment_intent_id) {
       try {
@@ -863,17 +953,24 @@ async function expertCancelBooking(req, res) {
           refund_status:    stripeRefund.status,
           refund_amount:    refundedAmount,
           refunded_at:      new Date(),
+          ...(platformFunded ? {
+            internal_admin_note: 'Expert cancel: platform-funded full refund — expert balance/account issue. Manual recovery required.',
+          } : {}),
         } : {}),
       },
     });
 
-    console.log(`[expertCancelBooking] booking=${booking.id} cancelled by expert user=${req.user.id} refund=${stripeRefund?.id || 'none'}`);
+    console.log(`[expertCancelBooking] booking=${booking.id} cancelled by expert user=${req.user.id} refund=${stripeRefund?.id || 'none'} platform_funded=${platformFunded}`);
 
     logAudit(req.user.id, 'BOOKING_CANCELLED_BY_EXPERT', 'PARENT', booking.parent_id,
-      `Booking #${booking.id} cancelled by specialist${stripeRefund ? ' · full refund issued' : ''}`);
+      `Booking #${booking.id} cancelled by specialist${stripeRefund ? ' · full refund issued' : ' · refund pending manual action'}`);
+    if (platformFunded) {
+      logAudit(req.user.id, 'REFUND_PLATFORM_FUNDED', 'PARENT', booking.expert_id,
+        `Booking #${booking.id}: expert-cancel full refund platform-funded — expert balance/account issue. Manual recovery needed.`);
+    }
 
     // Email the parent — fire-and-forget
-    if (booking.status === 'CONFIRMED') {
+    if (booking.status === 'CONFIRMED' && booking.parent.notify_expert_cancellation !== false) {
       sendExpertCancelledSessionEmail({
         to:           booking.parent.email,
         parentName:   booking.parent.name,
@@ -892,26 +989,81 @@ async function expertCancelBooking(req, res) {
   }
 }
 
+// ─── POST /bookings/:id/abandon — parent exits checkout, releases the slot ────
+//
+// Called when the parent clicks "Edit booking" on the payment screen.
+// Cancels the Stripe PaymentIntent (so no money is collected) and deletes the
+// PENDING_PAYMENT booking row so the slot is immediately available for others.
+// Deletion (not cancellation) is intentional — same pattern as PaymentIntent
+// failure cleanup — so the unique-constraint slot is truly freed.
+//
+async function abandonBooking(req, res) {
+  const { id } = req.params;
+
+  try {
+    const booking = await prisma.booking.findUnique({ where: { id: parseInt(id) } });
+
+    if (!booking) return res.status(404).json({ error: 'Booking not found' });
+    if (booking.parent_id !== req.user.id) {
+      return res.status(403).json({ error: 'Access denied' });
+    }
+    if (booking.status !== 'PENDING_PAYMENT') {
+      return res.status(400).json({ error: 'Only pending-payment bookings can be abandoned' });
+    }
+
+    // Cancel the PaymentIntent so Stripe never charges the card
+    if (booking.stripe_payment_intent_id) {
+      try {
+        await stripe.paymentIntents.cancel(booking.stripe_payment_intent_id);
+      } catch (e) {
+        // PI may already be expired/cancelled — log and continue
+        console.warn(`[abandonBooking] PI cancel skipped for ${booking.stripe_payment_intent_id}:`, e.message);
+      }
+    }
+
+    // Delete the row — frees the unique (expert_id, scheduled_at) slot
+    await prisma.booking.delete({ where: { id: booking.id } });
+
+    console.log(`[abandonBooking] booking=${booking.id} deleted — slot released for parent=${req.user.id}`);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('[abandonBooking] Error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
 // ─── GET /bookings/tc-version ─────────────────────────────────────────────────
 // Returns whether this user must explicitly accept T&C before booking.
 // Triggers for two cases:
-//   1. First-time booker — no prior acceptance on record
-//   2. Returning booker — T&C was updated since their last acceptance
+//   1. Never accepted T&C at all (neither at registration nor in a prior booking)
+//   2. T&C was updated since their last acceptance (registration or booking)
 async function getCurrentTcVersion(req, res) {
   try {
-    const [currentTc, lastAccepted] = await Promise.all([
+    const [currentTc, lastBookingAccepted, lastRegAccepted] = await Promise.all([
       prisma.legalDocument.findFirst({
         where: { type: 'TERMS_CONDITIONS' },
         orderBy: { effective_from: 'desc' },
       }),
+      // Per-booking acceptances (TcAcceptance)
       prisma.tcAcceptance.findFirst({
         where: { user_id: req.user.id },
         orderBy: { accepted_at: 'desc' },
+        select: { version: true },
+      }),
+      // Registration-time acceptance (stored in PrivacyPolicyAcceptance.tc_version)
+      prisma.privacyPolicyAcceptance.findFirst({
+        where: { user_id: req.user.id, tc_version: { not: null } },
+        orderBy: { accepted_at: 'desc' },
+        select: { tc_version: true },
       }),
     ]);
 
-    const isFirstBooking = !lastAccepted;
-    const versionUpdated = !!(currentTc && lastAccepted && lastAccepted.version !== currentTc.version);
+    // Use the most recent T&C version the user has ever accepted, from either source
+    const lastAcceptedVersion =
+      lastBookingAccepted?.version ?? lastRegAccepted?.tc_version ?? null;
+
+    const isFirstBooking  = !lastAcceptedVersion;
+    const versionUpdated  = !!(currentTc && lastAcceptedVersion && lastAcceptedVersion !== currentTc.version);
 
     return res.json({
       version:          currentTc?.version ?? null,
@@ -924,12 +1076,42 @@ async function getCurrentTcVersion(req, res) {
   }
 }
 
+// ─── POST /bookings/accept-tc ─────────────────────────────────────────────────
+// Records the parent's acceptance of the current T&C version.
+// Idempotent — safe to call multiple times for the same version.
+async function acceptTc(req, res) {
+  try {
+    const currentTc = await prisma.legalDocument.findFirst({
+      where: { type: 'TERMS_CONDITIONS' },
+      orderBy: { effective_from: 'desc' },
+    });
+    if (!currentTc) {
+      return res.status(404).json({ error: 'No Terms & Conditions document found.' });
+    }
+
+    await prisma.tcAcceptance.upsert({
+      where:  { user_id_version: { user_id: req.user.id, version: currentTc.version } },
+      create: { user_id: req.user.id, version: currentTc.version },
+      update: {},
+    });
+
+    logAudit(req.user.id, 'TC_ACCEPTED', 'PARENT', req.user.id,
+      `T&C v${currentTc.version} accepted`);
+
+    return res.json({ accepted: true, version: currentTc.version });
+  } catch (err) {
+    console.error('[acceptTc] Error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
 module.exports = {
   createBooking,
   getBookingById,
   getMyBookings,
   verifyPayment,
   cancelBooking,
+  abandonBooking,
   rescheduleBooking,
   expertCancelBooking,
   getUpcomingAppointments,
@@ -939,4 +1121,5 @@ module.exports = {
   markBookingComplete,
   saveExpertNote,
   getCurrentTcVersion,
+  acceptTc,
 };

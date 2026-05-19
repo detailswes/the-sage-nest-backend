@@ -7,35 +7,43 @@ datasource db {
 }
 
 model User {
-  id                      Int                       @id @default(autoincrement())
-  email                   String                    @unique
-  password_hash           String?
-  role                    Role                      @default(EXPERT)
-  created_at              DateTime                  @default(now())
-  name                    String                    @default("Unknown")
-  is_verified             Boolean                   @default(true)
-  verification_code       String?
-  verification_expires_at DateTime?
-  reset_token             String?
-  reset_token_expires_at  DateTime?
-  account_deleted         Boolean                   @default(false)
-  locked_until            DateTime?
-  login_attempts          Int                       @default(0)
-  phone                   String?
-  two_factor_enabled      Boolean                   @default(false)
-  otp_hash                String?
-  otp_expires_at          DateTime?
-  otp_attempts            Int                       @default(0)
-  parent_status           ParentStatus?
-  bookings_as_parent      Booking[]                 @relation("ParentBookings")
-  expert                  Expert?
-  notifications           Notification[]
-  oauth_accounts          OAuthAccount[]
-  pp_acceptances          PrivacyPolicyAcceptance[]
-  refreshTokens           RefreshToken[]
-  reviews_as_parent       Review[]                  @relation("ParentReviews")
-  saved_experts           SavedExpert[]             @relation("ParentSavedExperts")
-  tc_acceptances          TcAcceptance[]
+  id                          Int                       @id @default(autoincrement())
+  email                       String                    @unique
+  password_hash               String?
+  role                        Role                      @default(EXPERT)
+  created_at                  DateTime                  @default(now())
+  name                        String                    @default("Unknown")
+  is_verified                 Boolean                   @default(true)
+  verification_code           String?
+  verification_expires_at     DateTime?
+  reset_token                 String?
+  reset_token_expires_at      DateTime?
+  account_deleted             Boolean                   @default(false)
+  locked_until                DateTime?
+  login_attempts              Int                       @default(0)
+  phone                       String?
+  parent_status               ParentStatus?
+  otp_attempts                Int                       @default(0)
+  otp_expires_at              DateTime?
+  otp_hash                    String?
+  two_factor_enabled          Boolean                   @default(false)
+  city                        String?
+  timezone                    String?
+  notify_booking_confirmation Boolean                   @default(true)
+  notify_expert_cancellation  Boolean                   @default(true)
+  notify_platform_updates     Boolean                   @default(false)
+  notify_reschedule           Boolean                   @default(true)
+  notify_session_reminder     Boolean                   @default(true)
+  bookings_as_parent          Booking[]                 @relation("ParentBookings")
+  expert                      Expert?
+  notifications               Notification[]
+  oauth_accounts              OAuthAccount[]
+  pp_acceptances              PrivacyPolicyAcceptance[]
+  refreshTokens               RefreshToken[]
+  reviews_as_parent           Review[]                  @relation("ParentReviews")
+  saved_experts               SavedExpert[]             @relation("ParentSavedExperts")
+  tc_acceptances              TcAcceptance[]
+  slot_locks                  SlotLock[]                @relation("ParentSlotLocks")
 }
 
 model RefreshToken {
@@ -100,6 +108,7 @@ model Expert {
   saved_by                   SavedExpert[]
   services                   Service[]
   profile_draft              ExpertProfileDraft?
+  slot_locks                 SlotLock[]
 }
 
 model Service {
@@ -108,12 +117,12 @@ model Service {
   title            String
   duration_minutes Int
   price            Decimal         @db.Decimal(10, 2)
-  currency         String          @default("EUR")
   is_active        Boolean         @default(true)
   cluster          ServiceCluster?
   description      String?
   format           ServiceFormat?
   sort_order       Int             @default(0)
+  currency         String          @default("EUR")
   bookings         Booking[]
   expert           Expert          @relation(fields: [expert_id], references: [id], onDelete: Cascade)
 }
@@ -148,26 +157,26 @@ model Insurance {
 }
 
 model BusinessInfo {
-  id                 Int        @id @default(autoincrement())
-  expert_id          Int        @unique
-  entity_type        EntityType
-  legal_name         String
-  date_of_birth      DateTime?
-  address_street     String
-  address_city       String
+  id                  Int        @id @default(autoincrement())
+  expert_id           Int        @unique
+  entity_type         EntityType
+  legal_name          String
+  date_of_birth       DateTime?
+  tin                 String
+  vat_number          String?
+  company_reg_number  String?
+  iban                String
+  business_email      String
+  website             String?
+  municipality        String?
+  business_address    String?
+  created_at          DateTime   @default(now())
+  updated_at          DateTime   @updatedAt
+  address_street      String
+  address_city        String
   address_postal_code String
-  address_country    String
-  tin                String
-  vat_number         String?
-  company_reg_number String?
-  iban               String
-  business_email     String
-  website            String?
-  municipality       String?
-  business_address   String?
-  created_at         DateTime   @default(now())
-  updated_at         DateTime   @updatedAt
-  expert             Expert     @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+  address_country     String
+  expert              Expert     @relation(fields: [expert_id], references: [id], onDelete: Cascade)
 }
 
 model Availability {
@@ -202,7 +211,6 @@ model Booking {
   created_at               DateTime       @default(now())
   updated_at               DateTime       @updatedAt
   amount                   Decimal?       @db.Decimal(10, 2)
-  currency                 String         @default("EUR")
   cancellation_reason      String?
   cancelled_at             DateTime?
   platform_fee             Decimal?       @db.Decimal(10, 2)
@@ -213,21 +221,23 @@ model Booking {
   stripe_charge_id         String?
   stripe_payment_intent_id String?
   stripe_transfer_id       String?
-  stripe_payout_id         String?
   transfer_attempts        Int            @default(0)
   transfer_due_at          DateTime?
   transfer_status          String?
   stripe_refund_id         String?
   refund_status            String?
   refund_amount            Decimal?       @db.Decimal(10, 2)
-  refunded_at              DateTime?
   dispute_reason           String?
   disputed_at              DateTime?
   internal_admin_note      String?
-  expert_note              String?
-  completed_at             DateTime?
   is_disputed              Boolean        @default(false)
   is_reschedule            Boolean        @default(false)
+  stripe_payout_id         String?
+  refunded_at              DateTime?
+  expert_note              String?
+  completed_at             DateTime?
+  currency                 String         @default("EUR")
+  payment_expires_at       DateTime?
   expert                   Expert         @relation("ExpertBookings", fields: [expert_id], references: [id], onDelete: Cascade)
   parent                   User           @relation("ParentBookings", fields: [parent_id], references: [id], onDelete: Cascade)
   rescheduled_from         Booking?       @relation("BookingReschedule", fields: [rescheduled_from_id], references: [id])
@@ -235,7 +245,6 @@ model Booking {
   service                  Service        @relation(fields: [service_id], references: [id], onDelete: Cascade)
   notifications            Notification[]
   review                   Review?
-  tc_acceptance            TcAcceptance?
 
   @@unique([expert_id, scheduled_at])
 }
@@ -256,17 +265,19 @@ model PrivacyPolicyAcceptance {
   accepted_at           DateTime  @default(now())
   marketing_consent     Boolean   @default(false)
   marketing_accepted_at DateTime?
+  tc_version            String?
+  tc_accepted_at        DateTime?
   user                  User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
 }
 
 model TcAcceptance {
   id          Int      @id @default(autoincrement())
   user_id     Int
-  booking_id  Int      @unique
   version     String
   accepted_at DateTime @default(now())
-  booking     Booking  @relation(fields: [booking_id], references: [id], onDelete: Cascade)
   user        User     @relation(fields: [user_id], references: [id], onDelete: Cascade)
+
+  @@unique([user_id, version])
 }
 
 model AdminAuditLog {
@@ -323,6 +334,45 @@ model Notification {
   created_at DateTime         @default(now())
   booking    Booking?         @relation(fields: [booking_id], references: [id])
   user       User             @relation(fields: [user_id], references: [id], onDelete: Cascade)
+}
+
+model ExpertProfileDraft {
+  id                Int            @id @default(autoincrement())
+  expert_id         Int            @unique
+  bio               String?
+  summary           String?
+  position          String?
+  session_format    SessionFormat?
+  address_street    String?
+  address_city      String?
+  address_postcode  String?
+  languages         String[]       @default([])
+  pending_languages String[]       @default([])
+  timezone          String?
+  instagram         String?
+  facebook          String?
+  linkedin          String?
+  expertise         String?
+  status            DraftStatus    @default(PENDING_REVIEW)
+  submitted_at      DateTime       @default(now())
+  reviewed_at       DateTime?
+  rejection_note    String?
+  expert            Expert         @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+
+  @@map("expert_profile_drafts")
+}
+
+model SlotLock {
+  id         Int      @id @default(autoincrement())
+  expert_id  Int
+  slot_start DateTime
+  parent_id  Int
+  expires_at DateTime
+  created_at DateTime @default(now())
+  expert     Expert   @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+  parent     User     @relation("ParentSlotLocks", fields: [parent_id], references: [id], onDelete: Cascade)
+
+  @@unique([expert_id, slot_start])
 }
 
 enum Role {
@@ -410,30 +460,4 @@ enum NotificationType {
 enum DraftStatus {
   PENDING_REVIEW
   REJECTED
-}
-
-model ExpertProfileDraft {
-  id               Int            @id @default(autoincrement())
-  expert_id        Int            @unique
-  expert           Expert         @relation(fields: [expert_id], references: [id], onDelete: Cascade)
-  bio              String?
-  summary          String?
-  position         String?
-  session_format   SessionFormat?
-  address_street   String?
-  address_city     String?
-  address_postcode String?
-  languages        String[]       @default([])
-  pending_languages String[]      @default([])
-  timezone         String?
-  instagram        String?
-  facebook         String?
-  linkedin         String?
-  expertise        String?
-  status           DraftStatus    @default(PENDING_REVIEW)
-  submitted_at     DateTime       @default(now())
-  reviewed_at      DateTime?
-  rejection_note   String?
-
-  @@map("expert_profile_drafts")
 }

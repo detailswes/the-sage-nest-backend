@@ -1970,27 +1970,157 @@ async function gdprDeleteExpert(req, res) {
 async function getParentDetail(req, res) {
   const { id } = req.params;
   try {
-    const parent = await prisma.user.findUnique({
-      where: { id: parseInt(id) },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        phone: true,
-        role: true,
-        is_verified: true,
-        parent_status: true,
-        created_at: true,
-        _count: { select: { bookings_as_parent: true } },
+    const parentId = parseInt(id);
+    const [parent, currentPp, currentTc, ppAcceptances, tcAcceptances, tcAtReg] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: parentId },
+        select: {
+          id: true, name: true, email: true, phone: true,
+          role: true, is_verified: true, parent_status: true, created_at: true,
+          _count: { select: { bookings_as_parent: true } },
+        },
+      }),
+      prisma.legalDocument.findFirst({ where: { type: 'PRIVACY_POLICY' },   orderBy: { effective_from: 'desc' } }),
+      prisma.legalDocument.findFirst({ where: { type: 'TERMS_CONDITIONS' }, orderBy: { effective_from: 'desc' } }),
+      prisma.privacyPolicyAcceptance.findMany({
+        where: { user_id: parentId },
+        orderBy: { accepted_at: 'desc' },
+        select: { version: true, accepted_at: true, marketing_consent: true, marketing_accepted_at: true },
+      }),
+      prisma.tcAcceptance.findMany({
+        where: { user_id: parentId },
+        orderBy: { accepted_at: 'desc' },
+        select: { version: true, accepted_at: true },
+      }),
+      // Registration-time T&C stored as tc_version on PrivacyPolicyAcceptance
+      prisma.privacyPolicyAcceptance.findFirst({
+        where: { user_id: parentId, tc_version: { not: null } },
+        orderBy: { accepted_at: 'desc' },
+        select: { tc_version: true, accepted_at: true },
+      }),
+    ]);
+
+    if (!parent || parent.role !== 'PARENT') {
+      return res.status(404).json({ error: 'Parent not found' });
+    }
+
+    const latestPpVersion  = ppAcceptances[0]?.version ?? null;
+    const latestTcVersion  = tcAcceptances[0]?.version ?? tcAtReg?.tc_version ?? null;
+
+    return res.json({
+      ...parent,
+      legal_consents: {
+        current_pp_version: currentPp?.version ?? null,
+        current_tc_version: currentTc?.version ?? null,
+        pp_compliant: !!(currentPp && latestPpVersion === currentPp.version),
+        tc_compliant: !!(currentTc && latestTcVersion === currentTc.version),
+        pp_acceptances: ppAcceptances,
+        tc_acceptances: tcAcceptances,
+        tc_at_registration: tcAtReg ?? null,
       },
     });
-    if (!parent || parent.role !== "PARENT") {
-      return res.status(404).json({ error: "Parent not found" });
-    }
-    return res.json(parent);
   } catch (err) {
-    console.error("[ADMIN] getParentDetail error:", err);
-    return res.status(500).json({ error: "Server error" });
+    console.error('[ADMIN] getParentDetail error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+// ─── GET /admin/compliance/parents ────────────────────────────────────────────
+
+async function getParentComplianceList(req, res) {
+  const page   = Math.max(1, parseInt(req.query.page)  || 1);
+  const limit  = Math.min(100, parseInt(req.query.limit) || 20);
+  const filter = req.query.filter || 'all';   // 'all' | 'non_compliant'
+  const search = req.query.search?.trim() || '';
+
+  try {
+    const [currentPp, currentTc] = await Promise.all([
+      prisma.legalDocument.findFirst({ where: { type: 'PRIVACY_POLICY' },   orderBy: { effective_from: 'desc' } }),
+      prisma.legalDocument.findFirst({ where: { type: 'TERMS_CONDITIONS' }, orderBy: { effective_from: 'desc' } }),
+    ]);
+
+    const whereUser = { role: 'PARENT' };
+    if (search) {
+      whereUser.OR = [
+        { name:  { contains: search, mode: 'insensitive' } },
+        { email: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    const allParents = await prisma.user.findMany({
+      where: whereUser,
+      orderBy: { created_at: 'desc' },
+      select: {
+        id: true, name: true, email: true, created_at: true, parent_status: true,
+        pp_acceptances: {
+          orderBy: { accepted_at: 'desc' },
+          take: 1,
+          select: { version: true, accepted_at: true },
+        },
+        tc_acceptances: {
+          orderBy: { accepted_at: 'desc' },
+          take: 1,
+          select: { version: true, accepted_at: true },
+        },
+      },
+    });
+
+    // Fetch the latest registration-time TC for each parent in one query
+    const regTcMap = {};
+    if (currentTc) {
+      const regTcRows = await prisma.privacyPolicyAcceptance.findMany({
+        where: { user_id: { in: allParents.map((p) => p.id) }, tc_version: { not: null } },
+        orderBy: { accepted_at: 'desc' },
+        select: { user_id: true, tc_version: true, accepted_at: true },
+      });
+      // Keep only the latest per user
+      for (const row of regTcRows) {
+        if (!regTcMap[row.user_id]) regTcMap[row.user_id] = row;
+      }
+    }
+
+    const enriched = allParents.map((p) => {
+      const latestPp = p.pp_acceptances[0] ?? null;
+      const latestTcBooking = p.tc_acceptances[0] ?? null;
+      const latestTcReg = regTcMap[p.id] ?? null;
+
+      const latestTcVersion = latestTcBooking?.version ?? latestTcReg?.tc_version ?? null;
+      const latestTcAt      = latestTcBooking?.accepted_at ?? latestTcReg?.accepted_at ?? null;
+
+      const ppCompliant = !!(currentPp && latestPp?.version === currentPp.version);
+      const tcCompliant = !!(currentTc && latestTcVersion === currentTc.version);
+
+      return {
+        id: p.id, name: p.name, email: p.email,
+        created_at: p.created_at, parent_status: p.parent_status,
+        pp_version:    latestPp?.version    ?? null,
+        pp_accepted_at: latestPp?.accepted_at ?? null,
+        pp_compliant:  ppCompliant,
+        tc_version:    latestTcVersion,
+        tc_accepted_at: latestTcAt,
+        tc_compliant:  tcCompliant,
+        compliant: ppCompliant && tcCompliant,
+      };
+    });
+
+    const filtered = filter === 'non_compliant'
+      ? enriched.filter((p) => !p.compliant)
+      : enriched;
+
+    const total = filtered.length;
+    const data  = filtered.slice((page - 1) * limit, page * limit);
+
+    return res.json({
+      data,
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+      current_pp_version: currentPp?.version ?? null,
+      current_tc_version: currentTc?.version ?? null,
+    });
+  } catch (err) {
+    console.error('[ADMIN] getParentComplianceList error:', err);
+    return res.status(500).json({ error: 'Server error' });
   }
 }
 
@@ -2901,4 +3031,5 @@ module.exports = {
   resendParentVerification,
   manuallyVerifyParent,
   getAdminNotifications,
+  getParentComplianceList,
 };
