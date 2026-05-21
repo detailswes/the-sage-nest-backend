@@ -2528,10 +2528,21 @@ async function gdprDeleteParent(req, res) {
       },
     });
 
-    // ── 2. Invalidate all sessions ─────────────────────────────────────────────
+    // ── 2. Remove free-text from booking records ───────────────────────────────
+    // Financial fields (amount, stripe IDs, refund status, expert_id) are kept
+    // for legal, tax, and DAC7 compliance. Only parent-authored text is erased.
+    await prisma.booking.updateMany({
+      where: { parent_id: parseInt(id) },
+      data: {
+        cancellation_reason: null,
+        dispute_reason:      null,
+      },
+    });
+
+    // ── 3. Invalidate all sessions ─────────────────────────────────────────────
     await prisma.refreshToken.deleteMany({ where: { user_id: parseInt(id) } });
 
-    // ── 3. Log audit ───────────────────────────────────────────────────────────
+    // ── 4. Log audit ───────────────────────────────────────────────────────────
     await logAudit(
       req.user.id,
       "GDPR_DELETE_PARENT",
