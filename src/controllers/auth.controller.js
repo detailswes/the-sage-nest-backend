@@ -907,12 +907,14 @@ async function deleteAccount(req, res) {
         });
       }
 
-      // Clean — wipe all personal data. No retention required for parents.
+      const ts = Date.now();
+
+      // Wipe personal data from user record.
       await prisma.user.update({
         where: { id: user.id },
         data: {
           name:                    "Deleted User",
-          email:                   `deleted_${user.id}_${Date.now()}@erasure.local`,
+          email:                   `deleted_${user.id}_${ts}@erasure.local`,
           phone:                   null,
           password_hash:           null,
           is_verified:             false,
@@ -927,8 +929,20 @@ async function deleteAccount(req, res) {
           account_deleted:         true,
         },
       });
+
+      // Remove free-text fields from booking records that could identify the parent.
+      // Financial fields (amount, stripe IDs, refund status, expert_id) are retained
+      // for legal, tax, and DAC7 compliance purposes.
+      await prisma.booking.updateMany({
+        where: { parent_id: user.id },
+        data: {
+          cancellation_reason: null,
+          dispute_reason:      null,
+        },
+      });
+
       await prisma.refreshToken.deleteMany({ where: { user_id: user.id } });
-      console.log(`[GDPR] Parent account ${user.id} erased — all personal data wiped`);
+      console.log(`[GDPR] Parent account ${user.id} erased — personal data wiped, booking records anonymised`);
       return res.json({ deleted: true });
     }
 
