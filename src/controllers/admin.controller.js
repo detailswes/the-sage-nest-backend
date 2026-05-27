@@ -1,7 +1,9 @@
 const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
+const ExcelJS = require("exceljs");
 const { decryptIban } = require("../utils/encryption");
+const { logAudit }   = require("../utils/auditLog");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
 const {
@@ -49,26 +51,6 @@ function deleteFile(fileUrl) {
   }
 }
 
-/**
- * Write one row to AdminAuditLog. Fire-and-forget — never throws.
- * admin_id has no FK constraint so logs survive GDPR-deleted admin accounts.
- */
-async function logAudit(adminId, action, entityType, entityId, note = null) {
-  try {
-    await prisma.adminAuditLog.create({
-      data: {
-        admin_id: adminId,
-        action,
-        entity_type: entityType,
-        entity_id: entityId,
-        note,
-      },
-    });
-  } catch (err) {
-    console.error("[AUDIT] Failed to write audit log:", err.message);
-  }
-}
-
 // ─── Expert list ──────────────────────────────────────────────────────────────
 
 async function listExperts(req, res) {
@@ -80,7 +62,7 @@ async function listExperts(req, res) {
     Math.max(1, parseInt(req.query.limit) || PAGE_LIMIT)
   );
   const skip = (page - 1) * limit;
-  const { status, search, city, qualification, cluster } = req.query;
+  const { status, search, city, qualification, cluster, from, to } = req.query;
 
   const baseWhere = { user: { role: "EXPERT" } };
   const where = { ...baseWhere };
@@ -109,6 +91,15 @@ async function listExperts(req, res) {
   if (cluster && VALID_CLUSTERS.includes(cluster)) {
     where.services = { some: { cluster } };
   }
+  if (isAdmin && (from || to)) {
+    where.user = {
+      ...where.user,
+      created_at: {
+        ...(from ? { gte: new Date(from) } : {}),
+        ...(to   ? { lte: new Date(to + "T23:59:59.999Z") } : {}),
+      },
+    };
+  }
 
   const adminInclude = {
     user: {
@@ -119,6 +110,7 @@ async function listExperts(req, res) {
         is_verified: true,
         login_attempts: true,
         locked_until: true,
+        account_deleted: true,
       },
     },
     qualifications: { orderBy: { created_at: "asc" } },
@@ -173,6 +165,46 @@ async function listExperts(req, res) {
 
       data.forEach((e) => {
         if (e.business_info?.iban) e.business_info.iban = decryptIban(e.business_info.iban);
+      });
+
+      // DAC7 threshold flags — single batch query for all experts on this page.
+      const dac7Year = new Date().getFullYear();
+      const dac7From = new Date(`${dac7Year}-01-01T00:00:00.000Z`);
+      const dac7To   = new Date(`${dac7Year + 1}-01-01T00:00:00.000Z`);
+      const dac7Stats = await prisma.booking.groupBy({
+        by:    ["expert_id"],
+        where: {
+          expert_id:    { in: data.map((e) => e.id) },
+          status:       { in: ["CONFIRMED", "COMPLETED"] },
+          scheduled_at: { gte: dac7From, lt: dac7To },
+        },
+        _count: { id: true },
+        _sum:   { amount: true },
+      });
+      const dac7Map = new Map(dac7Stats.map((s) => [s.expert_id, s]));
+
+      // Pending payout flags — one batch query for all experts on this page.
+      const payoutStats = await prisma.booking.groupBy({
+        by:    ["expert_id"],
+        where: {
+          expert_id:       { in: data.map((e) => e.id) },
+          transfer_status: "pending",
+        },
+        _count: { id: true },
+      });
+      const payoutMap = new Map(payoutStats.map((s) => [s.expert_id, s._count.id]));
+
+      data.forEach((e) => {
+        const s       = dac7Map.get(e.id);
+        const txCount = s?._count?.id ?? 0;
+        const gross   = parseFloat(s?._sum?.amount ?? 0);
+        e.dac7 = {
+          year:              dac7Year,
+          transaction_count: txCount,
+          gross_earnings:    gross,
+          threshold_reached: txCount >= 30 || gross >= 2000,
+        };
+        e.pending_payout_count = payoutMap.get(e.id) ?? 0;
       });
 
       return res.json({
@@ -238,6 +270,14 @@ async function approveExpert(req, res) {
       where: { id: parseInt(id) },
     });
     if (!expert) return res.status(404).json({ error: "Expert not found" });
+
+    if (!expert.stripe_onboarding_complete) {
+      return res.status(409).json({
+        error: "This expert has not completed Stripe onboarding. They must connect their payment account and have card_payments activated before they can be approved.",
+        code: "STRIPE_ONBOARDING_INCOMPLETE",
+      });
+    }
+
     const updated = await prisma.expert.update({
       where: { id: parseInt(id) },
       data: {
@@ -307,15 +347,40 @@ async function suspendExpert(req, res) {
   try {
     const expert = await prisma.expert.findUnique({
       where: { id: parseInt(id) },
+      select: { id: true, user_id: true, status: true },
     });
     if (!expert) return res.status(404).json({ error: "Expert not found" });
     if (expert.status === "SUSPENDED") {
       return res.status(400).json({ error: "Expert is already suspended." });
     }
-    const updated = await prisma.expert.update({
-      where: { id: parseInt(id) },
-      data: { status: "SUSPENDED" },
+
+    // Block suspension while the expert has upcoming confirmed bookings.
+    // Parents have paid for these sessions and the expert must be available
+    // to fulfil them. Cancel or reschedule those bookings before suspending.
+    const upcomingCount = await prisma.booking.count({
+      where: {
+        expert_id: expert.id,
+        status: "CONFIRMED",
+        scheduled_at: { gt: new Date() },
+      },
     });
+    if (upcomingCount > 0) {
+      return res.status(409).json({
+        error: `This expert has ${upcomingCount} upcoming confirmed booking${upcomingCount !== 1 ? "s" : ""}. Cancel or reschedule ${upcomingCount !== 1 ? "them" : "it"} before suspending.`,
+        code: "UPCOMING_BOOKINGS",
+        upcoming_booking_count: upcomingCount,
+      });
+    }
+
+    const [updated] = await Promise.all([
+      prisma.expert.update({
+        where: { id: parseInt(id) },
+        data: { status: "SUSPENDED", is_published: false },
+      }),
+      // Force immediate logout — existing sessions can no longer be refreshed
+      prisma.refreshToken.deleteMany({ where: { user_id: expert.user_id } }),
+    ]);
+
     await logAudit(req.user.id, "SUSPEND", "EXPERT", parseInt(id));
     return res.json({ message: "Expert suspended", expert: updated });
   } catch (err) {
@@ -416,6 +481,22 @@ async function requestChanges(req, res) {
 }
 
 // ─── Publish / unpublish ──────────────────────────────────────────────────────
+//
+// Force Unpublish sets is_published = false on an APPROVED expert.
+// Effect: expert is hidden from parent search/browse (listExperts filters on
+//   is_published = true). Status stays APPROVED. Sessions are not invalidated.
+//   The expert retains full login access and their dashboard is unaffected.
+//   Existing and future bookings are not touched — sessions proceed normally.
+//
+// NOTE: createBooking does not check is_published, so a parent with a direct
+//   link can still book an unpublished expert. If blocking all new bookings is
+//   required, add an is_published guard to createBooking.
+//
+// Reinstatement: republishExpert (sets is_published = true). Requires
+//   status = APPROVED; if the expert was subsequently suspended, reactivate first.
+//
+// vs Suspend: Suspend changes status → SUSPENDED and invalidates all sessions.
+//   Use Suspend to prevent login. Use Unpublish only to remove from search.
 
 async function unpublishExpert(req, res) {
   const { id } = req.params;
@@ -602,15 +683,95 @@ async function manuallyVerify(req, res) {
   }
 }
 
-// ─── Tax CSV export ───────────────────────────────────────────────────────────
+// ─── Parent support tools ─────────────────────────────────────────────────────
+
+async function sendParentPasswordReset(req, res) {
+  const { id } = req.params;
+  try {
+    const user = await prisma.user.findUnique({ where: { id: parseInt(id) } });
+    if (!user || user.role !== "PARENT") return res.status(404).json({ error: "Parent not found" });
+
+    const resetToken = crypto.randomBytes(32).toString("hex");
+    const resetTokenExpiresAt = new Date(Date.now() + 60 * 60 * 1000);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { reset_token: resetToken, reset_token_expires_at: resetTokenExpiresAt },
+    });
+
+    sendPasswordResetEmail({ to: user.email, name: user.name, resetToken })
+      .catch((err) => console.error("Failed to send parent password reset email:", err.message));
+
+    await logAudit(req.user.id, "SEND_PASSWORD_RESET", "PARENT", parseInt(id));
+
+    return res.json({ sent: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function resendParentVerification(req, res) {
+  const { id } = req.params;
+  try {
+    const user = await prisma.user.findUnique({ where: { id: parseInt(id) } });
+    if (!user || user.role !== "PARENT") return res.status(404).json({ error: "Parent not found" });
+
+    if (user.is_verified) {
+      return res.status(400).json({ error: "Parent email is already verified." });
+    }
+
+    const verificationCode = crypto.randomBytes(32).toString("hex");
+    const verificationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { verification_code: verificationCode, verification_expires_at: verificationExpiresAt },
+    });
+
+    sendVerificationEmail({ to: user.email, name: user.name, userId: user.id, verificationCode })
+      .catch((err) => console.error("Failed to resend parent verification email:", err.message));
+
+    await logAudit(req.user.id, "RESEND_VERIFICATION", "PARENT", parseInt(id));
+
+    return res.json({ sent: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function manuallyVerifyParent(req, res) {
+  const { id } = req.params;
+  try {
+    const user = await prisma.user.findUnique({ where: { id: parseInt(id) } });
+    if (!user || user.role !== "PARENT") return res.status(404).json({ error: "Parent not found" });
+
+    if (user.is_verified) {
+      return res.status(400).json({ error: "Parent email is already verified." });
+    }
+
+    await prisma.user.update({
+      where: { id: user.id },
+      data: { is_verified: true, verification_code: null, verification_expires_at: null },
+    });
+
+    await logAudit(req.user.id, "MANUAL_VERIFY", "PARENT", parseInt(id));
+
+    return res.json({ verified: true });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Tax XLSX export ────────────────────────────────────────────────────────
 
 async function exportTaxData(req, res) {
   const { id } = req.params;
   const year = parseInt(req.query.year);
   if (!year || year < 2000 || year > 2100) {
-    return res
-      .status(400)
-      .json({ error: "Valid year query parameter is required." });
+    return res.status(400).json({ error: 'Valid year query parameter is required.' });
   }
 
   try {
@@ -621,132 +782,162 @@ async function exportTaxData(req, res) {
         business_info: true,
       },
     });
-    if (!expert) return res.status(404).json({ error: "Expert not found" });
+    if (!expert) return res.status(404).json({ error: 'Expert not found' });
 
     const yearStart = new Date(`${year}-01-01T00:00:00.000Z`);
-    const yearEnd = new Date(`${year + 1}-01-01T00:00:00.000Z`);
+    const yearEnd   = new Date(`${year + 1}-01-01T00:00:00.000Z`);
 
     const bookings = await prisma.booking.findMany({
       where: {
-        expert_id: expert.id,
-        status: { in: ["CONFIRMED", "COMPLETED"] },
+        expert_id:    expert.id,
+        status:       { in: ['CONFIRMED', 'COMPLETED', 'REFUNDED'] },
         scheduled_at: { gte: yearStart, lt: yearEnd },
       },
       include: { service: { select: { title: true } } },
-      orderBy: { scheduled_at: "asc" },
+      orderBy: { scheduled_at: 'asc' },
     });
 
     const bi = expert.business_info;
-    const esc = (v) => {
-      if (v === null || v === undefined) return "";
-      const s = String(v);
-      return s.includes(",") || s.includes('"') || s.includes("\n")
-        ? `"${s.replace(/"/g, '""')}"`
-        : s;
+
+    // ── Shared styles ─────────────────────────────────────────────────────────
+    const HDR_FILL  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD6E0D7' } };
+    const SECT_FILL = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF0F4F0' } };
+    const BOLD      = { bold: true };
+    const MONEY_FMT = '#,##0.00';
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = 'Sage Nest Admin';
+    workbook.created = new Date();
+
+    // ── Sheet 1: Expert Info ─────────────────────────────────────────────────
+    const infoSheet = workbook.addWorksheet('Expert Info');
+    infoSheet.columns = [
+      { key: 'label', width: 26 },
+      { key: 'value', width: 44 },
+    ];
+
+    const addInfoSection = (title) => {
+      const r = infoSheet.addRow([title, '']);
+      r.font = BOLD;
+      r.fill = SECT_FILL;
     };
-    const row = (...cols) => cols.map(esc).join(",");
-    const line = (...cols) => row(...cols) + "\r\n";
+    const addInfoRow = (label, value) => {
+      const r = infoSheet.addRow([label, value ?? '']);
+      r.getCell(1).font = { color: { argb: 'FF555555' } };
+    };
 
-    let csv = "";
-    csv += line(`EXPERT TAX REPORT — ${year}`);
-    csv += line(`Generated`, new Date().toISOString().split("T")[0]);
-    csv += "\r\n";
-    csv += line("EXPERT IDENTITY");
-    csv += line("Name", "Email", "Joined");
-    csv += line(
-      expert.user?.name || "",
-      expert.user?.email || "",
-      expert.user?.created_at
-        ? new Date(expert.user.created_at).toISOString().split("T")[0]
-        : ""
-    );
-    csv += "\r\n";
-    csv += line("BUSINESS INFORMATION");
+    addInfoSection(`Expert Tax Report — ${year}`);
+    addInfoRow('Generated', new Date().toISOString().split('T')[0]);
+    infoSheet.addRow([]);
+
+    addInfoSection('Expert Identity');
+    addInfoRow('Name',   expert.user?.name  || '');
+    addInfoRow('Email',  expert.user?.email || '');
+    addInfoRow('Joined', expert.user?.created_at
+      ? new Date(expert.user.created_at).toISOString().split('T')[0]
+      : '');
+    infoSheet.addRow([]);
+
+    addInfoSection('Business Information');
     if (bi) {
-      csv += line(
-        "Entity Type",
-        bi.entity_type === "INDIVIDUAL"
-          ? "Individual"
-          : "Company / Legal Entity"
-      );
-      csv += line("Full Legal Name", bi.legal_name);
-      if (bi.entity_type === "INDIVIDUAL" && bi.date_of_birth) {
-        csv += line(
-          "Date of Birth",
-          new Date(bi.date_of_birth).toISOString().split("T")[0]
-        );
+      addInfoRow('Entity Type',       bi.entity_type === 'INDIVIDUAL' ? 'Individual' : 'Company / Legal Entity');
+      addInfoRow('Full Legal Name',   bi.legal_name          || '');
+      if (bi.entity_type === 'INDIVIDUAL' && bi.date_of_birth) {
+        addInfoRow('Date of Birth', new Date(bi.date_of_birth).toISOString().split('T')[0]);
       }
-      csv += line("Primary Address", bi.primary_address);
-      csv += line("TIN", bi.tin);
-      if (bi.vat_number) csv += line("VAT Number", bi.vat_number);
-      if (bi.company_reg_number)
-        csv += line("Company Reg. Number", bi.company_reg_number);
-      csv += line("IBAN", decryptIban(bi.iban));
-      csv += line("Business Email", bi.business_email);
-      csv += line("Website", bi.website);
-      if (bi.municipality) csv += line("Municipality", bi.municipality);
-      if (bi.business_address)
-        csv += line("Business Address", bi.business_address);
+      addInfoRow('TIN',               bi.tin                 || '');
+      addInfoRow('VAT Number',        bi.vat_number          || '');
+      if (bi.company_reg_number) addInfoRow('Company Reg. Number', bi.company_reg_number);
+      addInfoRow('Street',            bi.address_street      || '');
+      addInfoRow('City',              bi.address_city        || '');
+      addInfoRow('Postal Code',       bi.address_postal_code || '');
+      addInfoRow('Country',           bi.address_country     || '');
+      addInfoRow('IBAN',              decryptIban(bi.iban)   || '');
+      addInfoRow('Business Email',    bi.business_email      || '');
+      if (bi.municipality)     addInfoRow('Municipality',     bi.municipality);
+      if (bi.business_address) addInfoRow('Business Address', bi.business_address);
     } else {
-      csv += line("No business information on file");
+      infoSheet.addRow(['No business information on file', '']).font = { italic: true, color: { argb: 'FF888888' } };
     }
-    csv += "\r\n";
-    csv += line(`PAYMENTS (${year})`);
-    csv += line(
-      "Date",
-      "Service",
-      "Duration (min)",
-      "Gross Amount (€)",
-      "Platform Fee (€)",
-      "Net Payout (€)",
-      "Status"
-    );
 
-    let totalGross = 0;
-    let totalFee = 0;
+    // ── Sheet 2: Payments ────────────────────────────────────────────────────
+    const paySheet = workbook.addWorksheet(`Payments ${year}`);
+    paySheet.columns = [
+      { header: 'Booking ID',        key: 'booking_id',     width: 12 },
+      { header: 'Date',              key: 'date',           width: 14 },
+      { header: 'Service',           key: 'service',        width: 32 },
+      { header: 'Duration (min)',    key: 'duration',       width: 15 },
+      { header: 'Gross Amount (£)',  key: 'gross',          width: 17, style: { numFmt: MONEY_FMT } },
+      { header: 'Platform Fee (£)',  key: 'fee',            width: 17, style: { numFmt: MONEY_FMT } },
+      { header: 'Net Payout (£)',    key: 'net',            width: 17, style: { numFmt: MONEY_FMT } },
+      { header: 'Status',            key: 'status',         width: 13 },
+      { header: 'Refund Amount (£)', key: 'refundAmount',   width: 17, style: { numFmt: MONEY_FMT } },
+      { header: 'Refund Date',       key: 'refundDate',     width: 14 },
+      { header: 'Stripe Refund ID',  key: 'stripeRefundId', width: 30 },
+    ];
+
+    const hdrRow = paySheet.getRow(1);
+    hdrRow.font      = BOLD;
+    hdrRow.fill      = HDR_FILL;
+    hdrRow.alignment = { horizontal: 'center', vertical: 'middle' };
+    hdrRow.height    = 18;
+
+    let totalGross = 0, totalFee = 0, totalNet = 0, totalRefund = 0;
+
     for (const b of bookings) {
-      const gross = parseFloat(b.amount || 0);
-      const fee = parseFloat(b.platform_fee || 0);
-      totalGross += gross;
-      totalFee += fee;
-      csv += line(
-        new Date(b.scheduled_at).toISOString().split("T")[0],
-        b.service?.title || "",
-        b.duration_minutes,
-        gross.toFixed(2),
-        fee.toFixed(2),
-        (gross - fee).toFixed(2),
-        b.status
-      );
-    }
-    csv += "\r\n";
-    csv += line("TOTALS");
-    csv += line(
-      "Total Bookings",
-      "Total Gross (€)",
-      "Total Fees (€)",
-      "Total Net Payout (€)"
-    );
-    csv += line(
-      bookings.length,
-      totalGross.toFixed(2),
-      totalFee.toFixed(2),
-      (totalGross - totalFee).toFixed(2)
-    );
+      const gross  = parseFloat(b.amount       || 0);
+      const fee    = parseFloat(b.platform_fee || 0);
+      const net    = gross - fee;
+      const refAmt = b.refund_amount != null ? parseFloat(b.refund_amount) : null;
 
+      totalGross  += gross;
+      totalFee    += fee;
+      totalNet    += net;
+      if (refAmt != null) totalRefund += refAmt;
+
+      paySheet.addRow({
+        booking_id:     b.id,
+        date:           new Date(b.scheduled_at).toISOString().split('T')[0],
+        service:        b.service?.title || '',
+        duration:       b.duration_minutes,
+        gross,
+        fee,
+        net,
+        status:         b.status,
+        refundAmount:   refAmt,
+        refundDate:     b.refunded_at ? new Date(b.refunded_at).toISOString().split('T')[0] : '',
+        stripeRefundId: b.stripe_refund_id || '',
+      });
+    }
+
+    // Totals row
+    paySheet.addRow({});
+    const totRow = paySheet.addRow({
+      date:         'TOTALS',
+      service:      `${bookings.length} booking${bookings.length !== 1 ? 's' : ''}`,
+      gross:        totalGross,
+      fee:          totalFee,
+      net:          totalNet,
+      refundAmount: totalRefund > 0 ? totalRefund : null,
+    });
+    totRow.font = BOLD;
+    totRow.fill = SECT_FILL;
+
+    // ── Stream response ───────────────────────────────────────────────────────
     const safeName = (expert.user?.name || `expert-${id}`)
-      .replace(/[^a-z0-9]/gi, "_")
+      .replace(/[^a-z0-9]/gi, '_')
       .toLowerCase();
 
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="tax_report_${safeName}_${year}.csv"`
-    );
-    return res.send("\uFEFF" + csv);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="tax_report_${safeName}_${year}.xlsx"`);
+
+    await workbook.xlsx.write(res);
+    res.end();
   } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Server error" });
+    console.error('[exportTaxData]', err);
+    if (!res.headersSent) {
+      res.status(500).json({ error: 'Server error' });
+    }
   }
 }
 
@@ -775,6 +966,7 @@ async function getExpertDetail(req, res) {
         insurance: true,
         business_info: true,
         services: { orderBy: { sort_order: "asc" } },
+        profile_draft: true,
         _count: { select: { bookings: true } },
       },
     });
@@ -782,7 +974,108 @@ async function getExpertDetail(req, res) {
     if (expert.business_info?.iban) {
       expert.business_info.iban = decryptIban(expert.business_info.iban);
     }
+
+    // DAC7 threshold check for the current calendar year.
+    // Threshold: 30+ qualifying transactions OR gross earnings >= 2,000 (GBP, as
+    // booked amounts are stored in GBP — confirm EUR equivalence with tax adviser).
+    const dac7Year = new Date().getFullYear();
+    const dac7From = new Date(`${dac7Year}-01-01T00:00:00.000Z`);
+    const dac7To   = new Date(`${dac7Year + 1}-01-01T00:00:00.000Z`);
+    const dac7Agg  = await prisma.booking.aggregate({
+      where: {
+        expert_id: expert.id,
+        status:    { in: ["CONFIRMED", "COMPLETED"] },
+        scheduled_at: { gte: dac7From, lt: dac7To },
+      },
+      _count: { id: true },
+      _sum:   { amount: true },
+    });
+    const dac7TxCount = dac7Agg._count.id;
+    const dac7Gross   = parseFloat(dac7Agg._sum.amount ?? 0);
+    const byTx       = dac7TxCount >= 30;
+    const byEarnings = dac7Gross   >= 2000;
+    expert.dac7 = {
+      year:              dac7Year,
+      transaction_count: dac7TxCount,
+      gross_earnings:    dac7Gross,
+      threshold_reached: byTx || byEarnings,
+      threshold_reason:  byTx && byEarnings ? "both"
+                       : byTx              ? "transactions"
+                       : byEarnings        ? "earnings"
+                       : null,
+    };
+
+    expert.pending_payout_count = await prisma.booking.count({
+      where: { expert_id: expert.id, transfer_status: "pending" },
+    });
+
     return res.json(expert);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Profile draft review ─────────────────────────────────────────────────────
+
+async function approveProfileDraft(req, res) {
+  const { id } = req.params;
+  try {
+    const expert = await prisma.expert.findUnique({
+      where: { id: parseInt(id) },
+      include: { profile_draft: true },
+    });
+    if (!expert) return res.status(404).json({ error: "Expert not found" });
+    const draft = expert.profile_draft;
+    if (!draft) return res.status(404).json({ error: "No pending draft found" });
+
+    // Merge draft fields onto live expert record
+    const {
+      bio, summary, position, session_format, address_street, address_city,
+      address_postcode, languages, pending_languages, timezone, instagram,
+      facebook, linkedin, expertise,
+    } = draft;
+
+    await prisma.$transaction([
+      prisma.expert.update({
+        where: { id: parseInt(id) },
+        data: {
+          bio, summary, position, session_format, address_street, address_city,
+          address_postcode, languages, pending_languages, timezone, instagram,
+          facebook, linkedin, expertise,
+        },
+      }),
+      prisma.expertProfileDraft.delete({ where: { expert_id: parseInt(id) } }),
+    ]);
+
+    await logAudit(req.user.id, "APPROVE_PROFILE_DRAFT", "Expert", parseInt(id));
+    return res.json({ message: "Draft approved and published" });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function rejectProfileDraft(req, res) {
+  const { id } = req.params;
+  const { note } = req.body;
+  try {
+    const draft = await prisma.expertProfileDraft.findUnique({
+      where: { expert_id: parseInt(id) },
+    });
+    if (!draft) return res.status(404).json({ error: "No pending draft found" });
+
+    await prisma.expertProfileDraft.update({
+      where: { expert_id: parseInt(id) },
+      data: {
+        status: "REJECTED",
+        rejection_note: note || null,
+        reviewed_at: new Date(),
+      },
+    });
+
+    await logAudit(req.user.id, "REJECT_PROFILE_DRAFT", "Expert", parseInt(id), note);
+    return res.json({ message: "Draft rejected" });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -815,9 +1108,22 @@ async function listExpertBookings(req, res) {
   }
 }
 
+// Shared policy helper — mirrors the three-tier policy in booking.controller.js
+function computeRefundPolicy(booking) {
+  const total = parseFloat(booking.amount);
+  const ref = booking.status === "CANCELLED" && booking.cancelled_at
+    ? new Date(booking.cancelled_at)
+    : new Date();
+  const h = (new Date(booking.scheduled_at).getTime() - ref.getTime()) / 3_600_000;
+  const policyPercent = h >= 24 ? 100 : h >= 12 ? 50 : 0;
+  const policyAmount  = parseFloat((total * policyPercent / 100).toFixed(2));
+  const tier = h >= 24 ? "full refund (>24 h)" : h >= 12 ? "50% refund (12–24 h)" : "no refund (<12 h)";
+  return { policyPercent, policyAmount, tier, bookingTotal: total };
+}
+
 async function manualRefund(req, res) {
   const { id } = req.params;
-  const { reason, amount } = req.body;
+  const { reason, amount, override_reason } = req.body;
 
   try {
     const booking = await prisma.booking.findUnique({
@@ -830,7 +1136,7 @@ async function manualRefund(req, res) {
     });
 
     if (!booking) return res.status(404).json({ error: "Booking not found" });
-    if (booking.status !== "CONFIRMED") {
+    if (!["CONFIRMED", "COMPLETED", "CANCELLED"].includes(booking.status)) {
       return res.status(400).json({
         error: `Booking cannot be refunded (status: ${booking.status})`,
       });
@@ -855,20 +1161,38 @@ async function manualRefund(req, res) {
       }
     }
 
+    // ── Policy validation ──────────────────────────────────────────────────────
+    // Require an explicit override_reason when the requested amount differs from
+    // the policy-approved amount so that every deviation is audited.
+    const { policyPercent, policyAmount, tier } = computeRefundPolicy(booking);
+    const isOnPolicy = Math.abs(refundAmountValue - policyAmount) < 0.005;
+    if (!isOnPolicy && !override_reason?.trim()) {
+      return res.status(422).json({
+        error: `The requested amount (£${refundAmountValue.toFixed(2)}) deviates from the cancellation policy (${tier} → £${policyAmount.toFixed(2)}). Provide an override reason to proceed.`,
+        requires_override: true,
+        policy_amount:     policyAmount,
+        policy_percent:    policyPercent,
+        policy_tier:       tier,
+        booking_total:     bookingTotal,
+      });
+    }
+
     let chargeId = booking.stripe_charge_id;
     if (!chargeId) {
       const pi = await stripe.paymentIntents.retrieve(booking.stripe_payment_intent_id);
       chargeId = pi.latest_charge;
     }
     if (!chargeId) {
-      return res.status(400).json({ error: "Could not locate charge for this booking" });
+      return res.status(400).json({ error: "No payment was captured for this booking — it can be cancelled without a refund. Use the cancel action instead." });
     }
 
     let stripeRefund;
     try {
       stripeRefund = await stripe.refunds.create({
-        charge: chargeId,
+        charge:                 chargeId,
         ...(isPartial ? { amount: Math.round(refundAmountValue * 100) } : {}),
+        refund_application_fee: true,
+        reverse_transfer:       booking.transfer_status !== 'completed',
       });
     } catch (stripeErr) {
       const code = stripeErr?.code;
@@ -881,28 +1205,56 @@ async function manualRefund(req, res) {
       if (code === "insufficient_funds") {
         return res.status(400).json({ error: "Refund failed: insufficient funds in Stripe balance." });
       }
-      return res.status(400).json({ error: stripeErr.message || "Stripe refund failed." });
+      // Pre-Connect / legacy charges have no transfer and no application fee.
+      // Fall back to a bare refund so the customer still gets their money back.
+      const isLegacyChargeError =
+        stripeErr?.message?.includes("does not have an associated transfer") ||
+        stripeErr?.message?.includes("refund_application_fee");
+      if (isLegacyChargeError) {
+        try {
+          stripeRefund = await stripe.refunds.create({
+            charge: chargeId,
+            ...(isPartial ? { amount: Math.round(refundAmountValue * 100) } : {}),
+          });
+        } catch (retryErr) {
+          return res.status(400).json({ error: retryErr.message || "Stripe refund failed." });
+        }
+      } else {
+        return res.status(400).json({ error: stripeErr.message || "Stripe refund failed." });
+      }
     }
+
+    // CANCELLED bookings stay CANCELLED (session already cancelled, refund is supplementary).
+    // For CONFIRMED/COMPLETED: partial keeps CONFIRMED, full refund marks REFUNDED.
+    const newStatus = booking.status === "CANCELLED"
+      ? "CANCELLED"
+      : isPartial ? "CONFIRMED" : "REFUNDED";
+    const newCancellationReason = (isPartial || booking.status === "CANCELLED")
+      ? undefined
+      : (reason || "Admin manual refund");
+    const newCancelledAt = (isPartial || booking.status === "CANCELLED") ? undefined : new Date();
 
     await prisma.booking.update({
       where: { id: booking.id },
       data: {
-        // Partial refund keeps booking CONFIRMED; full refund marks it REFUNDED
-        status:              isPartial ? "CONFIRMED" : "REFUNDED",
-        cancellation_reason: isPartial ? undefined : (reason || "Admin manual refund"),
-        cancelled_at:        isPartial ? undefined : new Date(),
+        status:              newStatus,
+        cancellation_reason: newCancellationReason,
+        cancelled_at:        newCancelledAt,
         transfer_status:     "skipped",
         stripe_refund_id:    stripeRefund.id,
         refund_status:       stripeRefund.status,
         refund_amount:       refundAmountValue,
+        refunded_at:         new Date(),
       },
     });
 
+    const overrideSuffix = override_reason?.trim() ? ` [POLICY OVERRIDE: ${override_reason.trim()}]` : "";
     const auditNote = isPartial
-      ? `Partial refund of £${refundAmountValue.toFixed(2)}${reason ? ` — ${reason}` : ""}`
-      : `Full refund — ${reason || "Admin manual refund"}`;
+      ? `Partial refund of £${refundAmountValue.toFixed(2)}${reason ? ` — ${reason}` : ""}${overrideSuffix}`
+      : `Full refund — ${reason || "Admin manual refund"}${overrideSuffix}`;
 
     await logAudit(req.user.id, "MANUAL_REFUND", "BOOKING", booking.id, auditNote);
+    await logAudit(req.user.id, "REFUND_ISSUED", "PARENT", booking.parent_id, `Booking #${booking.id} · ${auditNote}`);
 
     // Fire-and-forget email notifications
     try {
@@ -913,8 +1265,9 @@ async function manualRefund(req, res) {
         serviceTitle:  booking.service?.title || "the session",
         scheduledAt:   booking.scheduled_at,
         refundAmount:  refundAmountValue,
+        currency:      booking.currency || 'EUR',
         isPartial,
-        reason:        reason || undefined,
+        reason:        [reason?.trim(), override_reason?.trim()].filter(Boolean).join(' — ') || undefined,
         bookingId:     booking.id,
       });
     } catch (emailErr) {
@@ -929,6 +1282,7 @@ async function manualRefund(req, res) {
         serviceTitle: booking.service?.title || "the session",
         scheduledAt:  booking.scheduled_at,
         refundAmount: refundAmountValue,
+        currency:     booking.currency || 'EUR',
         isPartial,
         bookingId:    booking.id,
       });
@@ -992,12 +1346,13 @@ async function listAllBookings(req, res) {
     const [bookings, total] = await Promise.all([
       prisma.booking.findMany({
         where,
+        omit:    { expert_note: true },
         orderBy: { scheduled_at: "desc" },
         skip,
         take,
         include: {
           parent:  { select: { id: true, name: true, email: true } },
-          expert:  { select: { id: true, user: { select: { name: true, email: true } } } },
+          expert:  { select: { id: true, timezone: true, user: { select: { name: true, email: true } } } },
           service: { select: { title: true } },
         },
       }),
@@ -1020,8 +1375,9 @@ async function getBookingDetail(req, res) {
         parent:  { select: { id: true, name: true, email: true, phone: true } },
         expert:  {
           select: {
-            id:   true,
-            user: { select: { name: true, email: true } },
+            id:               true,
+            timezone:         true,
+            user:             { select: { name: true, email: true } },
             stripe_account_id: true,
           },
         },
@@ -1029,6 +1385,7 @@ async function getBookingDetail(req, res) {
       },
     });
     if (!booking) return res.status(404).json({ error: "Booking not found" });
+    delete booking.expert_note;
     return res.json(booking);
   } catch (err) {
     console.error("[ADMIN] getBookingDetail error:", err);
@@ -1070,7 +1427,23 @@ async function adminCancelBooking(req, res) {
       }
       let stripeRefund = null;
       if (chargeId) {
-        stripeRefund = await stripe.refunds.create({ charge: chargeId });
+        try {
+          stripeRefund = await stripe.refunds.create({
+            charge:                 chargeId,
+            refund_application_fee: true,
+            reverse_transfer:       booking.transfer_status !== 'completed',
+          });
+        } catch (stripeErr) {
+          const isLegacyChargeError =
+            stripeErr?.message?.includes("does not have an associated transfer") ||
+            stripeErr?.message?.includes("refund_application_fee");
+          if (isLegacyChargeError) {
+            // Pre-Connect / legacy charge: no transfer or application fee — bare refund.
+            stripeRefund = await stripe.refunds.create({ charge: chargeId });
+          } else {
+            throw stripeErr;
+          }
+        }
       }
       const refundedAmount = parseFloat(booking.amount);
       await prisma.booking.update({
@@ -1084,6 +1457,7 @@ async function adminCancelBooking(req, res) {
             stripe_refund_id: stripeRefund.id,
             refund_status:    stripeRefund.status,
             refund_amount:    refundedAmount,
+            refunded_at:      new Date(),
           } : {}),
         },
       });
@@ -1097,6 +1471,7 @@ async function adminCancelBooking(req, res) {
           serviceTitle: booking.service?.title || "the session",
           scheduledAt:  booking.scheduled_at,
           refundAmount: refundedAmount,
+          currency:     booking.currency || 'EUR',
           isPartial:    false,
           reason:       reason.trim(),
           bookingId:    booking.id,
@@ -1112,6 +1487,7 @@ async function adminCancelBooking(req, res) {
           serviceTitle: booking.service?.title || "the session",
           scheduledAt:  booking.scheduled_at,
           refundAmount: refundedAmount,
+          currency:     booking.currency || 'EUR',
           isPartial:    false,
           bookingId:    booking.id,
         });
@@ -1137,6 +1513,7 @@ async function adminCancelBooking(req, res) {
     }
 
     await logAudit(req.user.id, "CANCEL_BOOKING", "BOOKING", booking.id, reason.trim());
+    await logAudit(req.user.id, "BOOKING_CANCELLED", "PARENT", booking.parent_id, `Booking #${booking.id} cancelled by admin — ${reason.trim()}`);
     return res.json({ success: true });
   } catch (err) {
     console.error("[ADMIN] adminCancelBooking error:", err);
@@ -1209,17 +1586,32 @@ async function updateBookingNote(req, res) {
 
 async function getLegalDocuments(req, res) {
   try {
-    const [pp, tc] = await Promise.all([
-      prisma.legalDocument.findFirst({
+    const [ppDocs, tcDocs, ppCounts, tcCounts] = await Promise.all([
+      prisma.legalDocument.findMany({
         where: { type: "PRIVACY_POLICY" },
         orderBy: { effective_from: "desc" },
       }),
-      prisma.legalDocument.findFirst({
+      prisma.legalDocument.findMany({
         where: { type: "TERMS_CONDITIONS" },
         orderBy: { effective_from: "desc" },
       }),
+      prisma.privacyPolicyAcceptance.groupBy({
+        by: ["version"],
+        _count: { version: true },
+      }),
+      prisma.tcAcceptance.groupBy({
+        by: ["version"],
+        _count: { version: true },
+      }),
     ]);
-    return res.json({ privacy_policy: pp, terms_conditions: tc });
+
+    const toMap  = (counts) => Object.fromEntries(counts.map((c) => [c.version, c._count.version]));
+    const enrich = (docs, countMap) => docs.map((d) => ({ ...d, accepted_count: countMap[d.version] ?? 0 }));
+
+    return res.json({
+      privacy_policy:   enrich(ppDocs, toMap(ppCounts)),
+      terms_conditions: enrich(tcDocs, toMap(tcCounts)),
+    });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -1248,14 +1640,24 @@ async function bumpLegalDocument(req, res) {
         .json({ error: `Version ${version} already exists for ${type}` });
     }
 
-    const doc = await prisma.legalDocument.create({
+    await prisma.legalDocument.create({
       data: { type, version: version.trim() },
     });
 
     console.log(
       `[ADMIN] Legal document bumped: ${type} → v${version} by admin ${req.user?.id}`
     );
-    return res.status(201).json(doc);
+
+    // Return the full enriched history for this type so the frontend can
+    // update its list state without a second round-trip.
+    const [allDocs, acceptanceCounts] = await Promise.all([
+      prisma.legalDocument.findMany({ where: { type }, orderBy: { effective_from: "desc" } }),
+      type === "PRIVACY_POLICY"
+        ? prisma.privacyPolicyAcceptance.groupBy({ by: ["version"], _count: { version: true } })
+        : prisma.tcAcceptance.groupBy({ by: ["version"], _count: { version: true } }),
+    ]);
+    const countMap = Object.fromEntries(acceptanceCounts.map((c) => [c.version, c._count.version]));
+    return res.status(201).json(allDocs.map((d) => ({ ...d, accepted_count: countMap[d.version] ?? 0 })));
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -1364,6 +1766,34 @@ async function gdprDeleteExpert(req, res) {
       });
     }
 
+    // Hard block: pending payouts must clear before the account can be erased.
+    // Deleting an account with a pending payout would cause the expert to lose
+    // earned income with no recourse.
+    const upcomingBookingCount = await prisma.booking.count({
+      where: {
+        expert_id: expert.id,
+        status: "CONFIRMED",
+        scheduled_at: { gt: new Date() },
+      },
+    });
+    if (upcomingBookingCount > 0) {
+      return res.status(409).json({
+        error: `This account cannot be deleted. The expert has ${upcomingBookingCount} upcoming confirmed booking${upcomingBookingCount !== 1 ? "s" : ""} that must be cancelled first.`,
+        code: "UPCOMING_BOOKINGS",
+        upcoming_booking_count: upcomingBookingCount,
+      });
+    }
+
+    const pendingPayoutCount = await prisma.booking.count({
+      where: { expert_id: expert.id, transfer_status: "pending" },
+    });
+    if (pendingPayoutCount > 0) {
+      return res.status(409).json({
+        error: `This account cannot be deleted until all pending payouts have cleared. ${pendingPayoutCount} payout${pendingPayoutCount !== 1 ? "s are" : " is"} still pending.`,
+        code: "PENDING_PAYOUTS",
+      });
+    }
+
     // ── 1. Cancel future bookings and refund where payment was captured ────────
     for (const booking of expert.bookings) {
       try {
@@ -1379,7 +1809,14 @@ async function gdprDeleteExpert(req, res) {
             chargeId = pi.latest_charge;
           }
           if (chargeId) {
-            await stripe.refunds.create({ charge: chargeId });
+            // Destination Charges: refund must originate from the expert's
+            // connected account via reverse_transfer, not from Sage Nest's
+            // platform balance. refund_application_fee returns our platform fee.
+            await stripe.refunds.create({
+              charge:                 chargeId,
+              refund_application_fee: true,
+              reverse_transfer:       booking.transfer_status !== 'completed',
+            });
           }
           await prisma.booking.update({
             where: { id: booking.id },
@@ -1437,9 +1874,23 @@ async function gdprDeleteExpert(req, res) {
       deleteFile(fileUrl);
     }
 
-    // ── 4. Delete BusinessInfo (pure PII — no accounting value) ───────────────
+    // ── 4. Partial-anonymise BusinessInfo ─────────────────────────────────────
+    // DAC7 (EU Directive 2021/514) requires platforms to retain seller identity
+    // and financial data for a minimum of 5 years for tax reporting purposes.
+    // GDPR Art. 17(3)(b) exempts this data from the right to erasure.
+    // Retained: legal_name, tin, iban, entity_type, date_of_birth, address fields,
+    //           vat_number, company_reg_number.
+    // Erased:   business_email, website, municipality, business_address (no DAC7 value).
     if (expert.business_info) {
-      await prisma.businessInfo.delete({ where: { expert_id: expert.id } });
+      await prisma.businessInfo.update({
+        where: { expert_id: expert.id },
+        data: {
+          business_email:   null,
+          website:          null,
+          municipality:     null,
+          business_address: null,
+        },
+      });
     }
 
     // ── 5. Anonymise Expert record ─────────────────────────────────────────────
@@ -1469,10 +1920,11 @@ async function gdprDeleteExpert(req, res) {
     });
 
     // ── 6. Anonymise User record ───────────────────────────────────────────────
+    // name is intentionally kept — DAC7 requires the seller's name to remain
+    // identifiable for tax authority reporting for a minimum of 5 years.
     await prisma.user.update({
       where: { id: expert.user_id },
       data: {
-        name: "Deleted User",
         email: `deleted_${expert.user_id}_${Date.now()}@erasure.local`,
         phone: null,
         password_hash: null,
@@ -1482,6 +1934,7 @@ async function gdprDeleteExpert(req, res) {
         reset_token: null,
         reset_token_expires_at: null,
         account_deleted: true,
+        // name kept for DAC7 tax reporting
       },
     });
 
@@ -1517,26 +1970,255 @@ async function gdprDeleteExpert(req, res) {
 async function getParentDetail(req, res) {
   const { id } = req.params;
   try {
-    const parent = await prisma.user.findUnique({
-      where: { id: parseInt(id) },
-      select: {
-        id: true,
-        name: true,
-        email: true,
-        phone: true,
-        role: true,
-        is_verified: true,
-        parent_status: true,
-        created_at: true,
-        _count: { select: { bookings_as_parent: true } },
+    const parentId = parseInt(id);
+    const [parent, currentPp, currentTc, ppAcceptances, tcAcceptances, tcAtReg] = await Promise.all([
+      prisma.user.findUnique({
+        where: { id: parentId },
+        select: {
+          id: true, name: true, email: true, phone: true,
+          role: true, is_verified: true, parent_status: true, created_at: true,
+          _count: { select: { bookings_as_parent: true } },
+        },
+      }),
+      prisma.legalDocument.findFirst({ where: { type: 'PRIVACY_POLICY' },   orderBy: { effective_from: 'desc' } }),
+      prisma.legalDocument.findFirst({ where: { type: 'TERMS_CONDITIONS' }, orderBy: { effective_from: 'desc' } }),
+      prisma.privacyPolicyAcceptance.findMany({
+        where: { user_id: parentId },
+        orderBy: { accepted_at: 'desc' },
+        select: { version: true, accepted_at: true, marketing_consent: true, marketing_accepted_at: true },
+      }),
+      prisma.tcAcceptance.findMany({
+        where: { user_id: parentId },
+        orderBy: { accepted_at: 'desc' },
+        select: { version: true, accepted_at: true },
+      }),
+      // Registration-time T&C stored as tc_version on PrivacyPolicyAcceptance
+      prisma.privacyPolicyAcceptance.findFirst({
+        where: { user_id: parentId, tc_version: { not: null } },
+        orderBy: { accepted_at: 'desc' },
+        select: { tc_version: true, accepted_at: true },
+      }),
+    ]);
+
+    if (!parent || parent.role !== 'PARENT') {
+      return res.status(404).json({ error: 'Parent not found' });
+    }
+
+    const latestPpVersion  = ppAcceptances[0]?.version ?? null;
+    const latestTcVersion  = tcAcceptances[0]?.version ?? tcAtReg?.tc_version ?? null;
+
+    return res.json({
+      ...parent,
+      legal_consents: {
+        current_pp_version: currentPp?.version ?? null,
+        current_tc_version: currentTc?.version ?? null,
+        pp_compliant: !!(currentPp && latestPpVersion === currentPp.version),
+        tc_compliant: !!(currentTc && latestTcVersion === currentTc.version),
+        pp_acceptances: ppAcceptances,
+        tc_acceptances: tcAcceptances,
+        tc_at_registration: tcAtReg ?? null,
       },
     });
-    if (!parent || parent.role !== "PARENT") {
-      return res.status(404).json({ error: "Parent not found" });
-    }
-    return res.json(parent);
   } catch (err) {
-    console.error("[ADMIN] getParentDetail error:", err);
+    console.error('[ADMIN] getParentDetail error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+// ─── GET /admin/compliance/parents ────────────────────────────────────────────
+
+async function getParentComplianceList(req, res) {
+  const page   = Math.max(1, parseInt(req.query.page)  || 1);
+  const limit  = Math.min(100, parseInt(req.query.limit) || 20);
+  const filter = req.query.filter || 'all';   // 'all' | 'non_compliant'
+  const search = req.query.search?.trim() || '';
+
+  try {
+    const [currentPp, currentTc] = await Promise.all([
+      prisma.legalDocument.findFirst({ where: { type: 'PRIVACY_POLICY' },   orderBy: { effective_from: 'desc' } }),
+      prisma.legalDocument.findFirst({ where: { type: 'TERMS_CONDITIONS' }, orderBy: { effective_from: 'desc' } }),
+    ]);
+
+    const whereUser = { role: 'PARENT' };
+    if (search) {
+      whereUser.OR = [
+        { name:  { contains: search, mode: 'insensitive' } },
+        { email: { contains: search, mode: 'insensitive' } },
+      ];
+    }
+
+    const allParents = await prisma.user.findMany({
+      where: whereUser,
+      orderBy: { created_at: 'desc' },
+      select: {
+        id: true, name: true, email: true, created_at: true, parent_status: true,
+        pp_acceptances: {
+          orderBy: { accepted_at: 'desc' },
+          take: 1,
+          select: { version: true, accepted_at: true },
+        },
+        tc_acceptances: {
+          orderBy: { accepted_at: 'desc' },
+          take: 1,
+          select: { version: true, accepted_at: true },
+        },
+      },
+    });
+
+    // Fetch the latest registration-time TC for each parent in one query
+    const regTcMap = {};
+    if (currentTc) {
+      const regTcRows = await prisma.privacyPolicyAcceptance.findMany({
+        where: { user_id: { in: allParents.map((p) => p.id) }, tc_version: { not: null } },
+        orderBy: { accepted_at: 'desc' },
+        select: { user_id: true, tc_version: true, accepted_at: true },
+      });
+      // Keep only the latest per user
+      for (const row of regTcRows) {
+        if (!regTcMap[row.user_id]) regTcMap[row.user_id] = row;
+      }
+    }
+
+    const enriched = allParents.map((p) => {
+      const latestPp = p.pp_acceptances[0] ?? null;
+      const latestTcBooking = p.tc_acceptances[0] ?? null;
+      const latestTcReg = regTcMap[p.id] ?? null;
+
+      const latestTcVersion = latestTcBooking?.version ?? latestTcReg?.tc_version ?? null;
+      const latestTcAt      = latestTcBooking?.accepted_at ?? latestTcReg?.accepted_at ?? null;
+
+      const ppCompliant = !!(currentPp && latestPp?.version === currentPp.version);
+      const tcCompliant = !!(currentTc && latestTcVersion === currentTc.version);
+
+      return {
+        id: p.id, name: p.name, email: p.email,
+        created_at: p.created_at, parent_status: p.parent_status,
+        pp_version:    latestPp?.version    ?? null,
+        pp_accepted_at: latestPp?.accepted_at ?? null,
+        pp_compliant:  ppCompliant,
+        tc_version:    latestTcVersion,
+        tc_accepted_at: latestTcAt,
+        tc_compliant:  tcCompliant,
+        compliant: ppCompliant && tcCompliant,
+      };
+    });
+
+    const filtered = filter === 'non_compliant'
+      ? enriched.filter((p) => !p.compliant)
+      : enriched;
+
+    const total = filtered.length;
+    const data  = filtered.slice((page - 1) * limit, page * limit);
+
+    return res.json({
+      data,
+      total,
+      page,
+      pages: Math.ceil(total / limit),
+      current_pp_version: currentPp?.version ?? null,
+      current_tc_version: currentTc?.version ?? null,
+    });
+  } catch (err) {
+    console.error('[ADMIN] getParentComplianceList error:', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+// ─── Expert XLSX export ────────────────────────────────────────────────────────
+
+const QUAL_LABELS = {
+  LACTATION_CONSULTANT:      "Lactation Consultant (IBCLC)",
+  BREASTFEEDING_COUNSELLOR:  "Breastfeeding Counsellor",
+  INFANT_SLEEP_CONSULTANT:   "Infant Sleep Consultant",
+  DOULA:                     "Doula",
+  MIDWIFE:                   "Midwife",
+  BABY_OSTEOPATH:            "Baby Osteopath",
+  PAEDIATRIC_NUTRITIONIST:   "Paediatric Nutritionist",
+  EARLY_YEARS_SPECIALIST:    "Early Years Specialist",
+  POSTNATAL_PHYSIOTHERAPIST: "Postnatal Physiotherapist",
+  PARENTING_COACH:           "Parenting Coach",
+  OTHER:                     "Other",
+};
+
+async function exportExperts(req, res) {
+  const { status, search, city, qualification, from, to } = req.query;
+
+  const where = { user: { role: "EXPERT" } };
+
+  if (status && VALID_STATUSES.includes(status)) where.status = status;
+  if (search?.trim()) {
+    where.user = { ...where.user, name: { contains: search.trim(), mode: "insensitive" } };
+  }
+  if (city?.trim()) where.address_city = { contains: city.trim(), mode: "insensitive" };
+  if (qualification && VALID_QUALIFICATION_TYPES.includes(qualification)) {
+    where.qualifications = { some: { type: qualification } };
+  }
+  if (from || to) {
+    where.user = {
+      ...where.user,
+      created_at: {
+        ...(from ? { gte: new Date(from) } : {}),
+        ...(to   ? { lte: new Date(to + "T23:59:59.999Z") } : {}),
+      },
+    };
+  }
+
+  try {
+    const experts = await prisma.expert.findMany({
+      where,
+      select: {
+        status: true,
+        user: { select: { name: true, email: true, created_at: true } },
+        qualifications: { select: { type: true } },
+      },
+      orderBy: { user: { created_at: "desc" } },
+    });
+
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "Sage Nest";
+    const sheet = workbook.addWorksheet("Experts");
+
+    sheet.columns = [
+      { header: "First Name",           key: "first_name",    width: 20 },
+      { header: "Surname",              key: "surname",       width: 20 },
+      { header: "Email",                key: "email",         width: 32 },
+      { header: "Date of Registration", key: "registered_at", width: 22 },
+      { header: "Qualifications",       key: "qualifications",width: 48 },
+      { header: "Status",               key: "status",        width: 16 },
+    ];
+
+    sheet.getRow(1).eachCell((cell) => {
+      cell.font      = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill      = { type: "pattern", pattern: "solid", fgColor: { argb: "FF445446" } };
+      cell.alignment = { vertical: "middle" };
+    });
+
+    experts.forEach((e) => {
+      const parts    = (e.user.name || "").trim().split(/\s+/);
+      const surname  = parts.length > 1 ? parts.pop() : "";
+      const firstName = parts.join(" ");
+      const quals    = e.qualifications
+        .map((q) => QUAL_LABELS[q.type] || q.type)
+        .join(", ") || "—";
+
+      sheet.addRow({
+        first_name:    firstName,
+        surname,
+        email:         e.user.email,
+        registered_at: e.user.created_at
+          ? new Date(e.user.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+          : "—",
+        qualifications: quals,
+        status:        e.status,
+      });
+    });
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="experts_export_${new Date().toISOString().slice(0, 10)}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error("[exportExperts]", err);
     return res.status(500).json({ error: "Server error" });
   }
 }
@@ -1555,7 +2237,7 @@ async function listParents(req, res) {
   const where = { ...baseWhere };
   const andConditions = [];
 
-  if (status && ["ACTIVE", "DEACTIVATED", "SUSPENDED"].includes(status)) {
+  if (status && ["ACTIVE", "SUSPENDED"].includes(status)) {
     if (status === "ACTIVE") {
       // Prisma doesn't allow null in an `in` array for enums — use OR instead
       andConditions.push({ OR: [{ parent_status: "ACTIVE" }, { parent_status: null }] });
@@ -1579,7 +2261,7 @@ async function listParents(req, res) {
   if (andConditions.length > 0) where.AND = andConditions;
 
   try {
-    const [total, data, activeCount, deactivatedCount, suspendedCount] =
+    const [total, data, activeCount, suspendedCount] =
       await Promise.all([
         prisma.user.count({ where }),
         prisma.user.findMany({
@@ -1603,9 +2285,6 @@ async function listParents(req, res) {
           where: { ...baseWhere, AND: [{ OR: [{ parent_status: "ACTIVE" }, { parent_status: null }] }] },
         }),
         prisma.user.count({
-          where: { ...baseWhere, parent_status: "DEACTIVATED" },
-        }),
-        prisma.user.count({
           where: { ...baseWhere, parent_status: "SUSPENDED" },
         }),
       ]);
@@ -1619,14 +2298,95 @@ async function listParents(req, res) {
         totalPages: Math.max(1, Math.ceil(total / limit)),
       },
       counts: {
-        all: activeCount + deactivatedCount + suspendedCount,
+        all: activeCount + suspendedCount,
         ACTIVE: activeCount,
-        DEACTIVATED: deactivatedCount,
         SUSPENDED: suspendedCount,
       },
     });
   } catch (err) {
     console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Parent XLSX export ────────────────────────────────────────────────────────
+
+async function exportParents(req, res) {
+  const { status, search, from, to } = req.query;
+
+  const baseWhere = { role: "PARENT", account_deleted: false };
+  const where = { ...baseWhere };
+  const andConditions = [];
+
+  if (status && ["ACTIVE", "SUSPENDED"].includes(status)) {
+    if (status === "ACTIVE") {
+      andConditions.push({ OR: [{ parent_status: "ACTIVE" }, { parent_status: null }] });
+    } else {
+      where.parent_status = status;
+    }
+  }
+  if (search?.trim()) {
+    andConditions.push({
+      OR: [
+        { name:  { contains: search.trim(), mode: "insensitive" } },
+        { email: { contains: search.trim(), mode: "insensitive" } },
+      ],
+    });
+  }
+  if (from || to) {
+    where.created_at = {};
+    if (from) where.created_at.gte = new Date(from);
+    if (to)   where.created_at.lte = new Date(to + "T23:59:59.999Z");
+  }
+  if (andConditions.length > 0) where.AND = andConditions;
+
+  try {
+    const rows = await prisma.user.findMany({
+      where,
+      select: { name: true, email: true, created_at: true, parent_status: true },
+      orderBy: { created_at: "desc" },
+    });
+
+    const workbook  = new ExcelJS.Workbook();
+    workbook.creator = "Sage Nest";
+    const sheet = workbook.addWorksheet("Parents");
+
+    sheet.columns = [
+      { header: "First Name",          key: "first_name",   width: 20 },
+      { header: "Surname",             key: "surname",      width: 20 },
+      { header: "Email",               key: "email",        width: 32 },
+      { header: "Date of Registration",key: "registered_at",width: 22 },
+      { header: "Status",              key: "status",       width: 14 },
+    ];
+
+    // Style header row
+    sheet.getRow(1).eachCell((cell) => {
+      cell.font = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill = { type: "pattern", pattern: "solid", fgColor: { argb: "FF445446" } };
+      cell.alignment = { vertical: "middle" };
+    });
+
+    rows.forEach((r) => {
+      const parts     = (r.name || "").trim().split(/\s+/);
+      const surname   = parts.length > 1 ? parts.pop() : "";
+      const firstName = parts.join(" ");
+      sheet.addRow({
+        first_name:   firstName,
+        surname,
+        email:        r.email,
+        registered_at: r.created_at
+          ? new Date(r.created_at).toLocaleDateString("en-GB", { day: "2-digit", month: "short", year: "numeric" })
+          : "—",
+        status: r.parent_status || "ACTIVE",
+      });
+    });
+
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="parents_export_${new Date().toISOString().slice(0,10)}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
+  } catch (err) {
+    console.error("[exportParents]", err);
     return res.status(500).json({ error: "Server error" });
   }
 }
@@ -1637,14 +2397,15 @@ async function listParentBookings(req, res) {
   const { id } = req.params;
   try {
     const bookings = await prisma.booking.findMany({
-      where: { parent_id: parseInt(id) },
+      where:   { parent_id: parseInt(id) },
+      omit:    { expert_note: true },
       orderBy: { scheduled_at: "desc" },
       take: 50,
       include: {
         service: {
           select: { title: true, duration_minutes: true, price: true },
         },
-        expert: { select: { user: { select: { name: true } } } },
+        expert: { select: { timezone: true, user: { select: { name: true } } } },
       },
     });
     return res.json(bookings);
@@ -1668,24 +2429,6 @@ async function activateParent(req, res) {
     });
     await logAudit(req.user.id, "ACTIVATE_PARENT", "PARENT", parseInt(id));
     return res.json({ message: "Parent account activated" });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Server error" });
-  }
-}
-
-async function deactivateParent(req, res) {
-  const { id } = req.params;
-  try {
-    const user = await prisma.user.findUnique({ where: { id: parseInt(id) } });
-    if (!user || user.role !== "PARENT")
-      return res.status(404).json({ error: "Parent not found" });
-    await prisma.user.update({
-      where: { id: parseInt(id) },
-      data: { parent_status: "DEACTIVATED" },
-    });
-    await logAudit(req.user.id, "DEACTIVATE_PARENT", "PARENT", parseInt(id));
-    return res.json({ message: "Parent account deactivated" });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -1747,56 +2490,29 @@ async function gdprDeleteParent(req, res) {
       });
     }
 
-    // ── 1. Cancel future bookings + refund captured payments ──────────────────
-    for (const booking of user.bookings_as_parent) {
-      try {
-        if (
-          booking.status === "CONFIRMED" &&
-          booking.stripe_payment_intent_id
-        ) {
-          let chargeId = booking.stripe_charge_id;
-          if (!chargeId) {
-            const pi = await stripe.paymentIntents.retrieve(
-              booking.stripe_payment_intent_id
-            );
-            chargeId = pi.latest_charge;
-          }
-          if (chargeId) await stripe.refunds.create({ charge: chargeId });
-          await prisma.booking.update({
-            where: { id: booking.id },
-            data: {
-              status: "REFUNDED",
-              cancellation_reason: "Parent account deleted (GDPR)",
-              cancelled_at: new Date(),
-              transfer_status: "skipped",
-            },
-          });
-        } else if (booking.status === "PENDING_PAYMENT") {
-          if (booking.stripe_payment_intent_id) {
-            try {
-              await stripe.paymentIntents.cancel(
-                booking.stripe_payment_intent_id
-              );
-            } catch (_) {}
-          }
-          await prisma.booking.update({
-            where: { id: booking.id },
-            data: {
-              status: "CANCELLED",
-              cancellation_reason: "Parent account deleted (GDPR)",
-              cancelled_at: new Date(),
-            },
-          });
-        }
-      } catch (refundErr) {
-        console.error(
-          `[GDPR] Failed to process booking ${booking.id}:`,
-          refundErr.message
-        );
-      }
+    // Hard block: upcoming bookings must be resolved before erasure.
+    if (user.bookings_as_parent.length > 0) {
+      return res.status(409).json({
+        error: `This account cannot be erased while there are upcoming bookings. Cancel or complete the ${user.bookings_as_parent.length} upcoming booking${user.bookings_as_parent.length !== 1 ? "s" : ""} first.`,
+        code: "UPCOMING_BOOKINGS",
+      });
     }
 
-    // ── 2. Anonymise User record ───────────────────────────────────────────────
+    // Hard block: pending refunds or open disputes must be resolved first.
+    const pendingTxCount = await prisma.booking.count({
+      where: {
+        parent_id: parseInt(id),
+        OR: [{ refund_status: "pending" }, { is_disputed: true }],
+      },
+    });
+    if (pendingTxCount > 0) {
+      return res.status(409).json({
+        error: `This account cannot be erased until all pending refunds and open disputes are resolved. ${pendingTxCount} unresolved transaction${pendingTxCount !== 1 ? "s" : ""} found.`,
+        code: "PENDING_TRANSACTIONS",
+      });
+    }
+
+    // ── 1. Anonymise User record ───────────────────────────────────────────────
     const ts = Date.now();
     await prisma.user.update({
       where: { id: parseInt(id) },
@@ -1809,6 +2525,17 @@ async function gdprDeleteParent(req, res) {
         reset_token: null,
         account_deleted: true,
         parent_status: null,
+      },
+    });
+
+    // ── 2. Remove free-text from booking records ───────────────────────────────
+    // Financial fields (amount, stripe IDs, refund status, expert_id) are kept
+    // for legal, tax, and DAC7 compliance. Only parent-authored text is erased.
+    await prisma.booking.updateMany({
+      where: { parent_id: parseInt(id) },
+      data: {
+        cancellation_reason: null,
+        dispute_reason:      null,
       },
     });
 
@@ -1907,13 +2634,27 @@ function buildTransactionWhere({ payment_status, from, to, search } = {}) {
         where.stripe_payment_intent_id = { not: null };
         break;
       case "refunded":
-        where.status = "REFUNDED";
+        // Covers explicit REFUNDED status and CANCELLED bookings where payment was captured
+        where.AND = [
+          {
+            OR: [
+              { status: "REFUNDED" },
+              { status: "CANCELLED", stripe_payment_intent_id: { not: null } },
+            ],
+          },
+        ];
         break;
       case "pending":
         where.status = "PENDING_PAYMENT";
         break;
       case "failed":
+        // Only true payment failures: booking cancelled before any payment was captured
         where.status = "CANCELLED";
+        where.stripe_payment_intent_id = null;
+        break;
+      case "transfer_failed":
+        where.status = { in: ["CONFIRMED", "COMPLETED"] };
+        where.transfer_status = "failed";
         break;
     }
   }
@@ -1933,7 +2674,13 @@ function buildTransactionWhere({ payment_status, from, to, search } = {}) {
       { expert: { user: { name: { contains: term, mode: "insensitive" } } } },
     ];
     if (!isNaN(termInt)) orClauses.push({ id: termInt });
-    where.OR = orClauses;
+    // If a payment_status filter already uses where.AND (e.g. "refunded"), nest the
+    // search OR inside AND to avoid clobbering it at the top level
+    if (where.AND) {
+      where.AND.push({ OR: orClauses });
+    } else {
+      where.OR = orClauses;
+    }
   }
 
   return where;
@@ -2101,6 +2848,150 @@ async function rejectLanguage(req, res) {
   }
 }
 
+// ─── Refund audit log ─────────────────────────────────────────────────────────
+
+async function getRefundLog(req, res) {
+  const page  = Math.max(1, parseInt(req.query.page)  || 1);
+  const limit = Math.min(50, parseInt(req.query.limit) || 25);
+  const skip  = (page - 1) * limit;
+
+  try {
+    const [total, logs] = await Promise.all([
+      prisma.adminAuditLog.count({ where: { action: "MANUAL_REFUND" } }),
+      prisma.adminAuditLog.findMany({
+        where:   { action: "MANUAL_REFUND" },
+        orderBy: { created_at: "desc" },
+        skip,
+        take: limit,
+      }),
+    ]);
+
+    // Enrich with booking data (refund_amount, stripe_refund_id, original amount, parent)
+    const bookingIds = [...new Set(logs.map((l) => l.entity_id).filter(Boolean))];
+    const bookings = bookingIds.length
+      ? await prisma.booking.findMany({
+          where:  { id: { in: bookingIds } },
+          select: {
+            id:              true,
+            amount:          true,
+            refund_amount:   true,
+            stripe_refund_id: true,
+            parent: { select: { name: true } },
+          },
+        })
+      : [];
+    const bookingMap = Object.fromEntries(bookings.map((b) => [b.id, b]));
+
+    // Resolve admin names (no FK — intentional, survives account deletion)
+    const adminIds = [...new Set(logs.map((l) => l.admin_id).filter(Boolean))];
+    const admins = adminIds.length
+      ? await prisma.user.findMany({
+          where:  { id: { in: adminIds } },
+          select: { id: true, name: true },
+        })
+      : [];
+    const adminMap = Object.fromEntries(admins.map((a) => [a.id, a.name]));
+
+    const enriched = logs.map((l) => ({
+      id:              l.id,
+      created_at:      l.created_at,
+      admin_id:        l.admin_id,
+      admin_name:      adminMap[l.admin_id] || "Unknown",
+      booking_id:      l.entity_id,
+      note:            l.note,
+      booking:         bookingMap[l.entity_id] || null,
+    }));
+
+    return res.json({
+      data: enriched,
+      pagination: { total, page, limit, totalPages: Math.max(1, Math.ceil(total / limit)) },
+    });
+  } catch (err) {
+    console.error("[ADMIN] getRefundLog error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Transfer retry / manual resolution ──────────────────────────────────────
+
+async function retryTransfer(req, res) {
+  const { id } = req.params;
+  try {
+    const booking = await prisma.booking.findUnique({ where: { id: parseInt(id) } });
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (booking.transfer_status !== "failed") {
+      return res.status(400).json({ error: "Only failed transfers can be retried" });
+    }
+    if (!["CONFIRMED", "COMPLETED"].includes(booking.status)) {
+      return res.status(400).json({ error: "Booking must be CONFIRMED or COMPLETED to retry transfer" });
+    }
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: { transfer_status: "pending", transfer_attempts: 0 },
+    });
+    await logAudit(req.user.id, "RETRY_TRANSFER", "BOOKING", booking.id, "Transfer reset to pending by admin");
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[ADMIN] retryTransfer error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function markTransferResolved(req, res) {
+  const { id } = req.params;
+  const { note } = req.body;
+  try {
+    const booking = await prisma.booking.findUnique({ where: { id: parseInt(id) } });
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+    if (booking.transfer_status !== "failed") {
+      return res.status(400).json({ error: "Only failed transfers can be marked resolved" });
+    }
+    await prisma.booking.update({
+      where: { id: booking.id },
+      data: {
+        transfer_status:    "resolved",
+        internal_admin_note: note?.trim() || booking.internal_admin_note,
+      },
+    });
+    await logAudit(req.user.id, "TRANSFER_RESOLVED", "BOOKING", booking.id, note?.trim() || "Marked resolved by admin");
+    return res.json({ success: true });
+  } catch (err) {
+    console.error("[ADMIN] markTransferResolved error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Admin notifications (pull-based, computed from live data) ────────────────
+// Each notification type is a simple query; add new types here as needed.
+async function getAdminNotifications(req, res) {
+  try {
+    const pendingDrafts = await prisma.expertProfileDraft.findMany({
+      where: { status: "PENDING_REVIEW" },
+      include: {
+        expert: {
+          include: { user: { select: { name: true } } },
+        },
+      },
+      orderBy: { submitted_at: "desc" },
+    });
+
+    const notifications = pendingDrafts.map((draft) => ({
+      id:        `draft_${draft.expert_id}`,
+      type:      "EXPERT_DRAFT_PENDING",
+      title:     "Profile edit awaiting review",
+      body:      `${draft.expert.user.name} submitted a profile update for review.`,
+      href:      `/dashboard/admin/experts/${draft.expert_id}`,
+      expertId:  draft.expert_id,
+      createdAt: draft.submitted_at,
+    }));
+
+    return res.json(notifications);
+  } catch (err) {
+    console.error("[getAdminNotifications]", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -2119,6 +3010,7 @@ module.exports = {
   unpublishExpert,
   republishExpert,
   exportTaxData,
+  exportExperts,
   getExpertYearlySummary,
   getExpertDetail,
   listExpertBookings,
@@ -2134,11 +3026,21 @@ module.exports = {
   gdprDeleteExpert,
   getParentDetail,
   listParents,
+  exportParents,
   listParentBookings,
   activateParent,
-  deactivateParent,
   suspendParent,
   gdprDeleteParent,
   listTransactions,
   exportTransactionsCsv,
+  getRefundLog,
+  retryTransfer,
+  markTransferResolved,
+  approveProfileDraft,
+  rejectProfileDraft,
+  sendParentPasswordReset,
+  resendParentVerification,
+  manuallyVerifyParent,
+  getAdminNotifications,
+  getParentComplianceList,
 };

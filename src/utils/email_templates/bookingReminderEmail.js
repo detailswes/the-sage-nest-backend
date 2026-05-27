@@ -14,6 +14,15 @@
  *   clientUrl: string
  * }} params
  */
+function fmtTime(date, timezone) {
+  const tz = timezone || 'UTC';
+  const d  = new Date(date);
+  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: tz });
+  const abbr = new Intl.DateTimeFormat('en-GB', { timeZone: tz, timeZoneName: 'short' })
+    .formatToParts(d).find((p) => p.type === 'timeZoneName')?.value || tz;
+  return `${time} ${abbr}`;
+}
+
 const bookingReminderEmailHtml = ({
   recipientName,
   role,
@@ -24,14 +33,13 @@ const bookingReminderEmailHtml = ({
   durationMinutes,
   reminderType,
   bookingId,
+  timezone,
   clientUrl,
 }) => {
   const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
   });
-  const timeStr = new Date(scheduledAt).toLocaleTimeString('en-GB', {
-    hour: '2-digit', minute: '2-digit', timeZone: 'UTC',
-  });
+  const timeStr = fmtTime(scheduledAt, timezone);
   const formatLabel = format === 'ONLINE' ? 'Online Session' : 'In-Person Session';
   const durationLabel =
     durationMinutes < 60
@@ -60,6 +68,7 @@ const bookingReminderEmailHtml = ({
       : `${clientUrl}/dashboard/expert/appointments`;
 
   const ctaLabel = role === 'parent' ? 'View My Bookings' : 'View My Calendar';
+  const logoUrl  = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
 
   return `
 <!DOCTYPE html>
@@ -75,7 +84,7 @@ const bookingReminderEmailHtml = ({
       <table width="100%" cellpadding="0" cellspacing="0" style="max-width:560px;">
 
         <tr><td align="center" style="padding-bottom:24px;">
-          <span style="font-size:20px;font-weight:700;color:#1F2933;letter-spacing:-0.3px;">Sage Nest</span>
+          <img src="${logoUrl}" alt="Sage Nest" width="60" style="display:block;width:60px;height:auto;border:0;" />
         </td></tr>
 
         <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #E4E7E4;padding:40px 36px;">
@@ -106,7 +115,7 @@ const bookingReminderEmailHtml = ({
               <tr>
                 <td style="padding-bottom:12px;border-top:1px solid #E4E7E4;padding-top:12px;">
                   <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Date &amp; Time</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${dateStr} at ${timeStr} UTC</span>
+                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${dateStr} at ${timeStr}</span>
                 </td>
               </tr>
               <tr>

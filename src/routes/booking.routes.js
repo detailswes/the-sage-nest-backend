@@ -6,26 +6,38 @@ const {
   getBookingById,
   getMyBookings,
   cancelBooking,
+  abandonBooking,
   rescheduleBooking,
   expertCancelBooking,
   getUpcomingAppointments,
+  getPastAppointments,
   getCalendarBookings,
   markSessionLinkSent,
+  markBookingComplete,
+  saveExpertNote,
   verifyPayment,
+  getCurrentTcVersion,
+  acceptTc,
 } = require('../controllers/booking.controller');
 
 router.use(authenticate);
 
 // ── Parent routes ─────────────────────────────────────────────────────────────
+router.get('/tc-version',      getCurrentTcVersion);     // GET    /bookings/tc-version
+router.post('/accept-tc',      acceptTc);               // POST   /bookings/accept-tc
 router.post('/',               requireEmailVerified, createBooking); // POST   /bookings
 router.get('/my',              getMyBookings);           // GET    /bookings/my
 router.delete('/:id',          cancelBooking);           // DELETE /bookings/:id
+router.post('/:id/abandon',    abandonBooking);           // POST   /bookings/:id/abandon
 router.patch('/:id/reschedule', rescheduleBooking);       // PATCH  /bookings/:id/reschedule
 
 // ── Expert routes ─────────────────────────────────────────────────────────────
 router.get('/upcoming',              getUpcomingAppointments); // GET    /bookings/upcoming
+router.get('/past',                  getPastAppointments);     // GET    /bookings/past
 router.get('/calendar',              getCalendarBookings);     // GET    /bookings/calendar
 router.patch('/:id/link-sent',       markSessionLinkSent);     // PATCH  /bookings/:id/link-sent
+router.patch('/:id/complete',        markBookingComplete);     // PATCH  /bookings/:id/complete
+router.patch('/:id/expert-note',     saveExpertNote);          // PATCH  /bookings/:id/expert-note
 router.post('/:id/expert-cancel',    expertCancelBooking);     // POST   /bookings/:id/expert-cancel
 
 // ── Shared ────────────────────────────────────────────────────────────────────

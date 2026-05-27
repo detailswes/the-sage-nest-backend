@@ -1,7 +1,17 @@
 const prisma = require('../prisma/client');
 
-const VALID_FORMATS  = ['ONLINE', 'IN_PERSON'];
-const VALID_CLUSTERS = ['FOR_PARENTS', 'FOR_BABY', 'PACKAGE', 'GIFT', 'EVENT'];
+const VALID_FORMATS    = ['ONLINE', 'IN_PERSON'];
+const VALID_CLUSTERS   = ['FOR_PARENTS', 'FOR_BABY', 'PACKAGE', 'GIFT', 'EVENT'];
+const VALID_CURRENCIES = ['EUR', 'GBP', 'DKK', 'SEK', 'NOK', 'CHF'];
+
+const PRICE_LIMITS = {
+  EUR: { min: 5,   max: 2000  },
+  GBP: { min: 5,   max: 2000  },
+  DKK: { min: 50,  max: 10000 },
+  SEK: { min: 50,  max: 20000 },
+  NOK: { min: 50,  max: 20000 },
+  CHF: { min: 5,   max: 2000  },
+};
 
 async function getExpertIdForUser(userId) {
   const expert = await prisma.expert.findUnique({ where: { user_id: userId } });
@@ -9,24 +19,28 @@ async function getExpertIdForUser(userId) {
 }
 
 async function createService(req, res) {
-  const { title, description, duration_minutes, price, format, cluster } = req.body;
+  const { title, description, duration_minutes, price, currency = 'EUR', format, cluster } = req.body;
 
   if (!title || !description || !duration_minutes || !price || !format || !cluster) {
     return res.status(400).json({ error: 'title, description, duration_minutes, price, format, and cluster are required.' });
   }
+  if (!VALID_CURRENCIES.includes(currency)) {
+    return res.status(400).json({ error: `Invalid currency. Must be one of: ${VALID_CURRENCIES.join(', ')}.` });
+  }
   if (title.trim().length > 80) {
     return res.status(400).json({ error: 'Service title must be 80 characters or fewer.' });
   }
-  if (description && description.trim().length > 300) {
-    return res.status(400).json({ error: 'Description must be 300 characters or fewer.' });
+  if (description && description.trim().length > 500) {
+    return res.status(400).json({ error: 'Description must be 500 characters or fewer.' });
   }
   const dur = parseInt(duration_minutes);
   if (isNaN(dur) || dur < 15 || dur > 480) {
     return res.status(400).json({ error: 'Duration must be between 15 and 480 minutes.' });
   }
   const priceVal = parseFloat(price);
-  if (isNaN(priceVal) || priceVal < 1.00) {
-    return res.status(400).json({ error: 'Price must be at least €1.00.' });
+  const limits   = PRICE_LIMITS[currency] || PRICE_LIMITS.EUR;
+  if (isNaN(priceVal) || priceVal < limits.min || priceVal > limits.max) {
+    return res.status(400).json({ error: `Price for ${currency} must be between ${limits.min} and ${limits.max}.` });
   }
   if (!VALID_FORMATS.includes(format)) {
     return res.status(400).json({ error: 'Invalid format. Must be ONLINE or IN_PERSON.' });
@@ -53,6 +67,7 @@ async function createService(req, res) {
         description: description?.trim() || null,
         duration_minutes: parseInt(duration_minutes),
         price: parseFloat(price),
+        currency,
         format: format || null,
         cluster: cluster || null,
         is_active: false,
@@ -84,13 +99,13 @@ async function listServices(req, res) {
 
 async function updateService(req, res) {
   const { id } = req.params;
-  const { title, description, duration_minutes, price, is_active, format, cluster } = req.body;
+  const { title, description, duration_minutes, price, currency, is_active, format, cluster } = req.body;
 
   if (title !== undefined && title.trim().length > 80) {
     return res.status(400).json({ error: 'Service title must be 80 characters or fewer.' });
   }
-  if (description !== undefined && description && description.trim().length > 300) {
-    return res.status(400).json({ error: 'Description must be 300 characters or fewer.' });
+  if (description !== undefined && description && description.trim().length > 500) {
+    return res.status(400).json({ error: 'Description must be 500 characters or fewer.' });
   }
   if (duration_minutes !== undefined) {
     const dur = parseInt(duration_minutes);
@@ -98,11 +113,8 @@ async function updateService(req, res) {
       return res.status(400).json({ error: 'Duration must be between 15 and 480 minutes.' });
     }
   }
-  if (price !== undefined) {
-    const priceVal = parseFloat(price);
-    if (isNaN(priceVal) || priceVal < 1.00) {
-      return res.status(400).json({ error: 'Price must be at least €1.00.' });
-    }
+  if (currency !== undefined && !VALID_CURRENCIES.includes(currency)) {
+    return res.status(400).json({ error: `Invalid currency. Must be one of: ${VALID_CURRENCIES.join(', ')}.` });
   }
   if (format !== undefined && format !== null && format !== '' && !VALID_FORMATS.includes(format)) {
     return res.status(400).json({ error: 'Invalid format. Must be ONLINE or IN_PERSON.' });
@@ -120,6 +132,15 @@ async function updateService(req, res) {
       return res.status(404).json({ error: 'Service not found' });
     }
 
+    if (price !== undefined) {
+      const effectiveCurrency = currency ?? service.currency ?? 'EUR';
+      const limits   = PRICE_LIMITS[effectiveCurrency] || PRICE_LIMITS.EUR;
+      const priceVal = parseFloat(price);
+      if (isNaN(priceVal) || priceVal < limits.min || priceVal > limits.max) {
+        return res.status(400).json({ error: `Price for ${effectiveCurrency} must be between ${limits.min} and ${limits.max}.` });
+      }
+    }
+
     const updated = await prisma.service.update({
       where: { id: parseInt(id) },
       data: {
@@ -127,6 +148,7 @@ async function updateService(req, res) {
         ...(description !== undefined  && { description: description?.trim() || null }),
         ...(duration_minutes !== undefined && { duration_minutes: parseInt(duration_minutes) }),
         ...(price !== undefined        && { price: parseFloat(price) }),
+        ...(currency !== undefined     && { currency }),
         ...(is_active !== undefined    && { is_active }),
         ...(format !== undefined       && { format: format || null }),
         ...(cluster !== undefined      && { cluster: cluster || null }),

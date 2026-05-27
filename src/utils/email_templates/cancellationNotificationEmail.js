@@ -10,9 +10,19 @@
  *   cancellationReason?: string,
  *   refundPercent: 0 | 50 | 100,
  *   amount: number | string,
+ *   currency?: string,
  *   clientUrl: string
  * }} params
  */
+function fmtTime(date, timezone) {
+  const tz = timezone || 'UTC';
+  const d  = new Date(date);
+  const time = d.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit', timeZone: tz });
+  const abbr = new Intl.DateTimeFormat('en-GB', { timeZone: tz, timeZoneName: 'short' })
+    .formatToParts(d).find((p) => p.type === 'timeZoneName')?.value || tz;
+  return `${time} ${abbr}`;
+}
+
 const cancellationNotificationEmailHtml = ({
   expertName,
   parentName,
@@ -22,6 +32,8 @@ const cancellationNotificationEmailHtml = ({
   cancellationReason,
   refundPercent,
   amount,
+  currency = 'EUR',
+  timezone,
   clientUrl,
 }) => {
   const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
@@ -30,11 +42,7 @@ const cancellationNotificationEmailHtml = ({
     month: 'long',
     year: 'numeric',
   });
-  const timeStr = new Date(scheduledAt).toLocaleTimeString('en-GB', {
-    hour: '2-digit',
-    minute: '2-digit',
-    timeZone: 'UTC',
-  });
+  const timeStr = fmtTime(scheduledAt, timezone);
 
   const expertFirstName = expertName.split(' ')[0];
   const parentFirstName = parentName.split(' ')[0];
@@ -42,7 +50,7 @@ const cancellationNotificationEmailHtml = ({
 
   const totalAmount   = Number(amount) || 0;
   const halfAmount    = totalAmount * 0.5;
-  const fmt           = (n) => `£${n.toFixed(2)}`;
+  const fmt           = (n) => new Intl.NumberFormat('en', { style: 'currency', currency }).format(n);
 
   const refundOutcome = refundPercent === 100
     ? `As the cancellation was made more than 24 hours before the session, ${parentFirstName} has received a full refund of ${fmt(totalAmount)}.`
@@ -112,7 +120,7 @@ const cancellationNotificationEmailHtml = ({
                   <span style="font-size:13px;color:#6B7280;">Time</span>
                 </td>
                 <td style="padding:10px 0;border-top:1px solid #E4E7E4;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${timeStr} UTC</span>
+                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${timeStr}</span>
                 </td>
               </tr>
               <tr>

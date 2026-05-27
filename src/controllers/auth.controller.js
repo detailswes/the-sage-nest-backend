@@ -6,6 +6,7 @@ const path = require("path");
 const fs = require("fs");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
+const { logAudit } = require("../utils/auditLog");
 
 const UPLOADS_DIR = path.join(__dirname, "../../uploads");
 
@@ -25,8 +26,8 @@ const {
   sendPasswordChangedEmail,
 } = require("../utils/email");
 
-const OTP_EXPIRY_MS   = 60 * 1000;        // 1 minute
-const OTP_RESEND_COOLDOWN_MS = 30 * 1000; // 30 seconds between resends
+const OTP_EXPIRY_MS   = 300 * 1000;       // 5 minutes
+const OTP_RESEND_COOLDOWN_MS = 60 * 1000; // 60 seconds between resends
 const OTP_MAX_ATTEMPTS = 5;
 
 function generateOtpCode() {
@@ -55,7 +56,7 @@ function verifyOtpToken(token) {
 const ACCESS_TOKEN_EXPIRES = "15m";
 const REFRESH_TOKEN_EXPIRES_MS = 30 * 24 * 60 * 60 * 1000; // 30 days (sliding via rotation)
 const MAX_LOGIN_ATTEMPTS = 5;
-const LOCKOUT_DURATION_MS = 30 * 60 * 1000; // 30 minutes
+const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
 
 // Argon2id — OWASP recommended settings (64 MB memory cost)
 const ARGON2_OPTIONS = {
@@ -100,6 +101,15 @@ function userPayload(user) {
   return { id: user.id, name: user.name, email: user.email, role: user.role };
 }
 
+// ─── European phone validator ─────────────────────────────────────────────────
+function validateEuropeanPhone(phone) {
+  const normalized = phone.trim().replace(/[\s\-().]/g, '');
+  if (normalized.startsWith('+')) {
+    return /^\+[34]\d{7,13}$/.test(normalized);
+  }
+  return /^0?\d{6,14}$/.test(normalized);
+}
+
 // ─── Password strength validator ─────────────────────────────────────────────
 function validatePasswordStrength(password) {
   if (!password || password.length < 8)      return "Password must be at least 8 characters.";
@@ -112,7 +122,7 @@ function validatePasswordStrength(password) {
 
 // ─── Register ───────────────────────────────────────────────────────────────
 async function register(req, res) {
-  const { email, password, role, name, phone, privacyPolicyAccepted, marketingConsent } = req.body;
+  const { email, password, role, name, phone, timezone, privacyPolicyAccepted, termsAccepted, marketingConsent } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
@@ -122,9 +132,23 @@ async function register(req, res) {
   if (privacyPolicyAccepted !== true) {
     return res.status(400).json({ error: "You must accept the Privacy Policy to create an account." });
   }
+  if (termsAccepted !== true) {
+    return res.status(400).json({ error: "You must accept the Terms & Conditions to create an account." });
+  }
 
   const pwError = validatePasswordStrength(password);
   if (pwError) return res.status(400).json({ error: pwError });
+
+  const assignedRole = ["EXPERT", "PARENT"].includes(role) ? role : "EXPERT";
+
+  if (assignedRole === "PARENT") {
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({ error: "Phone number is required for parent accounts." });
+    }
+    if (!validateEuropeanPhone(phone)) {
+      return res.status(400).json({ error: "Please enter a valid phone number (e.g. +44 7700 900000)." });
+    }
+  }
 
   try {
     const existing = await prisma.user.findUnique({ where: { email } });
@@ -133,7 +157,6 @@ async function register(req, res) {
     }
 
     const password_hash = await hashPassword(password);
-    const assignedRole = ["EXPERT", "PARENT"].includes(role) ? role : "EXPERT";
 
     // Both EXPERTs and PARENTs require email verification before login
     const verificationCode = crypto.randomBytes(32).toString("hex");
@@ -144,6 +167,7 @@ async function register(req, res) {
         email,
         name,
         phone: phone || null,
+        timezone: timezone?.trim() || null,
         password_hash,
         role: assignedRole,
         is_verified: false,
@@ -153,20 +177,33 @@ async function register(req, res) {
     });
 
     if (assignedRole === "EXPERT") {
-      await prisma.expert.create({ data: { user_id: user.id } });
+      const expert = await prisma.expert.create({ data: { user_id: user.id } });
+      logAudit(user.id, 'REGISTERED', 'EXPERT', expert.id, 'Account created');
+    } else {
+      logAudit(user.id, 'REGISTERED', 'PARENT', user.id, 'Account created');
     }
 
-    // Store Privacy Policy acceptance (GDPR requirement)
-    const currentPp = await prisma.legalDocument.findFirst({
-      where: { type: "PRIVACY_POLICY" },
-      orderBy: { effective_from: "desc" },
-    });
+    // Store Privacy Policy + T&C acceptance (GDPR Art. 6(1)(b) — contract performance)
+    const [currentPp, currentTc] = await Promise.all([
+      prisma.legalDocument.findFirst({
+        where: { type: "PRIVACY_POLICY" },
+        orderBy: { effective_from: "desc" },
+      }),
+      prisma.legalDocument.findFirst({
+        where: { type: "TERMS_CONDITIONS" },
+        orderBy: { effective_from: "desc" },
+      }),
+    ]);
+    const consentTimestamp = new Date();
     await prisma.privacyPolicyAcceptance.create({
       data: {
-        user_id: user.id,
-        version: currentPp?.version ?? "1.0",
-        marketing_consent: marketingConsent === true,
-        marketing_accepted_at: marketingConsent === true ? new Date() : null,
+        user_id:               user.id,
+        version:               currentPp?.version ?? "1.0",
+        accepted_at:           consentTimestamp,
+        tc_version:            currentTc?.version ?? "1.0",
+        tc_accepted_at:        consentTimestamp,
+        marketing_consent:     marketingConsent === true,
+        marketing_accepted_at: marketingConsent === true ? consentTimestamp : null,
       },
     });
 
@@ -257,8 +294,13 @@ async function login(req, res) {
       include: { expert: { select: { status: true } } },
     });
 
-    // Return the same generic error whether the email exists or not
+    // Return the same generic error whether the email exists or not.
+    // Run a dummy hash verify so timing is indistinguishable from a real verify.
     if (!user) {
+      await argon2.verify(
+        '$argon2id$v=19$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        password,
+      ).catch(() => {});
       return res.status(401).json({ error: INVALID_CREDENTIALS_ERROR });
     }
 
@@ -284,7 +326,7 @@ async function login(req, res) {
       const attempts = user.login_attempts + 1;
 
       if (attempts >= MAX_LOGIN_ATTEMPTS) {
-        // Lock the account for 30 minutes
+        // Lock the account for 15 minutes
         const lockedUntil = new Date(Date.now() + LOCKOUT_DURATION_MS);
         await prisma.user.update({
           where: { id: user.id },
@@ -301,7 +343,7 @@ async function login(req, res) {
         );
 
         return res.status(423).json({
-          error: "Account locked due to too many failed attempts. Try again in 30 minutes.",
+          error: "Account locked due to too many failed attempts. Try again in 15 minutes.",
           locked: true,
         });
       }
@@ -330,12 +372,10 @@ async function login(req, res) {
       });
     }
 
-    if (user.role === "PARENT" && user.parent_status && user.parent_status !== "ACTIVE") {
+    if (user.role === "PARENT" && user.parent_status === "SUSPENDED") {
       return res.status(403).json({
-        error: user.parent_status === "SUSPENDED"
-          ? "Your account has been suspended. Please contact support."
-          : "Your account has been deactivated. Please contact support.",
-        account_suspended: user.parent_status === "SUSPENDED",
+        error: "Your account has been suspended. Please contact support.",
+        account_suspended: true,
       });
     }
 
@@ -382,26 +422,28 @@ async function login(req, res) {
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: REFRESH_TOKEN_EXPIRES_MS,
     });
 
-    // Check if parent needs to re-accept an updated Privacy Policy
+    // Check if user needs to re-accept an updated Privacy Policy (all roles)
     let ppUpdateRequired = false;
-    if (user.role === "PARENT") {
-      const [currentPp, lastAccepted] = await Promise.all([
-        prisma.legalDocument.findFirst({
-          where: { type: "PRIVACY_POLICY" },
-          orderBy: { effective_from: "desc" },
-        }),
-        prisma.privacyPolicyAcceptance.findFirst({
-          where: { user_id: user.id },
-          orderBy: { accepted_at: "desc" },
-        }),
-      ]);
-      if (currentPp && (!lastAccepted || lastAccepted.version !== currentPp.version)) {
-        ppUpdateRequired = true;
-      }
+    const [currentPp, lastAccepted] = await Promise.all([
+      prisma.legalDocument.findFirst({
+        where: { type: "PRIVACY_POLICY" },
+        orderBy: { effective_from: "desc" },
+      }),
+      prisma.privacyPolicyAcceptance.findFirst({
+        where: { user_id: user.id },
+        orderBy: { accepted_at: "desc" },
+      }),
+    ]);
+    if (currentPp && (!lastAccepted || lastAccepted.version !== currentPp.version)) {
+      ppUpdateRequired = true;
+    }
+
+    if (user.role === 'PARENT') {
+      logAudit(user.id, 'LOGIN', 'PARENT', user.id);
     }
 
     return res.json({
@@ -417,6 +459,13 @@ async function login(req, res) {
 
 // ─── Refresh ─────────────────────────────────────────────────────────────────
 async function refresh(req, res) {
+  // CSRF defense-in-depth: this endpoint is cookie-authenticated (no Bearer token),
+  // so we require a custom header that HTML forms cannot set and that cross-origin
+  // fetch() cannot send without a CORS preflight (which our CORS config will reject).
+  if (req.headers['x-requested-by'] !== 'sage-nest') {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+
   console.log('[refresh] cookies received:', req.cookies);
   console.log('[refresh] headers origin:', req.headers.origin);
   const refreshToken = req.cookies?.refreshToken;
@@ -453,13 +502,30 @@ async function refresh(req, res) {
     res.cookie("refreshToken", newRefreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: REFRESH_TOKEN_EXPIRES_MS,
     });
+
+    // Check if user needs to re-accept an updated Privacy Policy (all roles)
+    let ppUpdateRequired = false;
+    const [currentPp, lastPpAccepted] = await Promise.all([
+      prisma.legalDocument.findFirst({
+        where: { type: "PRIVACY_POLICY" },
+        orderBy: { effective_from: "desc" },
+      }),
+      prisma.privacyPolicyAcceptance.findFirst({
+        where: { user_id: user.id },
+        orderBy: { accepted_at: "desc" },
+      }),
+    ]);
+    if (currentPp && (!lastPpAccepted || lastPpAccepted.version !== currentPp.version)) {
+      ppUpdateRequired = true;
+    }
 
     return res.json({
       accessToken: newAccessToken,
       user: userPayload(user),
+      ...(ppUpdateRequired && { pp_update_required: true }),
     });
   } catch (err) {
     console.error(err);
@@ -482,7 +548,7 @@ async function logout(req, res) {
   res.clearCookie("refreshToken", {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
-    sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
   });
 
   return res.json({ message: "Logged out successfully" });
@@ -634,7 +700,7 @@ async function getProfile(req, res) {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
-      select: { id: true, name: true, email: true, phone: true, is_verified: true, role: true },
+      select: { id: true, name: true, email: true, phone: true, city: true, timezone: true, is_verified: true, role: true },
     });
     if (!user) return res.status(404).json({ error: "User not found" });
     return res.json(user);
@@ -646,17 +712,39 @@ async function getProfile(req, res) {
 
 // ─── Update Profile (name + phone) ────────────────────────────────────────────
 async function updateProfile(req, res) {
-  const { name, phone } = req.body;
+  const { name, phone, city, timezone } = req.body;
 
   if (!name || !name.trim()) {
-    return res.status(400).json({ error: "Name is required" });
+    return res.status(400).json({ error: "Name is required." });
+  }
+
+  if (req.user.role === "PARENT") {
+    if (!phone || !phone.trim()) {
+      return res.status(400).json({ error: "Phone number is required." });
+    }
+    if (!validateEuropeanPhone(phone)) {
+      return res.status(400).json({ error: "Please enter a valid phone number (e.g. +44 7700 900000)." });
+    }
+  }
+
+  if (timezone?.trim()) {
+    try {
+      Intl.DateTimeFormat(undefined, { timeZone: timezone.trim() });
+    } catch {
+      return res.status(400).json({ error: "Invalid timezone." });
+    }
   }
 
   try {
     const updated = await prisma.user.update({
       where: { id: req.user.id },
-      data: { name: name.trim(), phone: phone?.trim() || null },
-      select: { id: true, name: true, email: true, phone: true, role: true },
+      data: {
+        name:     name.trim(),
+        phone:    phone?.trim() || null,
+        city:     city?.trim()  || null,
+        timezone: timezone?.trim() || null,
+      },
+      select: { id: true, name: true, email: true, phone: true, city: true, timezone: true, role: true },
     });
     return res.json(updated);
   } catch (err) {
@@ -819,12 +907,14 @@ async function deleteAccount(req, res) {
         });
       }
 
-      // Clean — wipe all personal data. No retention required for parents.
+      const ts = Date.now();
+
+      // Wipe personal data from user record.
       await prisma.user.update({
         where: { id: user.id },
         data: {
           name:                    "Deleted User",
-          email:                   `deleted_${user.id}_${Date.now()}@erasure.local`,
+          email:                   `deleted_${user.id}_${ts}@erasure.local`,
           phone:                   null,
           password_hash:           null,
           is_verified:             false,
@@ -839,8 +929,20 @@ async function deleteAccount(req, res) {
           account_deleted:         true,
         },
       });
+
+      // Remove free-text fields from booking records that could identify the parent.
+      // Financial fields (amount, stripe IDs, refund status, expert_id) are retained
+      // for legal, tax, and DAC7 compliance purposes.
+      await prisma.booking.updateMany({
+        where: { parent_id: user.id },
+        data: {
+          cancellation_reason: null,
+          dispute_reason:      null,
+        },
+      });
+
       await prisma.refreshToken.deleteMany({ where: { user_id: user.id } });
-      console.log(`[GDPR] Parent account ${user.id} erased — all personal data wiped`);
+      console.log(`[GDPR] Parent account ${user.id} erased — personal data wiped, booking records anonymised`);
       return res.json({ deleted: true });
     }
 
@@ -861,6 +963,22 @@ async function deleteAccount(req, res) {
     });
 
     if (expert) {
+      // Block: upcoming confirmed bookings — parents have paid for these sessions
+      const upcomingBookingCount = await prisma.booking.count({
+        where: {
+          expert_id: expert.id,
+          status: "CONFIRMED",
+          scheduled_at: { gt: new Date() },
+        },
+      });
+      if (upcomingBookingCount > 0) {
+        return res.status(409).json({
+          error: `You have ${upcomingBookingCount} upcoming confirmed booking${upcomingBookingCount !== 1 ? "s" : ""}. Please cancel ${upcomingBookingCount !== 1 ? "them" : "it"} before deleting your account.`,
+          has_upcoming_bookings: true,
+          upcoming_booking_count: upcomingBookingCount,
+        });
+      }
+
       // Block: pending payout (DAC7 — transfer must clear before account can be deleted)
       const pendingPayoutCount = await prisma.booking.count({
         where: { expert_id: expert.id, transfer_status: "pending" },
@@ -929,9 +1047,22 @@ async function deleteAccount(req, res) {
       await prisma.availabilityBlock.deleteMany({ where: { expert_id: expert.id } });
       await prisma.savedExpert.deleteMany({ where: { expert_id: expert.id } });
 
-      // 4. Wipe Expert profile fields — row is KEPT for booking foreign key integrity
-      //    BusinessInfo is intentionally NOT touched — retained per DAC7
-      //    (legal_name, TIN, IBAN required for tax authority reporting for 5+ years)
+      // 4a. Partial-erase BusinessInfo — keep DAC7 fields, wipe operational contact PII
+      if (expert.business_info) {
+        await prisma.businessInfo.update({
+          where: { expert_id: expert.id },
+          data: {
+            business_email:   null,
+            website:          null,
+            municipality:     null,
+            business_address: null,
+            // Retained: legal_name, tin, iban, entity_type, date_of_birth,
+            //           address fields, vat_number, company_reg_number (DAC7)
+          },
+        });
+      }
+
+      // 4b. Wipe Expert profile fields — row is KEPT for booking foreign key integrity
       await prisma.expert.update({
         where: { id: expert.id },
         data: {
@@ -1070,7 +1201,7 @@ async function verifyOtp(req, res) {
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: process.env.NODE_ENV === "production" ? "none" : "strict",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
       maxAge: REFRESH_TOKEN_EXPIRES_MS,
     });
 
@@ -1235,6 +1366,30 @@ async function disable2FA(req, res) {
   }
 }
 
+// ─── Public: current legal document versions ─────────────────────────────────
+// Used by the public Privacy Policy and Terms & Conditions pages to display
+// the live version number and effective date without requiring authentication.
+async function getLegalVersions(req, res) {
+  try {
+    const [pp, tc] = await Promise.all([
+      prisma.legalDocument.findFirst({
+        where: { type: "PRIVACY_POLICY" },
+        orderBy: { effective_from: "desc" },
+        select: { version: true, effective_from: true },
+      }),
+      prisma.legalDocument.findFirst({
+        where: { type: "TERMS_CONDITIONS" },
+        orderBy: { effective_from: "desc" },
+        select: { version: true, effective_from: true },
+      }),
+    ]);
+    return res.json({ privacy_policy: pp, terms_conditions: tc });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 // ─── Accept Updated Privacy Policy ───────────────────────────────────────────
 async function acceptPrivacyPolicy(req, res) {
   try {
@@ -1260,6 +1415,242 @@ async function acceptPrivacyPolicy(req, res) {
   }
 }
 
+// ─── Legal consents history ───────────────────────────────────────────────────
+async function getLegalConsents(req, res) {
+  try {
+    const [ppAcceptances, tcAcceptances] = await Promise.all([
+      prisma.privacyPolicyAcceptance.findMany({
+        where: { user_id: req.user.id },
+        orderBy: { accepted_at: "desc" },
+        select: {
+          id: true,
+          version: true,
+          accepted_at: true,
+          marketing_consent: true,
+          marketing_accepted_at: true,
+          tc_version: true,
+          tc_accepted_at: true,
+        },
+      }),
+      prisma.tcAcceptance.findMany({
+        where: { user_id: req.user.id },
+        orderBy: { accepted_at: "desc" },
+        select: { id: true, version: true, accepted_at: true },
+      }),
+    ]);
+
+    const latest = ppAcceptances[0] ?? null;
+
+    return res.json({
+      privacy_policy: ppAcceptances.map((a) => ({
+        version: a.version,
+        accepted_at: a.accepted_at,
+      })),
+      terms_registration: ppAcceptances
+        .filter((a) => a.tc_version)
+        .map((a) => ({ version: a.tc_version, accepted_at: a.tc_accepted_at })),
+      terms_per_booking: tcAcceptances.map((a) => ({
+        version: a.version,
+        accepted_at: a.accepted_at,
+      })),
+      marketing_consent: latest?.marketing_consent ?? false,
+      marketing_accepted_at: latest?.marketing_accepted_at ?? null,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Update marketing consent (withdraw or re-grant) ─────────────────────────
+async function updateMarketingConsent(req, res) {
+  const { consent } = req.body;
+  if (typeof consent !== "boolean") {
+    return res.status(400).json({ error: "consent must be a boolean" });
+  }
+
+  try {
+    const latest = await prisma.privacyPolicyAcceptance.findFirst({
+      where: { user_id: req.user.id },
+      orderBy: { accepted_at: "desc" },
+    });
+
+    if (!latest) {
+      return res.status(404).json({ error: "No consent record found" });
+    }
+
+    const updated = await prisma.privacyPolicyAcceptance.update({
+      where: { id: latest.id },
+      data: {
+        marketing_consent: consent,
+        marketing_accepted_at: consent ? new Date() : null,
+      },
+      select: { marketing_consent: true, marketing_accepted_at: true },
+    });
+
+    return res.json(updated);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Parent notification preferences ─────────────────────────────────────────
+const PARENT_NOTIF_FIELDS = [
+  "notify_booking_confirmation",
+  "notify_session_reminder",
+  "notify_expert_cancellation",
+  "notify_reschedule",
+  "notify_platform_updates",
+];
+
+async function getParentNotificationPrefs(req, res) {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: Object.fromEntries(PARENT_NOTIF_FIELDS.map((f) => [f, true])),
+    });
+    if (!user) return res.status(404).json({ error: "User not found" });
+    return res.json(user);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function updateParentNotificationPrefs(req, res) {
+  const data = {};
+  for (const field of PARENT_NOTIF_FIELDS) {
+    if (typeof req.body[field] === "boolean") data[field] = req.body[field];
+  }
+  if (Object.keys(data).length === 0) {
+    return res.status(400).json({ error: "No valid preference fields provided" });
+  }
+  try {
+    const updated = await prisma.user.update({
+      where: { id: req.user.id },
+      data,
+      select: Object.fromEntries(PARENT_NOTIF_FIELDS.map((f) => [f, true])),
+    });
+    return res.json(updated);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── GDPR Article 20 — Data Export ───────────────────────────────────────────
+async function exportMyData(req, res) {
+  try {
+    const user = await prisma.user.findUnique({
+      where: { id: req.user.id },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        phone: true,
+        role: true,
+        created_at: true,
+        is_verified: true,
+        two_factor_enabled: true,
+        oauth_accounts: {
+          select: { provider: true, created_at: true },
+        },
+        bookings_as_parent: {
+          select: {
+            id: true,
+            scheduled_at: true,
+            duration_minutes: true,
+            format: true,
+            status: true,
+            amount: true,
+            currency: true,
+            created_at: true,
+            cancelled_at: true,
+            cancellation_reason: true,
+            refund_amount: true,
+            refunded_at: true,
+            service: { select: { title: true } },
+            expert: { select: { user: { select: { name: true } } } },
+            review: { select: { rating: true, comment: true, created_at: true } },
+          },
+          orderBy: { scheduled_at: "desc" },
+        },
+        pp_acceptances: {
+          select: {
+            version: true,
+            accepted_at: true,
+            marketing_consent: true,
+            marketing_accepted_at: true,
+            tc_version: true,
+            tc_accepted_at: true,
+          },
+          orderBy: { accepted_at: "desc" },
+        },
+      },
+    });
+
+    if (!user) return res.status(404).json({ error: "User not found" });
+
+    const payload = {
+      exported_at: new Date().toISOString(),
+      gdpr_basis: "Article 20 — Right to data portability",
+      personal_information: {
+        name: user.name,
+        email: user.email,
+        phone: user.phone,
+        role: user.role,
+        account_created: user.created_at,
+        email_verified: user.is_verified,
+        two_factor_enabled: user.two_factor_enabled,
+      },
+      login_providers: user.oauth_accounts.map((a) => ({
+        provider: a.provider,
+        linked_at: a.created_at,
+      })),
+      booking_history: user.bookings_as_parent.map((b) => ({
+        booking_id: b.id,
+        service: b.service.title,
+        specialist: b.expert.user.name,
+        scheduled_at: b.scheduled_at,
+        duration_minutes: b.duration_minutes,
+        format: b.format,
+        status: b.status,
+        amount: b.amount,
+        currency: b.currency,
+        booked_at: b.created_at,
+        cancelled_at: b.cancelled_at,
+        cancellation_reason: b.cancellation_reason,
+        refund_amount: b.refund_amount,
+        refunded_at: b.refunded_at,
+        review: b.review
+          ? { rating: b.review.rating, comment: b.review.comment, submitted_at: b.review.created_at }
+          : null,
+        terms_accepted: null,
+      })),
+      consent_records: {
+        privacy_policy: user.pp_acceptances.map((a) => ({
+          version: a.version,
+          accepted_at: a.accepted_at,
+          marketing_consent: a.marketing_consent,
+          marketing_accepted_at: a.marketing_accepted_at,
+        })),
+        terms_and_conditions: user.pp_acceptances
+          .filter((a) => a.tc_version)
+          .map((a) => ({ version: a.tc_version, accepted_at: a.tc_accepted_at })),
+      },
+    };
+
+    const filename = `sage-nest-data-export-${new Date().toISOString().split("T")[0]}.json`;
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Type", "application/json");
+    return res.json(payload);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 module.exports = {
   register,
   login,
@@ -1275,10 +1666,16 @@ module.exports = {
   changePassword,
   deleteAccount,
   acceptPrivacyPolicy,
+  getLegalVersions,
   verifyOtp,
   resendOtp,
   get2FAStatus,
   sendSetupOtp,
   enable2FA,
   disable2FA,
+  exportMyData,
+  getParentNotificationPrefs,
+  updateParentNotificationPrefs,
+  getLegalConsents,
+  updateMarketingConsent,
 };

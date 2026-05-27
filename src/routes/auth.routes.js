@@ -5,19 +5,24 @@ const {
   verifyEmail, resendVerification,
   forgotPassword, resetPassword,
   getProfile, updateProfile, updateEmail, changePassword, deleteAccount,
-  acceptPrivacyPolicy,
+  acceptPrivacyPolicy, getLegalVersions,
   verifyOtp, resendOtp,
   get2FAStatus, sendSetupOtp, enable2FA, disable2FA,
+  exportMyData,
+  getParentNotificationPrefs, updateParentNotificationPrefs,
+  getLegalConsents, updateMarketingConsent,
 } = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth.middleware');
+const { registrationLimiter, passwordResetLimiter, otpResendLimiter } = require('../middleware/rateLimiter');
 
-router.post('/register',            register);
+router.get ('/legal-versions',       getLegalVersions);  // public — used by policy pages
+router.post('/register',            registrationLimiter, register);
 router.post('/login',               login);
 router.post('/refresh',             refresh);
 router.post('/logout',              logout);
 router.post('/verify-email',        verifyEmail);
-router.post('/resend-verification', resendVerification);
-router.post('/forgot-password',     forgotPassword);
+router.post('/resend-verification', otpResendLimiter, resendVerification);
+router.post('/forgot-password',     passwordResetLimiter, forgotPassword);
 router.post('/reset-password',      resetPassword);
 
 // ── Profile management — all require authentication ───────────────────────────
@@ -26,11 +31,16 @@ router.patch ('/profile',          authenticate, updateProfile);
 router.patch ('/profile/email',    authenticate, updateEmail);
 router.patch ('/profile/password', authenticate, changePassword);
 router.delete('/account',          authenticate, deleteAccount);
+router.get   ('/data-export',               authenticate, exportMyData);
+router.get   ('/notification-preferences',  authenticate, getParentNotificationPrefs);
+router.patch ('/notification-preferences',  authenticate, updateParentNotificationPrefs);
+router.get   ('/legal-consents',            authenticate, getLegalConsents);
+router.patch ('/marketing-consent',         authenticate, updateMarketingConsent);
 router.post  ('/accept-pp',        authenticate, acceptPrivacyPolicy);
 
 // ── 2FA login flow — public (uses otp_token JWT, no session yet) ──────────────
 router.post('/verify-otp', verifyOtp);
-router.post('/resend-otp', resendOtp);
+router.post('/resend-otp', otpResendLimiter, resendOtp);
 
 // ── 2FA settings — require authentication ────────────────────────────────────
 router.get ('/2fa/status',    authenticate, get2FAStatus);

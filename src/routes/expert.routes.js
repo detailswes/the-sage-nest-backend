@@ -10,10 +10,12 @@ const {
   addCertification, updateCertification, deleteCertification,
   saveInsurance, deleteInsurance,
   saveBusinessInfo,
+  getMyProfileDraft,
 } = require('../controllers/expert.controller');
 
 // ── Own profile ───────────────────────────────────────────────────────────────
 router.get('/me', authenticate, getMyProfile);
+router.get('/me/draft', authenticate, getMyProfileDraft);
 router.put('/me', authenticate, updateMyProfile);
 router.post('/me/profile-image', authenticate, (req, res, next) => {
   upload.single('profile_image')(req, res, (err) => {

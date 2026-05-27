@@ -7,6 +7,17 @@ const UPLOADS_DIR = path.join(__dirname, '../../uploads');
 
 const VALID_SESSION_FORMATS = ['ONLINE', 'IN_PERSON', 'BOTH'];
 
+// Fire-and-forget audit entry written on behalf of an expert (not an admin).
+// admin_id stores the expert's user_id — the User record exists so the name
+// resolves correctly in getAuditLog without any schema changes.
+async function logExpertEvent(userId, action, expertId, note = null) {
+  try {
+    await prisma.adminAuditLog.create({
+      data: { admin_id: userId, action, entity_type: 'EXPERT', entity_id: expertId, note },
+    });
+  } catch { /* non-fatal */ }
+}
+
 function isValidTimezone(tz) {
   try { Intl.DateTimeFormat(undefined, { timeZone: tz }); return true; }
   catch { return false; }
@@ -60,18 +71,24 @@ async function getMyProfile(req, res) {
 async function updateMyProfile(req, res) {
   const {
     bio, expertise, profile_image,
-    summary, position, session_format,
+    summary, position, // session_format — managed per-service
     address_street, address_city, address_postcode,
     languages, pending_languages, timezone,
     instagram, facebook, linkedin,
     buffer_minutes, advance_booking_days, min_notice_hours,
   } = req.body;
 
-  // Validate session_format if provided
-  if (session_format !== undefined && session_format !== null && session_format !== '') {
-    if (!VALID_SESSION_FORMATS.includes(session_format)) {
-      return res.status(400).json({ error: 'Invalid session_format value.' });
-    }
+  // session_format validation removed — managed per-service via Service.format
+
+  // Practice address is required on all profile saves
+  if (address_street !== undefined && !address_street?.trim()) {
+    return res.status(400).json({ error: 'Street address is required.' });
+  }
+  if (address_city !== undefined && !address_city?.trim()) {
+    return res.status(400).json({ error: 'City is required.' });
+  }
+  if (address_postcode !== undefined && !address_postcode?.trim()) {
+    return res.status(400).json({ error: 'Postcode is required.' });
   }
 
   // Validate bio length
@@ -144,13 +161,60 @@ async function updateMyProfile(req, res) {
   }
 
   try {
-    // If the expert was awaiting changes, saving any profile update resets them
-    // to PENDING so the admin queue picks them up again for review.
     const current = await prisma.expert.findUnique({
       where:  { user_id: req.user.id },
-      select: { status: true },
+      select: { id: true, status: true },
     });
-    const statusReset = current?.status === 'CHANGES_REQUESTED'
+    if (!current) return res.status(404).json({ error: 'Expert profile not found' });
+
+    // ── APPROVED experts: profile content changes go into a pending draft ────────
+    // Scheduling/operational settings (buffer_minutes etc.) always go live.
+    if (current.status === 'APPROVED') {
+      // Build draft data from the profile-content fields only
+      const draftData = {
+        ...(bio              !== undefined && { bio:              bio              || null }),
+        ...(expertise        !== undefined && { expertise:        expertise        || null }),
+        ...(summary          !== undefined && { summary:          summary          || null }),
+        ...(position         !== undefined && { position:         position         || null }),
+        // ...(session_format !== undefined && { session_format: session_format || null }),  // managed per-service
+        ...(address_street   !== undefined && { address_street:   address_street   || null }),
+        ...(address_city     !== undefined && { address_city:     address_city     || null }),
+        ...(address_postcode !== undefined && { address_postcode: address_postcode || null }),
+        ...(parsedLanguages        !== undefined && { languages:         parsedLanguages }),
+        ...(parsedPendingLanguages !== undefined && { pending_languages: parsedPendingLanguages }),
+        ...(timezone  !== undefined && timezone !== null && timezone !== '' && { timezone }),
+        ...(instagram !== undefined && { instagram: instagram || null }),
+        ...(facebook  !== undefined && { facebook:  facebook  || null }),
+        ...(linkedin  !== undefined && { linkedin:  linkedin  || null }),
+      };
+
+      // Upsert the draft — replaces any existing rejected draft too
+      const draft = await prisma.expertProfileDraft.upsert({
+        where:  { expert_id: current.id },
+        create: { expert_id: current.id, ...draftData },
+        update: { ...draftData, status: 'PENDING_REVIEW', submitted_at: new Date(), reviewed_at: null, rejection_note: null },
+      });
+
+      // Apply scheduling settings directly to the live record (they are operational, not public-facing content)
+      if (buffer_minutes !== undefined || advance_booking_days !== undefined || min_notice_hours !== undefined) {
+        await prisma.expert.update({
+          where: { id: current.id },
+          data: {
+            ...(buffer_minutes       !== undefined && { buffer_minutes:       parseInt(buffer_minutes, 10) }),
+            ...(advance_booking_days !== undefined && { advance_booking_days: parseInt(advance_booking_days, 10) }),
+            ...(min_notice_hours     !== undefined && { min_notice_hours:     parseInt(min_notice_hours,     10) }),
+          },
+        });
+      }
+
+      logExpertEvent(req.user.id, 'EXPERT_PROFILE_DRAFT_SUBMITTED', current.id);
+      return res.json({ draft: true, profile_draft: draft });
+    }
+
+    // ── Non-APPROVED experts: save directly to live record (existing behaviour) ──
+    // If the expert was awaiting changes, saving resets them to PENDING.
+    const isResubmission = current.status === 'CHANGES_REQUESTED';
+    const statusReset = isResubmission
       ? { status: 'PENDING', change_request_note: null, change_requested_at: null }
       : {};
 
@@ -163,9 +227,7 @@ async function updateMyProfile(req, res) {
         ...(profile_image !== undefined && { profile_image }),
         ...(summary !== undefined && { summary }),
         ...(position !== undefined && { position }),
-        ...(session_format !== undefined && {
-          session_format: session_format || null,
-        }),
+        // session_format excluded — managed per-service via Service.format
         ...(address_street !== undefined && { address_street }),
         ...(address_city !== undefined && { address_city }),
         ...(address_postcode !== undefined && { address_postcode }),
@@ -180,7 +242,30 @@ async function updateMyProfile(req, res) {
         ...(min_notice_hours     !== undefined && { min_notice_hours:     parseInt(min_notice_hours,     10) }),
       },
     });
+    logExpertEvent(
+      req.user.id,
+      isResubmission ? 'EXPERT_PROFILE_RESUBMITTED' : 'EXPERT_PROFILE_SAVED',
+      current.id,
+    );
     return res.json(expert);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+async function getMyProfileDraft(req, res) {
+  try {
+    const expert = await prisma.expert.findUnique({
+      where:  { user_id: req.user.id },
+      select: { id: true },
+    });
+    if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
+
+    const draft = await prisma.expertProfileDraft.findUnique({
+      where: { expert_id: expert.id },
+    });
+    return res.json(draft || null);
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: 'Server error' });
@@ -483,7 +568,8 @@ const VALID_ENTITY_TYPES = ['INDIVIDUAL', 'COMPANY'];
 async function saveBusinessInfo(req, res) {
   const {
     entity_type, legal_name, date_of_birth,
-    primary_address, tin, vat_number, company_reg_number,
+    address_street, address_city, address_postal_code, address_country,
+    tin, vat_number, company_reg_number,
     iban, business_email, website, municipality, business_address,
   } = req.body;
 
@@ -497,8 +583,17 @@ async function saveBusinessInfo(req, res) {
   if (entity_type === 'INDIVIDUAL' && !date_of_birth) {
     return res.status(400).json({ error: 'Date of birth is required for individual experts.' });
   }
-  if (!primary_address?.trim()) {
-    return res.status(400).json({ error: 'Primary address is required.' });
+  if (!address_street?.trim()) {
+    return res.status(400).json({ error: 'Street address is required.' });
+  }
+  if (!address_city?.trim()) {
+    return res.status(400).json({ error: 'City is required.' });
+  }
+  if (!address_postal_code?.trim()) {
+    return res.status(400).json({ error: 'Postal code is required.' });
+  }
+  if (!address_country?.trim()) {
+    return res.status(400).json({ error: 'Country is required.' });
   }
   if (!tin?.trim()) {
     return res.status(400).json({ error: 'Tax Identification Number (TIN) is required.' });
@@ -531,32 +626,38 @@ async function saveBusinessInfo(req, res) {
       where: { expert_id: expert.id },
       update: {
         entity_type,
-        legal_name:         legal_name.trim(),
-        date_of_birth:      dob,
-        primary_address:    primary_address.trim(),
-        tin:                tin.trim(),
-        vat_number:         vat_number?.trim()          || null,
-        company_reg_number: entity_type === 'COMPANY' ? company_reg_number.trim() : null,
-        iban:               encryptedIban,
-        business_email:     business_email.trim(),
-        website:            website?.trim()          || null,
-        municipality:       municipality?.trim()        || null,
-        business_address:   business_address?.trim()    || null,
+        legal_name:          legal_name.trim(),
+        date_of_birth:       dob,
+        address_street:      address_street.trim(),
+        address_city:        address_city.trim(),
+        address_postal_code: address_postal_code.trim(),
+        address_country:     address_country.trim(),
+        tin:                 tin.trim(),
+        vat_number:          vat_number?.trim()             || null,
+        company_reg_number:  entity_type === 'COMPANY' ? company_reg_number.trim() : null,
+        iban:                encryptedIban,
+        business_email:      business_email.trim(),
+        website:             website?.trim()             || null,
+        municipality:        municipality?.trim()           || null,
+        business_address:    business_address?.trim()       || null,
       },
       create: {
-        expert_id:          expert.id,
+        expert:              { connect: { id: expert.id } },
         entity_type,
-        legal_name:         legal_name.trim(),
-        date_of_birth:      dob,
-        primary_address:    primary_address.trim(),
-        tin:                tin.trim(),
-        vat_number:         vat_number?.trim()          || null,
-        company_reg_number: entity_type === 'COMPANY' ? company_reg_number.trim() : null,
-        iban:               encryptedIban,
-        business_email:     business_email.trim(),
-        website:            website?.trim()          || null,
-        municipality:       municipality?.trim()        || null,
-        business_address:   business_address?.trim()    || null,
+        legal_name:          legal_name.trim(),
+        date_of_birth:       dob,
+        address_street:      address_street.trim(),
+        address_city:        address_city.trim(),
+        address_postal_code: address_postal_code.trim(),
+        address_country:     address_country.trim(),
+        tin:                 tin.trim(),
+        vat_number:          vat_number?.trim()             || null,
+        company_reg_number:  entity_type === 'COMPANY' ? company_reg_number.trim() : null,
+        iban:                encryptedIban,
+        business_email:      business_email.trim(),
+        website:             website?.trim()             || null,
+        municipality:        municipality?.trim()           || null,
+        business_address:    business_address?.trim()       || null,
       },
     });
     return res.json({ ...info, iban: decryptIban(info.iban) });
@@ -580,7 +681,7 @@ async function listExperts(_req, res) {
         profile_image:  true,
         summary:        true,
         position:       true,
-        session_format:    true,
+        // session_format — managed per-service
         address_street:    true,
         address_city:      true,
         address_postcode:  true,
@@ -590,7 +691,7 @@ async function listExperts(_req, res) {
         },
         services: {
           where:   { is_active: true },
-          select:  { id: true, title: true, price: true, duration_minutes: true, format: true, cluster: true },
+          select:  { id: true, title: true, price: true, duration_minutes: true, format: true, cluster: true, currency: true },
           orderBy: { id: 'asc' },
         },
         qualifications: {
@@ -621,4 +722,5 @@ module.exports = {
   saveInsurance,
   deleteInsurance,
   saveBusinessInfo,
+  getMyProfileDraft,
 };

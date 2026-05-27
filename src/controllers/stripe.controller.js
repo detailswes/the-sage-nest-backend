@@ -1,5 +1,6 @@
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const prisma = require('../prisma/client');
+const { logAudit } = require('../utils/auditLog');
 const {
   sendBookingConfirmationEmail,
   sendNewBookingNotificationEmail,
@@ -14,12 +15,30 @@ async function createConnectLink(req, res) {
     let accountId = expert.stripe_account_id;
 
     if (!accountId) {
-      const account = await stripe.accounts.create({ type: 'express' });
+      const account = await stripe.accounts.create({
+        type: 'express',
+        capabilities: {
+          card_payments: { requested: true },
+          transfers:     { requested: true },
+        },
+        settings: {
+          payouts: { schedule: { interval: 'manual' } },
+        },
+      });
       accountId = account.id;
       await prisma.expert.update({
         where: { id: expert.id },
         data: { stripe_account_id: accountId },
       });
+    } else {
+      // Ensure existing connected accounts have manual payouts and capabilities requested.
+      await stripe.accounts.update(accountId, {
+        capabilities: {
+          card_payments: { requested: true },
+          transfers:     { requested: true },
+        },
+        settings: { payouts: { schedule: { interval: 'manual' } } },
+      }).catch((e) => console.error('[Stripe] account update failed:', e.message));
     }
 
     const accountLink = await stripe.accountLinks.create({
@@ -45,9 +64,12 @@ async function handleStripeReturn(req, res) {
     }
 
     const account = await stripe.accounts.retrieve(expert.stripe_account_id);
-    const onboardingComplete = account.details_submitted;
+    const detailsSubmitted   = account.details_submitted === true;
+    const cardPaymentsActive = account.capabilities?.card_payments === 'active';
+    const onboardingComplete = detailsSubmitted && cardPaymentsActive;
 
-    // Persist the completion flag so listExperts can filter without a Stripe call
+    // Persist the flag only once both conditions are met. card_payments can lag
+    // behind details_submitted by a few seconds while Stripe activates it.
     if (onboardingComplete && !expert.stripe_onboarding_complete) {
       await prisma.expert.update({
         where: { id: expert.id },
@@ -56,8 +78,10 @@ async function handleStripeReturn(req, res) {
     }
 
     return res.json({
-      stripe_account_id: expert.stripe_account_id,
-      onboarding_complete: onboardingComplete,
+      stripe_account_id:    expert.stripe_account_id,
+      onboarding_complete:  onboardingComplete,
+      details_submitted:    detailsSubmitted,
+      card_payments_active: cardPaymentsActive,
     });
   } catch (err) {
     console.error(err);
@@ -125,8 +149,8 @@ async function handleWebhook(req, res) {
         const booking = await prisma.booking.findFirst({
           where: { stripe_payment_intent_id: pi.id },
           include: {
-            parent:  { select: { name: true, email: true } },
-            expert:  { select: { address_street: true, address_city: true, address_postcode: true, user: { select: { name: true, email: true } } } },
+            parent:  { select: { name: true, email: true, notify_booking_confirmation: true } },
+            expert:  { select: { address_street: true, address_city: true, address_postcode: true, timezone: true, user: { select: { name: true, email: true } } } },
             service: { select: { title: true } },
           },
         });
@@ -159,18 +183,23 @@ async function handleWebhook(req, res) {
             `charge=${pi.latest_charge} transfer_due=${transferDueAt.toISOString()}`
           );
 
+          logAudit(booking.parent_id, 'BOOKING_CONFIRMED', 'PARENT', booking.parent_id,
+            `Booking #${booking.id} confirmed · payment received`);
+
           // Fire-and-forget: parent confirmation + expert new-booking notification
           const expertAddress = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
-          sendBookingConfirmationEmail({
-            to:              booking.parent.email,
-            name:            booking.parent.name,
-            expertName:      booking.expert.user.name,
-            serviceTitle:    booking.service.title,
-            format:          booking.format,
-            scheduledAt:     booking.scheduled_at,
-            durationMinutes: booking.duration_minutes,
-            location:        expertAddress || undefined,
-          }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));
+          if (booking.parent.notify_booking_confirmation !== false) {
+            sendBookingConfirmationEmail({
+              to:              booking.parent.email,
+              name:            booking.parent.name,
+              expertName:      booking.expert.user.name,
+              serviceTitle:    booking.service.title,
+              format:          booking.format,
+              scheduledAt:     booking.scheduled_at,
+              durationMinutes: booking.duration_minutes,
+              location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
+            }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));
+          }
 
           sendNewBookingNotificationEmail({
             to:              booking.expert.user.email,
@@ -182,6 +211,7 @@ async function handleWebhook(req, res) {
             scheduledAt:     booking.scheduled_at,
             durationMinutes: booking.duration_minutes,
             bookingId:       booking.id,
+            timezone:        booking.expert.timezone,
           }).catch((e) => console.error('[Email] Expert notification email failed:', e.message));
         } else {
           console.log(`[Webhook] Booking ${booking.id} already has status=${booking.status} — skipping update`);
@@ -203,7 +233,7 @@ async function handleWebhook(req, res) {
         }
         break;
       }
-
+    
       // ── Payment intent canceled (e.g. by cleanup job or Stripe expiry) ──────
       case 'payment_intent.canceled': {
         const pi = event.data.object;
@@ -237,9 +267,19 @@ async function handleWebhook(req, res) {
       case 'charge.refunded': {
         const charge = event.data.object;
         if (charge.payment_intent) {
+          // Extract the most recent refund object from the charge
+          const latestRefund = charge.refunds?.data?.[0];
           await prisma.booking.updateMany({
             where: { stripe_payment_intent_id: charge.payment_intent },
-            data: { status: 'REFUNDED' },
+            data: {
+              status: 'REFUNDED',
+              ...(latestRefund ? {
+                stripe_refund_id: latestRefund.id,
+                refund_status:    latestRefund.status,
+                refund_amount:    latestRefund.amount / 100,
+                refunded_at:      new Date(latestRefund.created * 1000),
+              } : {}),
+            },
           });
         }
         break;
@@ -248,12 +288,14 @@ async function handleWebhook(req, res) {
       // ── Account updated (expert onboarding / capability changes) ──────────
       case 'account.updated': {
         const account = event.data.object;
-        console.log(`[Webhook] account.updated: ${account.id}, details_submitted=${account.details_submitted}`);
+        const cardPaymentsActive = account.capabilities?.card_payments === 'active';
+        console.log(`[Webhook] account.updated: ${account.id}, details_submitted=${account.details_submitted}, card_payments=${account.capabilities?.card_payments}`);
 
-        // Keep DB flag in sync with Stripe's source of truth
+        // Both details_submitted AND card_payments active are required for the
+        // expert to be usable as a destination charge MoR with on_behalf_of.
         await prisma.expert.updateMany({
           where: { stripe_account_id: account.id },
-          data:  { stripe_onboarding_complete: account.details_submitted === true },
+          data:  { stripe_onboarding_complete: account.details_submitted === true && cardPaymentsActive },
         });
         break;
       }

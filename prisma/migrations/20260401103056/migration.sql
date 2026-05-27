@@ -1,7 +1,9 @@
+-- pragma: noTransaction
 /*
   Idempotent rewrite — objects were already created by prisma db push.
-  COMMIT/BEGIN removed: not needed on PostgreSQL 14+ and it breaks
-  Prisma's own transaction used to record migration results.
+  Non-transactional: ALTER TYPE ADD VALUE cannot be used in the same
+  transaction as SET DEFAULT on that value (PostgreSQL limitation).
+  Each statement runs in autocommit so ADD VALUE commits before SET DEFAULT.
 */
 
 -- CreateEnum (idempotent)

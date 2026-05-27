@@ -1,4 +1,4 @@
-const sgMail = require("@sendgrid/mail");
+const nodemailer = require("nodemailer");
 const {
   verificationEmailHtml,
 } = require("./email_templates/verificationEmail");
@@ -33,25 +33,46 @@ const {
   expertCancelledSessionEmailHtml,
 } = require("./email_templates/expertCancelledSessionEmail");
 
-// ─── Init (lazy — called after dotenv has loaded) ─────────────────────────────
-let _initialized = false;
+// ─── Transporter (lazy — created after dotenv has loaded) ────────────────────
+let _transporter = null;
 
-const initSendGrid = () => {
-  if (_initialized) return;
-  if (!process.env.SENDGRID_API_KEY) {
-    throw new Error("SENDGRID_API_KEY is not set in environment");
+const getTransporter = () => {
+  if (_transporter) return _transporter;
+
+  const required = ['BREVO_SMTP_SERVER', 'BREVO_LOGIN', 'BREVO_SMTP_KEY', 'EMAIL_FROM'];
+  const missing  = required.filter((k) => !process.env[k]);
+  if (missing.length) {
+    throw new Error(`Brevo SMTP not configured — missing env vars: ${missing.join(', ')}`);
   }
-  sgMail.setApiKey(process.env.SENDGRID_API_KEY);
-  _initialized = true;
+
+  _transporter = nodemailer.createTransport({
+    host:   process.env.BREVO_SMTP_SERVER,
+    port:   587,
+    secure: false, // STARTTLS on 587
+    auth: {
+      user: process.env.BREVO_LOGIN,
+      pass: process.env.BREVO_SMTP_KEY,
+    },
+  });
+
+  return _transporter;
 };
 
 // ─── Verify config (call once at server startup) ──────────────────────────────
-const verifyEmailConnection = () => {
+const verifyEmailConnection = async () => {
+  let transporter;
   try {
-    initSendGrid();
-    console.log("✅ SendGrid email configured");
+    transporter = getTransporter();
   } catch (err) {
-    console.warn("⚠️  SendGrid not configured:", err.message);
+    console.warn('⚠️  Brevo SMTP not configured:', err.message);
+    return;
+  }
+
+  try {
+    await transporter.verify();
+    console.log(`✅ Brevo SMTP OK — sending as ${process.env.EMAIL_FROM}`);
+  } catch (err) {
+    console.warn('⚠️  Brevo SMTP connection failed:', err.message);
   }
 };
 
@@ -60,18 +81,16 @@ const verifyEmailConnection = () => {
  * @param {{ to: string, subject: string, html: string, text?: string }} options
  */
 const sendEmail = async ({ to, subject, html, text }) => {
-  initSendGrid();
-  return sgMail.send({
-    from: {
-      name: "Sage Nest",
-      email: process.env.EMAIL_FROM,
-    },
+  const transporter = getTransporter();
+  await transporter.sendMail({
+    from:    `"Sage Nest" <${process.env.EMAIL_FROM}>`,
     to,
     subject,
-    text: text || subject,
+    text:    text || subject,
     html,
   });
 };
+
 
 // ─── HTML layout wrapper ──────────────────────────────────────────────────────
 const layout = (bodyContent) => `
@@ -91,7 +110,7 @@ const layout = (bodyContent) => `
           <!-- Header -->
           <tr>
             <td align="center" style="padding-bottom:24px;">
-              <span style="font-size:20px;font-weight:700;color:#1F2933;letter-spacing:-0.3px;">Sage Nest</span>
+              <img src="${process.env.CLIENT_URL}/assets/images/Sage-Nest_Final.png" alt="Sage Nest" width="60" style="display:block;width:60px;height:auto;border:0;margin:0 auto;" />
             </td>
           </tr>
 
@@ -216,7 +235,7 @@ const sendPasswordResetEmail = ({ to, name, resetToken }) => {
     to,
     subject: "Reset your Sage Nest password",
     text: `Hi ${name}, reset your password here (expires in 1 hour): ${resetUrl}`,
-    html: passwordResetEmailHtml({ name, resetUrl }),
+    html: passwordResetEmailHtml({ name, resetUrl, clientUrl: process.env.CLIENT_URL }),
   });
 };
 
@@ -234,7 +253,7 @@ const sendVerificationEmail = ({ to, name, userId, verificationCode }) => {
     to,
     subject: "Verify your Sage Nest email address",
     text: `Hi ${name}, please verify your email: ${verificationUrl}`,
-    html: verificationEmailHtml({ name, verificationUrl }),
+    html: verificationEmailHtml({ name, verificationUrl, clientUrl: process.env.CLIENT_URL }),
   });
 };
 
@@ -294,6 +313,8 @@ const sendBookingCancellationNotification = ({
   cancellationReason,
   refundPercent,
   amount,
+  currency = 'EUR',
+  timezone,
 }) => {
   const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
@@ -311,6 +332,8 @@ const sendBookingCancellationNotification = ({
       cancellationReason,
       refundPercent,
       amount,
+      currency,
+      timezone,
       clientUrl: process.env.CLIENT_URL,
     }),
   });
@@ -334,6 +357,7 @@ const sendNewBookingNotificationEmail = ({
   scheduledAt,
   durationMinutes,
   bookingId,
+  timezone,
 }) =>
   sendEmail({
     to,
@@ -350,6 +374,7 @@ const sendNewBookingNotificationEmail = ({
       scheduledAt,
       durationMinutes,
       bookingId,
+      timezone,
       clientUrl: process.env.CLIENT_URL,
     }),
   });
@@ -374,21 +399,20 @@ const sendBookingReminderEmail = ({
   durationMinutes,
   reminderType,
   bookingId,
+  timezone,
 }) => {
   const timeLabel = reminderType === "24h" ? "tomorrow" : "in 1 hour";
+  const tz = timezone || "UTC";
+  const timeStr = new Date(scheduledAt).toLocaleTimeString("en-GB", {
+    hour: "2-digit", minute: "2-digit", timeZone: tz,
+  });
   return sendEmail({
     to,
     subject:
       role === "parent"
         ? `Reminder: your session is ${timeLabel}`
         : `Reminder: upcoming session with ${otherPartyName} — ${timeLabel}`,
-    text: `Hi ${recipientName}, your session for ${serviceTitle} is ${timeLabel} at ${new Date(
-      scheduledAt
-    ).toLocaleTimeString("en-GB", {
-      hour: "2-digit",
-      minute: "2-digit",
-      timeZone: "UTC",
-    })} UTC.`,
+    text: `Hi ${recipientName}, your session for ${serviceTitle} is ${timeLabel} at ${timeStr} (${tz}).`,
     html: bookingReminderEmailHtml({
       recipientName,
       role,
@@ -399,6 +423,7 @@ const sendBookingReminderEmail = ({
       durationMinutes,
       reminderType,
       bookingId,
+      timezone,
       clientUrl: process.env.CLIENT_URL,
     }),
   });
@@ -409,7 +434,9 @@ const sendBookingReminderEmail = ({
  * @param {{ to: string, name: string, unlockAt: Date }} param0
  */
 const sendAccountLockedEmail = ({ to, name, unlockAt }) => {
-  const unlockTime = unlockAt.toLocaleTimeString("en-GB", {
+  const unlockTime = unlockAt.toLocaleString("en-GB", {
+    day: "numeric",
+    month: "short",
     hour: "2-digit",
     minute: "2-digit",
   });
@@ -420,7 +447,7 @@ const sendAccountLockedEmail = ({ to, name, unlockAt }) => {
     html: layout(`
       <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">Account temporarily locked</h1>
       <p style="margin:0 0 20px;font-size:15px;color:#4B5563;line-height:1.6;">
-        Hi ${name}, we detected 5 consecutive failed login attempts on your account and have temporarily locked it for <strong>30 minutes</strong>.
+        Hi ${name}, we detected 5 consecutive failed login attempts on your account and have temporarily locked it for <strong>15 minutes</strong>.
       </p>
       <p style="margin:0 0 28px;font-size:14px;color:#6B7280;line-height:1.6;">
         Your account will automatically unlock at <strong>${unlockTime}</strong>. If this wasn't you, we recommend resetting your password immediately.
@@ -446,26 +473,30 @@ const sendRefundNotificationToParent = ({
   serviceTitle,
   scheduledAt,
   refundAmount,
+  currency = 'EUR',
   isPartial,
   reason,
   bookingId,
-}) =>
-  sendEmail({
+}) => {
+  const amountStr = new Intl.NumberFormat('en', { style: 'currency', currency }).format(parseFloat(refundAmount));
+  return sendEmail({
     to,
-    subject: `Your refund of £${parseFloat(refundAmount).toFixed(2)} has been processed`,
-    text: `Hi ${parentName}, a ${isPartial ? "partial" : "full"} refund of £${parseFloat(refundAmount).toFixed(2)} has been issued for your booking #${bookingId} with ${expertName}. Funds will appear within 3–5 business days.`,
+    subject: `Your refund of ${amountStr} has been processed`,
+    text: `Hi ${parentName}, a ${isPartial ? "partial" : "full"} refund of ${amountStr} has been issued for your booking #${bookingId} with ${expertName}. Funds will appear within 3–5 business days.`,
     html: refundParentEmailHtml({
       parentName,
       expertName,
       serviceTitle,
       scheduledAt,
       refundAmount,
+      currency,
       isPartial,
       reason,
       bookingId,
       clientUrl: process.env.CLIENT_URL,
     }),
   });
+};
 
 /**
  * Notify an expert that a refund has been issued for one of their bookings.
@@ -482,24 +513,28 @@ const sendRefundNotificationToExpert = ({
   serviceTitle,
   scheduledAt,
   refundAmount,
+  currency = 'EUR',
   isPartial,
   bookingId,
-}) =>
-  sendEmail({
+}) => {
+  const amountStr = new Intl.NumberFormat('en', { style: 'currency', currency }).format(parseFloat(refundAmount));
+  return sendEmail({
     to,
     subject: `A refund has been issued for booking #${bookingId}`,
-    text: `Hi ${expertName}, a ${isPartial ? "partial" : "full"} refund of £${parseFloat(refundAmount).toFixed(2)} has been issued to ${parentName} for booking #${bookingId}. The payout for this booking will not be processed.`,
+    text: `Hi ${expertName}, a ${isPartial ? "partial" : "full"} refund of ${amountStr} has been issued to ${parentName} for booking #${bookingId}. The payout for this booking will not be processed.`,
     html: refundExpertEmailHtml({
       expertName,
       parentName,
       serviceTitle,
       scheduledAt,
       refundAmount,
+      currency,
       isPartial,
       bookingId,
       clientUrl: process.env.CLIENT_URL,
     }),
   });
+};
 
 /**
  * Reschedule notification — sent to the expert when a parent reschedules.
@@ -553,6 +588,7 @@ const sendChangesRequestedEmail = ({ to, name, note }) =>
       name,
       note,
       dashboardUrl: `${process.env.CLIENT_URL}/dashboard/expert/profile`,
+      clientUrl: process.env.CLIENT_URL,
     }),
   });
 
@@ -578,6 +614,7 @@ const sendEmailChangeVerification = ({
     html: verificationEmailHtml({
       name,
       verificationUrl,
+      clientUrl: process.env.CLIENT_URL,
       headingOverride: "Verify your new email address",
       bodyOverride:
         "You recently changed your email address on Sage Nest. Click the button below to verify your new address and restore access to your account.",
@@ -612,7 +649,7 @@ const sendOtpEmail = ({ to, name, code, purpose = "login" }) => {
   return sendEmail({
     to,
     subject: copy.subject,
-    text: `Hi ${name}, ${copy.body}\n\nYour code: ${code}\n\nValid for 1 minute. Single use only. Do not share this code.`,
+    text: `Hi ${name}, ${copy.body}\n\nYour code: ${code}\n\nValid for 5 minutes. Single use only. Do not share this code.`,
     html: layout(`
       <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">${copy.heading}</h1>
       <p style="margin:0 0 24px;font-size:15px;color:#4B5563;line-height:1.6;">
@@ -624,7 +661,7 @@ const sendOtpEmail = ({ to, name, code, purpose = "login" }) => {
         </div>
       </div>
       <p style="margin:0 0 8px;font-size:13px;color:#9CA3AF;text-align:center;">
-        Valid for <strong>1 minute</strong> &nbsp;·&nbsp; Single use only
+        Valid for <strong>5 minutes</strong> &nbsp;·&nbsp; Single use only
       </p>
       <p style="margin:0;font-size:13px;color:#9CA3AF;text-align:center;">
         If you didn't request this code, you can safely ignore this email.
@@ -669,20 +706,23 @@ const sendExpertCancelledSessionEmail = ({
   serviceTitle,
   scheduledAt,
   amount,
+  currency = 'EUR',
 }) => {
   const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
     weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
   });
+  const amountStr = new Intl.NumberFormat('en', { style: 'currency', currency }).format(Number(amount));
   return sendEmail({
     to,
     subject: `Your session on ${dateStr} has been cancelled — full refund issued`,
-    text: `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. A full refund of £${Number(amount).toFixed(2)} has been issued to your original payment method.`,
+    text: `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. A full refund of ${amountStr} has been issued to your original payment method.`,
     html: expertCancelledSessionEmailHtml({
       parentName,
       expertName,
       serviceTitle,
       scheduledAt,
       amount,
+      currency,
       clientUrl: process.env.CLIENT_URL,
     }),
   });

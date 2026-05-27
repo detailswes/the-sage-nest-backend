@@ -1,0 +1,3 @@
+ALTER TABLE "Booking"
+  ADD COLUMN IF NOT EXISTS "expert_note"  TEXT,
+  ADD COLUMN IF NOT EXISTS "completed_at" TIMESTAMP(3);
