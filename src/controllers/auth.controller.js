@@ -1573,7 +1573,6 @@ async function exportMyData(req, res) {
             service: { select: { title: true } },
             expert: { select: { user: { select: { name: true } } } },
             review: { select: { rating: true, comment: true, created_at: true } },
-            tc_acceptance: { select: { version: true, accepted_at: true } },
           },
           orderBy: { scheduled_at: "desc" },
         },
@@ -1627,9 +1626,7 @@ async function exportMyData(req, res) {
         review: b.review
           ? { rating: b.review.rating, comment: b.review.comment, submitted_at: b.review.created_at }
           : null,
-        terms_accepted: b.tc_acceptance
-          ? { version: b.tc_acceptance.version, accepted_at: b.tc_acceptance.accepted_at }
-          : null,
+        terms_accepted: null,
       })),
       consent_records: {
         privacy_policy: user.pp_acceptances.map((a) => ({
