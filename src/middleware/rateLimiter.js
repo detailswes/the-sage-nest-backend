@@ -1,4 +1,5 @@
 const rateLimit = require('express-rate-limit');
+const { ipKeyGenerator } = require('express-rate-limit');
 
 // ─── Registration: 3 attempts per IP per hour ────────────────────────────────
 const registrationLimiter = rateLimit({
@@ -17,7 +18,7 @@ const passwordResetLimiter = rateLimit({
   max:             3,
   standardHeaders: true,
   legacyHeaders:   false,
-  keyGenerator:    (req) => (req.body?.email || '').toLowerCase().trim() || req.ip,
+  keyGenerator:    (req) => (req.body?.email || '').toLowerCase().trim() || ipKeyGenerator(req.ip),
   message:         { error: 'Too many password reset requests. Please try again in an hour.' },
 });
 
