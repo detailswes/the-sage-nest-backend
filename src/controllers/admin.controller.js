@@ -1,7 +1,6 @@
-const path = require("path");
-const fs = require("fs");
 const crypto = require("crypto");
 const ExcelJS = require("exceljs");
+const { deleteFile } = require("../utils/storage");
 const { decryptIban } = require("../utils/encryption");
 const { logAudit }   = require("../utils/auditLog");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
@@ -37,20 +36,6 @@ const VALID_QUALIFICATION_TYPES = [
   "OTHER",
 ];
 const VALID_CLUSTERS = ["FOR_PARENTS", "FOR_BABY", "PACKAGE", "GIFT", "EVENT"];
-
-const UPLOADS_DIR = path.join(__dirname, "../../uploads");
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function deleteFile(fileUrl) {
-  if (!fileUrl || !fileUrl.startsWith("/uploads/")) return;
-  const filePath = path.join(UPLOADS_DIR, path.basename(fileUrl));
-  if (fs.existsSync(filePath)) {
-    try {
-      fs.unlinkSync(filePath);
-    } catch (_) {}
-  }
-}
 
 // ─── Expert list ──────────────────────────────────────────────────────────────
 
@@ -1888,7 +1873,7 @@ async function gdprDeleteExpert(req, res) {
     ].filter(Boolean);
 
     for (const fileUrl of filesToDelete) {
-      deleteFile(fileUrl);
+      await deleteFile(fileUrl);
     }
 
     // ── 4. Partial-anonymise BusinessInfo ─────────────────────────────────────
