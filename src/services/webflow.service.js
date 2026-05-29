@@ -3,6 +3,7 @@ const prisma = require('../prisma/client');
 const WEBFLOW_API_BASE      = 'https://api.webflow.com/v2';
 const EXPERTS_COLLECTION_ID  = process.env.WEBFLOW_EXPERTS_COLLECTION_ID;
 const SERVICES_COLLECTION_ID = process.env.WEBFLOW_SERVICES_COLLECTION_ID;
+const SITE_ID                = process.env.WEBFLOW_SITE_ID;
 const APP_URL                = process.env.APP_URL || 'https://the-sage-nest-frontend-2.onrender.com';
 
 // Reference collection IDs
@@ -232,6 +233,14 @@ async function publishItems(collectionId, itemIds) {
   await webflowRequest('POST', `/collections/${collectionId}/items/publish`, { itemIds });
 }
 
+// Full site publish — required after archive/delete so collection pages are regenerated on the live site.
+// Item-level publish only updates field data; removing an item from the live site needs a site rebuild.
+async function publishSite() {
+  if (!SITE_ID) { console.warn('[Webflow] WEBFLOW_SITE_ID not set — skipping site publish'); return; }
+  await webflowRequest('POST', `/sites/${SITE_ID}/publish`, { publishToWebflowSubdomain: true });
+  console.log('[Webflow] Site published');
+}
+
 // ─── Expert sync ──────────────────────────────────────────────────────────────
 
 async function syncExpert(expertId) {
@@ -377,6 +386,7 @@ async function archiveExpert(expertId) {
       isDraft:    false,
     });
     await publishItems(EXPERTS_COLLECTION_ID, [expert.webflow_item_id]);
+    await publishSite();
     console.log(`[Webflow] Expert ${expertId} archived`);
   } catch (err) {
     console.error(`[Webflow] Failed to archive expert ${expertId}:`, err.message);
@@ -406,10 +416,17 @@ async function deleteExpertFromWebflow(expertId, webflowItemId) {
         console.error(`[Webflow] Failed to delete service ${svc.id}:`, err.message);
       }
     }
+    // One site publish after all services are removed, before deleting the expert
+    if (services.length) await publishSite().catch(() => {});
   }
 
   try {
+    await webflowRequest('PATCH', `/collections/${EXPERTS_COLLECTION_ID}/items/${webflowItemId}`, {
+      isArchived: true, isDraft: false,
+    });
+    await publishItems(EXPERTS_COLLECTION_ID, [webflowItemId]);
     await webflowRequest('DELETE', `/collections/${EXPERTS_COLLECTION_ID}/items/${webflowItemId}`);
+    await publishSite();
     console.log(`[Webflow] Expert ${expertId} deleted`);
   } catch (err) {
     // Non-fatal — GDPR deletion must succeed regardless of Webflow state
@@ -426,6 +443,7 @@ async function deleteServiceFromWebflow(serviceId, webflowItemId) {
     });
     await publishItems(SERVICES_COLLECTION_ID, [webflowItemId]);
     await webflowRequest('DELETE', `/collections/${SERVICES_COLLECTION_ID}/items/${webflowItemId}`);
+    await publishSite();
     console.log(`[Webflow] Service ${serviceId} deleted`);
   } catch (err) {
     console.error(`[Webflow] Failed to delete service ${serviceId}:`, err.message);
