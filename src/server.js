@@ -52,6 +52,7 @@ const { startCleanupJob }        = require('./jobs/cleanupPendingBookings');
 const { startTransferJob }       = require('./jobs/processTransfers');
 const { startReminderJob }       = require('./jobs/sendReminders');
 const { startMarkCompletedJob }  = require('./jobs/markCompletedBookings');
+const { startWebflowSyncJob }    = require('./jobs/webflowSyncJob');
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
@@ -63,4 +64,5 @@ app.listen(PORT, () => {
   startTransferJob();
   startReminderJob();
   startMarkCompletedJob();
+  startWebflowSyncJob();
 });

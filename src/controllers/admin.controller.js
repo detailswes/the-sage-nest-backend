@@ -1,11 +1,11 @@
-const path = require("path");
-const fs = require("fs");
 const crypto = require("crypto");
 const ExcelJS = require("exceljs");
+const { deleteFile } = require("../utils/storage");
 const { decryptIban } = require("../utils/encryption");
 const { logAudit }   = require("../utils/auditLog");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
+const webflowService = require("../services/webflow.service");
 const {
   sendPasswordResetEmail,
   sendVerificationEmail,
@@ -36,20 +36,6 @@ const VALID_QUALIFICATION_TYPES = [
   "OTHER",
 ];
 const VALID_CLUSTERS = ["FOR_PARENTS", "FOR_BABY", "PACKAGE", "GIFT", "EVENT"];
-
-const UPLOADS_DIR = path.join(__dirname, "../../uploads");
-
-// ─── Helpers ─────────────────────────────────────────────────────────────────
-
-function deleteFile(fileUrl) {
-  if (!fileUrl || !fileUrl.startsWith("/uploads/")) return;
-  const filePath = path.join(UPLOADS_DIR, path.basename(fileUrl));
-  if (fs.existsSync(filePath)) {
-    try {
-      fs.unlinkSync(filePath);
-    } catch (_) {}
-  }
-}
 
 // ─── Expert list ──────────────────────────────────────────────────────────────
 
@@ -287,6 +273,9 @@ async function approveExpert(req, res) {
       },
     });
     await logAudit(req.user.id, "APPROVE", "EXPERT", parseInt(id));
+    webflowService.syncExpert(parseInt(id))
+      .then(() => webflowService.syncExpertServices(parseInt(id)))
+      .catch(err => console.error("[Webflow] Sync after approve failed:", err.message));
     return res.json({ message: "Expert approved", expert: updated });
   } catch (err) {
     console.error(err);
@@ -382,6 +371,8 @@ async function suspendExpert(req, res) {
     ]);
 
     await logAudit(req.user.id, "SUSPEND", "EXPERT", parseInt(id));
+    webflowService.archiveExpert(parseInt(id))
+      .catch(err => console.error("[Webflow] Archive after suspend failed:", err.message));
     return res.json({ message: "Expert suspended", expert: updated });
   } catch (err) {
     console.error(err);
@@ -404,6 +395,9 @@ async function reactivateExpert(req, res) {
       data: { status: "APPROVED" },
     });
     await logAudit(req.user.id, "REACTIVATE", "EXPERT", parseInt(id));
+    webflowService.syncExpert(parseInt(id))
+      .then(() => webflowService.syncExpertServices(parseInt(id)))
+      .catch(err => console.error("[Webflow] Sync after reactivate failed:", err.message));
     return res.json({ message: "Expert reactivated", expert: updated });
   } catch (err) {
     console.error(err);
@@ -522,6 +516,8 @@ async function unpublishExpert(req, res) {
     });
 
     await logAudit(req.user.id, "UNPUBLISH", "EXPERT", parseInt(id));
+    webflowService.archiveExpert(parseInt(id))
+      .catch(err => console.error("[Webflow] Archive after unpublish failed:", err.message));
 
     return res.json({
       message: "Expert unlisted from parent search",
@@ -556,6 +552,9 @@ async function republishExpert(req, res) {
     });
 
     await logAudit(req.user.id, "REPUBLISH", "EXPERT", parseInt(id));
+    webflowService.syncExpert(parseInt(id))
+      .then(() => webflowService.syncExpertServices(parseInt(id)))
+      .catch(err => console.error("[Webflow] Sync after republish failed:", err.message));
 
     return res.json({
       message: "Expert restored to parent search",
@@ -1049,6 +1048,9 @@ async function approveProfileDraft(req, res) {
     ]);
 
     await logAudit(req.user.id, "APPROVE_PROFILE_DRAFT", "Expert", parseInt(id));
+    webflowService.syncExpert(parseInt(id))
+      .then(() => webflowService.syncExpertServices(parseInt(id)))
+      .catch(err => console.error("[Webflow] Sync after draft approve failed:", err.message));
     return res.json({ message: "Draft approved and published" });
   } catch (err) {
     console.error(err);
@@ -1871,7 +1873,7 @@ async function gdprDeleteExpert(req, res) {
     ].filter(Boolean);
 
     for (const fileUrl of filesToDelete) {
-      deleteFile(fileUrl);
+      await deleteFile(fileUrl);
     }
 
     // ── 4. Partial-anonymise BusinessInfo ─────────────────────────────────────
@@ -1943,7 +1945,11 @@ async function gdprDeleteExpert(req, res) {
       where: { user_id: expert.user_id },
     });
 
-    // ── 8. Audit log (written after wipe — uses expert.id which still exists) ──
+    // ── 8. Remove from Webflow (fire-and-forget — GDPR deletion must not block) ─
+    webflowService.deleteExpertFromWebflow(expert.id, expert.webflow_item_id)
+      .catch(err => console.error("[GDPR] Webflow deletion failed:", err.message));
+
+    // ── 9. Audit log (written after wipe — uses expert.id which still exists) ──
     await logAudit(
       req.user.id,
       "GDPR_DELETE",
@@ -2992,6 +2998,63 @@ async function getAdminNotifications(req, res) {
   }
 }
 
+// ─── Webflow manual sync ──────────────────────────────────────────────────────
+
+async function webflowSyncExpert(req, res) {
+  const { id } = req.params;
+  try {
+    const expert = await prisma.expert.findUnique({
+      where: { id: parseInt(id) },
+      select: { id: true, status: true },
+    });
+    if (!expert) return res.status(404).json({ error: "Expert not found" });
+    if (expert.status !== "APPROVED") {
+      return res.status(400).json({ error: "Only APPROVED experts can be synced to Webflow." });
+    }
+
+    await webflowService.syncExpert(parseInt(id));
+    await webflowService.syncExpertServices(parseInt(id));
+
+    const updated = await prisma.expert.findUnique({
+      where:  { id: parseInt(id) },
+      select: { webflow_item_id: true, webflow_sync_status: true, webflow_synced_at: true, webflow_sync_error: true },
+    });
+    return res.json({ synced: true, ...updated });
+  } catch (err) {
+    console.error("[webflowSyncExpert]", err);
+    return res.status(500).json({ error: err.message || "Webflow sync failed" });
+  }
+}
+
+async function webflowSyncAll(req, res) {
+  try {
+    const experts = await prisma.expert.findMany({
+      where:   { status: "APPROVED" },
+      select:  { id: true },
+      orderBy: { id: "asc" },
+    });
+
+    // Kick off all syncs concurrently but cap at 3 at a time to respect rate limits
+    let ok = 0, failed = 0;
+    for (let i = 0; i < experts.length; i += 3) {
+      const batch = experts.slice(i, i + 3);
+      await Promise.all(
+        batch.map(e =>
+          webflowService.syncExpert(e.id)
+            .then(() => webflowService.syncExpertServices(e.id))
+            .then(() => { ok++; })
+            .catch(() => { failed++; }),
+        ),
+      );
+    }
+
+    return res.json({ synced: ok, failed, total: experts.length });
+  } catch (err) {
+    console.error("[webflowSyncAll]", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -3043,4 +3106,6 @@ module.exports = {
   manuallyVerifyParent,
   getAdminNotifications,
   getParentComplianceList,
+  webflowSyncExpert,
+  webflowSyncAll,
 };

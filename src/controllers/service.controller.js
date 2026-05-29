@@ -1,4 +1,5 @@
 const prisma = require('../prisma/client');
+const webflowService = require('../services/webflow.service');
 
 const VALID_FORMATS    = ['ONLINE', 'IN_PERSON'];
 const VALID_CLUSTERS   = ['FOR_PARENTS', 'FOR_BABY', 'PACKAGE', 'GIFT', 'EVENT'];
@@ -154,6 +155,30 @@ async function updateService(req, res) {
         ...(cluster !== undefined      && { cluster: cluster || null }),
       },
     });
+
+    // Fire-and-forget Webflow sync — only for services on APPROVED experts
+    (async () => {
+      try {
+        const expert = await prisma.expert.findUnique({
+          where:  { id: expert_id },
+          select: { status: true, webflow_item_id: true },
+        });
+        if (expert?.status !== 'APPROVED' || !expert?.webflow_item_id) return;
+
+        if (updated.is_active) {
+          await webflowService.syncService(updated.id, expert_id, expert.webflow_item_id);
+        } else if (updated.webflow_item_id) {
+          await webflowService.deleteServiceFromWebflow(updated.id, updated.webflow_item_id);
+          await prisma.service.update({
+            where: { id: updated.id },
+            data:  { webflow_item_id: null, webflow_slug: null, webflow_sync_status: 'UNSYNCED' },
+          });
+        }
+      } catch (err) {
+        console.error('[Webflow] Service sync after update failed:', err.message);
+      }
+    })();
+
     return res.json(updated);
   } catch (err) {
     console.error(err);
@@ -173,7 +198,14 @@ async function deleteService(req, res) {
       return res.status(404).json({ error: 'Service not found' });
     }
 
+    const webflowItemId = service.webflow_item_id;
     await prisma.service.delete({ where: { id: parseInt(id) } });
+
+    if (webflowItemId) {
+      webflowService.deleteServiceFromWebflow(parseInt(id), webflowItemId)
+        .catch(err => console.error('[Webflow] Service delete failed:', err.message));
+    }
+
     return res.json({ message: 'Service deleted' });
   } catch (err) {
     console.error(err);

@@ -1,9 +1,6 @@
-const path = require('path');
-const fs = require('fs');
 const prisma = require('../prisma/client');
 const { encryptIban, decryptIban } = require('../utils/encryption');
-
-const UPLOADS_DIR = path.join(__dirname, '../../uploads');
+const { uploadFile, deleteFile } = require('../utils/storage');
 
 const VALID_SESSION_FORMATS = ['ONLINE', 'IN_PERSON', 'BOTH'];
 
@@ -28,20 +25,6 @@ const VALID_QUALIFICATION_TYPES = [
   'DOULA', 'MIDWIFE', 'BABY_OSTEOPATH', 'PAEDIATRIC_NUTRITIONIST',
   'EARLY_YEARS_SPECIALIST', 'POSTNATAL_PHYSIOTHERAPIST', 'PARENTING_COACH', 'OTHER',
 ];
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function deleteFile(fileUrl) {
-  if (!fileUrl || !fileUrl.startsWith('/uploads/')) return;
-  const filePath = path.join(UPLOADS_DIR, path.basename(fileUrl));
-  if (fs.existsSync(filePath)) {
-    try { fs.unlinkSync(filePath); } catch (_) {}
-  }
-}
-
-function uploadedUrl(req) {
-  return req.file ? `/uploads/${req.file.filename}` : null;
-}
 
 // ─── Profile ──────────────────────────────────────────────────────────────────
 
@@ -71,14 +54,19 @@ async function getMyProfile(req, res) {
 async function updateMyProfile(req, res) {
   const {
     bio, expertise, profile_image,
-    summary, position, // session_format — managed per-service
+    summary, position, session_format,
     address_street, address_city, address_postcode,
     languages, pending_languages, timezone,
     instagram, facebook, linkedin,
     buffer_minutes, advance_booking_days, min_notice_hours,
   } = req.body;
 
-  // session_format validation removed — managed per-service via Service.format
+  const VALID_SESSION_FORMATS = ['ONLINE', 'IN_PERSON', 'BOTH'];
+  if (session_format !== undefined && session_format !== null && session_format !== '') {
+    if (!VALID_SESSION_FORMATS.includes(session_format)) {
+      return res.status(400).json({ error: 'session_format must be ONLINE, IN_PERSON, or BOTH.' });
+    }
+  }
 
   // Practice address is required on all profile saves
   if (address_street !== undefined && !address_street?.trim()) {
@@ -176,7 +164,7 @@ async function updateMyProfile(req, res) {
         ...(expertise        !== undefined && { expertise:        expertise        || null }),
         ...(summary          !== undefined && { summary:          summary          || null }),
         ...(position         !== undefined && { position:         position         || null }),
-        // ...(session_format !== undefined && { session_format: session_format || null }),  // managed per-service
+        ...(session_format   !== undefined && { session_format:   session_format   || null }),
         ...(address_street   !== undefined && { address_street:   address_street   || null }),
         ...(address_city     !== undefined && { address_city:     address_city     || null }),
         ...(address_postcode !== undefined && { address_postcode: address_postcode || null }),
@@ -226,8 +214,8 @@ async function updateMyProfile(req, res) {
         ...(expertise !== undefined && { expertise }),
         ...(profile_image !== undefined && { profile_image }),
         ...(summary !== undefined && { summary }),
-        ...(position !== undefined && { position }),
-        // session_format excluded — managed per-service via Service.format
+        ...(position       !== undefined && { position }),
+        ...(session_format !== undefined && { session_format: session_format || null }),
         ...(address_street !== undefined && { address_street }),
         ...(address_city !== undefined && { address_city }),
         ...(address_postcode !== undefined && { address_postcode }),
@@ -298,22 +286,25 @@ async function getExpertById(req, res) {
 async function uploadProfileImage(req, res) {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded.' });
 
-  const newImagePath = `/uploads/${req.file.filename}`;
-
+  let newImageUrl = null;
+  let oldImageUrl = null;
   try {
     const existing = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
-    if (existing?.profile_image?.startsWith('/uploads/')) {
-      deleteFile(existing.profile_image);
-    }
+    oldImageUrl = existing?.profile_image || null;
+
+    newImageUrl = await uploadFile(req.file.buffer, req.user.id, req.file.originalname, 'images');
 
     const expert = await prisma.expert.update({
       where: { user_id: req.user.id },
-      data: { profile_image: newImagePath },
+      data: { profile_image: newImageUrl },
     });
 
-    return res.json({ profile_image: newImagePath, expert });
+    // DB update succeeded — safe to delete old image now
+    await deleteFile(oldImageUrl);
+
+    return res.json({ profile_image: newImageUrl, expert });
   } catch (err) {
-    deleteFile(newImagePath);
+    await deleteFile(newImageUrl);
     console.error(err);
     return res.status(500).json({ error: 'Server error.' });
   }
@@ -325,29 +316,32 @@ async function addQualification(req, res) {
   const { type, custom_name } = req.body;
 
   if (!type || !VALID_QUALIFICATION_TYPES.includes(type)) {
-    deleteFile(uploadedUrl(req));
     return res.status(400).json({ error: 'Invalid qualification type.' });
   }
   if (type === 'OTHER' && !custom_name?.trim()) {
-    deleteFile(uploadedUrl(req));
     return res.status(400).json({ error: 'custom_name is required when type is OTHER.' });
   }
 
+  let newDocUrl = null;
   try {
     const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
     if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
+
+    if (req.file) {
+      newDocUrl = await uploadFile(req.file.buffer, req.user.id, req.file.originalname, 'documents');
+    }
 
     const qualification = await prisma.qualification.create({
       data: {
         expert_id: expert.id,
         type,
         custom_name: type === 'OTHER' ? custom_name.trim() : null,
-        document_url: uploadedUrl(req),
+        document_url: newDocUrl,
       },
     });
     return res.status(201).json(qualification);
   } catch (err) {
-    deleteFile(uploadedUrl(req));
+    await deleteFile(newDocUrl);
     console.error(err);
     return res.status(500).json({ error: 'Server error' });
   }
@@ -356,20 +350,20 @@ async function addQualification(req, res) {
 async function updateQualification(req, res) {
   const { id } = req.params;
   const { custom_name } = req.body;
-  const newDocUrl = uploadedUrl(req);
 
+  let newDocUrl = null;
   try {
     const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
     if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
 
     const existing = await prisma.qualification.findUnique({ where: { id: parseInt(id) } });
     if (!existing || existing.expert_id !== expert.id) {
-      deleteFile(newDocUrl);
       return res.status(404).json({ error: 'Qualification not found' });
     }
 
-    // If uploading a new doc, delete the old one
-    if (newDocUrl && existing.document_url) deleteFile(existing.document_url);
+    if (req.file) {
+      newDocUrl = await uploadFile(req.file.buffer, req.user.id, req.file.originalname, 'documents');
+    }
 
     const updated = await prisma.qualification.update({
       where: { id: parseInt(id) },
@@ -378,9 +372,13 @@ async function updateQualification(req, res) {
         ...(newDocUrl && { document_url: newDocUrl }),
       },
     });
+
+    // DB update succeeded — safe to delete old document now
+    if (newDocUrl) await deleteFile(existing.document_url);
+
     return res.json(updated);
   } catch (err) {
-    deleteFile(newDocUrl);
+    await deleteFile(newDocUrl);
     console.error(err);
     return res.status(500).json({ error: 'Server error' });
   }
@@ -398,8 +396,8 @@ async function deleteQualification(req, res) {
       return res.status(404).json({ error: 'Qualification not found' });
     }
 
-    deleteFile(existing.document_url);
     await prisma.qualification.delete({ where: { id: parseInt(id) } });
+    await deleteFile(existing.document_url);
     return res.json({ message: 'Qualification deleted' });
   } catch (err) {
     console.error(err);
@@ -413,24 +411,28 @@ async function addCertification(req, res) {
   const { name } = req.body;
 
   if (!name?.trim()) {
-    deleteFile(uploadedUrl(req));
     return res.status(400).json({ error: 'Certification name is required.' });
   }
 
+  let newDocUrl = null;
   try {
     const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
     if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
+
+    if (req.file) {
+      newDocUrl = await uploadFile(req.file.buffer, req.user.id, req.file.originalname, 'documents');
+    }
 
     const certification = await prisma.certification.create({
       data: {
         expert_id: expert.id,
         name: name.trim(),
-        document_url: uploadedUrl(req),
+        document_url: newDocUrl,
       },
     });
     return res.status(201).json(certification);
   } catch (err) {
-    deleteFile(uploadedUrl(req));
+    await deleteFile(newDocUrl);
     console.error(err);
     return res.status(500).json({ error: 'Server error' });
   }
@@ -439,19 +441,20 @@ async function addCertification(req, res) {
 async function updateCertification(req, res) {
   const { id } = req.params;
   const { name } = req.body;
-  const newDocUrl = uploadedUrl(req);
 
+  let newDocUrl = null;
   try {
     const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
     if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
 
     const existing = await prisma.certification.findUnique({ where: { id: parseInt(id) } });
     if (!existing || existing.expert_id !== expert.id) {
-      deleteFile(newDocUrl);
       return res.status(404).json({ error: 'Certification not found' });
     }
 
-    if (newDocUrl && existing.document_url) deleteFile(existing.document_url);
+    if (req.file) {
+      newDocUrl = await uploadFile(req.file.buffer, req.user.id, req.file.originalname, 'documents');
+    }
 
     const updated = await prisma.certification.update({
       where: { id: parseInt(id) },
@@ -460,9 +463,13 @@ async function updateCertification(req, res) {
         ...(newDocUrl && { document_url: newDocUrl }),
       },
     });
+
+    // DB update succeeded — safe to delete old document now
+    if (newDocUrl) await deleteFile(existing.document_url);
+
     return res.json(updated);
   } catch (err) {
-    deleteFile(newDocUrl);
+    await deleteFile(newDocUrl);
     console.error(err);
     return res.status(500).json({ error: 'Server error' });
   }
@@ -480,8 +487,8 @@ async function deleteCertification(req, res) {
       return res.status(404).json({ error: 'Certification not found' });
     }
 
-    deleteFile(existing.document_url);
     await prisma.certification.delete({ where: { id: parseInt(id) } });
+    await deleteFile(existing.document_url);
     return res.json({ message: 'Certification deleted' });
   } catch (err) {
     console.error(err);
@@ -493,36 +500,34 @@ async function deleteCertification(req, res) {
 
 async function saveInsurance(req, res) {
   const { policy_expires_at } = req.body;
-  const newDocUrl = uploadedUrl(req);
 
   if (!policy_expires_at) {
-    deleteFile(newDocUrl);
     return res.status(400).json({ error: 'policy_expires_at is required.' });
   }
 
   const expiryDate = new Date(policy_expires_at);
   if (isNaN(expiryDate.getTime())) {
-    deleteFile(newDocUrl);
     return res.status(400).json({ error: 'Invalid policy_expires_at date.' });
   }
   if (expiryDate <= new Date()) {
-    deleteFile(newDocUrl);
     return res.status(400).json({ error: 'Policy expiry date must be in the future.' });
   }
 
+  let newDocUrl = null;
   try {
     const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
     if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
 
     const existing = await prisma.insurance.findUnique({ where: { expert_id: expert.id } });
 
+    if (req.file) {
+      newDocUrl = await uploadFile(req.file.buffer, req.user.id, req.file.originalname, 'documents');
+    }
+
     // First creation requires a document
     if (!existing && !newDocUrl) {
       return res.status(400).json({ error: 'Insurance document is required.' });
     }
-
-    // Replace old file if a new one was uploaded
-    if (newDocUrl && existing?.document_url) deleteFile(existing.document_url);
 
     const insurance = await prisma.insurance.upsert({
       where: { expert_id: expert.id },
@@ -536,9 +541,13 @@ async function saveInsurance(req, res) {
         policy_expires_at: expiryDate,
       },
     });
+
+    // DB update succeeded — safe to delete old document now
+    if (newDocUrl) await deleteFile(existing?.document_url);
+
     return res.json(insurance);
   } catch (err) {
-    deleteFile(newDocUrl);
+    await deleteFile(newDocUrl);
     console.error(err);
     return res.status(500).json({ error: 'Server error' });
   }
@@ -552,8 +561,8 @@ async function deleteInsurance(req, res) {
     const existing = await prisma.insurance.findUnique({ where: { expert_id: expert.id } });
     if (!existing) return res.status(404).json({ error: 'No insurance record found' });
 
-    deleteFile(existing.document_url);
     await prisma.insurance.delete({ where: { expert_id: expert.id } });
+    await deleteFile(existing.document_url);
     return res.json({ message: 'Insurance record deleted' });
   } catch (err) {
     console.error(err);
