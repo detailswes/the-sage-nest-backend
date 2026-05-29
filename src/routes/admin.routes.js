@@ -50,6 +50,8 @@ const {
   manuallyVerifyParent,
   getAdminNotifications,
   getParentComplianceList,
+  webflowSyncExpert,
+  webflowSyncAll,
 } = require('../controllers/admin.controller');
 
 // ── Public routes (no auth required) ─────────────────────────────────────────
@@ -139,6 +141,10 @@ router.post('/parents/:id/gdpr-delete', gdprDeleteParent);
 
 // ── Compliance ────────────────────────────────────────────────────────────────
 router.get('/compliance/parents', getParentComplianceList);
+
+// ── Webflow sync ──────────────────────────────────────────────────────────────
+router.post('/experts/:id/webflow-sync', webflowSyncExpert);
+router.post('/webflow/sync-all',         webflowSyncAll);
 
 // ── Transactions (Payment Overview) ──────────────────────────────────────────
 router.get('/transactions',        listTransactions);

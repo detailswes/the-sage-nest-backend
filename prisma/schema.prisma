@@ -96,6 +96,11 @@ model Expert {
   notify_cancellation        Boolean             @default(true)
   notify_new_booking         Boolean             @default(true)
   notify_reminder            Boolean             @default(true)
+  webflow_item_id            String?
+  webflow_slug               String?
+  webflow_sync_status        WebflowSyncStatus   @default(UNSYNCED)
+  webflow_synced_at          DateTime?
+  webflow_sync_error         String?
   availability               Availability[]
   blockouts                  AvailabilityBlock[]
   bookings                   Booking[]           @relation("ExpertBookings")
@@ -112,19 +117,23 @@ model Expert {
 }
 
 model Service {
-  id               Int             @id @default(autoincrement())
-  expert_id        Int
-  title            String
-  duration_minutes Int
-  price            Decimal         @db.Decimal(10, 2)
-  is_active        Boolean         @default(true)
-  cluster          ServiceCluster?
-  description      String?
-  format           ServiceFormat?
-  sort_order       Int             @default(0)
-  currency         String          @default("EUR")
-  bookings         Booking[]
-  expert           Expert          @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+  id                  Int                @id @default(autoincrement())
+  expert_id           Int
+  title               String
+  duration_minutes    Int
+  price               Decimal            @db.Decimal(10, 2)
+  is_active           Boolean            @default(true)
+  cluster             ServiceCluster?
+  description         String?
+  format              ServiceFormat?
+  sort_order          Int                @default(0)
+  currency            String             @default("EUR")
+  webflow_item_id     String?
+  webflow_slug        String?
+  webflow_sync_status WebflowSyncStatus  @default(UNSYNCED)
+  webflow_synced_at   DateTime?
+  bookings            Booking[]
+  expert              Expert             @relation(fields: [expert_id], references: [id], onDelete: Cascade)
 }
 
 model Qualification {
@@ -460,4 +469,10 @@ enum NotificationType {
 enum DraftStatus {
   PENDING_REVIEW
   REJECTED
+}
+
+enum WebflowSyncStatus {
+  UNSYNCED
+  SYNCED
+  FAILED
 }
