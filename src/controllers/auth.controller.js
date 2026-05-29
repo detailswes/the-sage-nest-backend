@@ -6,6 +6,7 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
 const { logAudit } = require("../utils/auditLog");
 const { deleteFile } = require("../utils/storage");
+const webflowService = require("../services/webflow.service");
 const {
   sendVerificationEmail,
   sendPasswordResetEmail,
@@ -1079,6 +1080,12 @@ async function deleteAccount(req, res) {
       });
 
       console.log(`[GDPR/DAC7] Expert profile ${expert.id} wiped — BusinessInfo and booking records retained for tax reporting`);
+
+      // Remove from Webflow — fire-and-forget, GDPR deletion must not block on CMS errors
+      if (expert.webflow_item_id) {
+        webflowService.deleteExpertFromWebflow(expert.id, expert.webflow_item_id)
+          .catch(err => console.error("[GDPR] Webflow deletion failed:", err.message));
+      }
     }
 
     // 5. Wipe User credentials and contact data
