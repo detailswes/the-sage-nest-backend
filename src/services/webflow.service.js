@@ -396,6 +396,10 @@ async function deleteExpertFromWebflow(expertId, webflowItemId) {
     });
     for (const svc of services) {
       try {
+        await webflowRequest('PATCH', `/collections/${SERVICES_COLLECTION_ID}/items/${svc.webflow_item_id}`, {
+          isArchived: true, isDraft: false,
+        });
+        await publishItems(SERVICES_COLLECTION_ID, [svc.webflow_item_id]);
         await webflowRequest('DELETE', `/collections/${SERVICES_COLLECTION_ID}/items/${svc.webflow_item_id}`);
         console.log(`[Webflow] Service ${svc.id} deleted`);
       } catch (err) {
@@ -416,6 +420,11 @@ async function deleteExpertFromWebflow(expertId, webflowItemId) {
 async function deleteServiceFromWebflow(serviceId, webflowItemId) {
   if (!webflowItemId || !SERVICES_COLLECTION_ID) return;
   try {
+    // Archive first so the live site hides the item on publish, then hard-delete from CMS
+    await webflowRequest('PATCH', `/collections/${SERVICES_COLLECTION_ID}/items/${webflowItemId}`, {
+      isArchived: true, isDraft: false,
+    });
+    await publishItems(SERVICES_COLLECTION_ID, [webflowItemId]);
     await webflowRequest('DELETE', `/collections/${SERVICES_COLLECTION_ID}/items/${webflowItemId}`);
     console.log(`[Webflow] Service ${serviceId} deleted`);
   } catch (err) {
