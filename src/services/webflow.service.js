@@ -207,7 +207,7 @@ async function buildServiceFields(service, expertId, expertWebflowItemId) {
   const fields = {
     name:          service.title,
     slug:          serviceSlug(service.title, service.id),
-    price:         formatPrice(service.price, service.currency),
+    price:         Number(service.price),
     'booking-url': `${APP_URL}/book?expertId=${expertId}&serviceId=${service.id}`,
   };
 
