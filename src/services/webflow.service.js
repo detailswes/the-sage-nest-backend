@@ -156,13 +156,14 @@ async function buildExpertFields(expert, slug) {
     'booking-url': `${APP_URL}/book?expertId=${expert.id}`,
   };
 
-  if (expert.position)  fields['position']           = expert.position;
-  if (expert.summary)   fields['short-description']  = expert.summary;
-  if (expert.bio)       fields['bio-content']        = expert.bio;
-  if (cheapest)         fields['price']              = `From ${formatPrice(cheapest.price, cheapest.currency)}`;
-  if (expert.instagram) fields['instagram-url']      = expert.instagram;
-  if (expert.facebook)  fields['facebook-url']       = expert.facebook;
-  if (expert.linkedin)  fields['linkedin-url']       = expert.linkedin;
+  if (expert.position)       fields['position']          = expert.position;
+  if (expert.summary)        fields['short-description'] = expert.summary;
+  if (expert.bio)            fields['bio-content']       = expert.bio;
+  if (cheapest)              fields['price']             = `From ${formatPrice(cheapest.price, cheapest.currency)}`;
+  if (expert.instagram)      fields['instagram-url']     = expert.instagram;
+  if (expert.facebook)       fields['facebook-url']      = expert.facebook;
+  if (expert.linkedin)       fields['linkedin-url']      = expert.linkedin;
+  if (expert.profile_image)  fields['photo']             = { url: expert.profile_image, alt: expert.user.name };
 
   // ── Reference fields ─────────────────────────────────────────────────────────
 
