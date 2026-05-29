@@ -2,21 +2,10 @@ const argon2 = require("argon2");
 const bcrypt = require("bcrypt"); // kept only for verifying legacy hashes during transition
 const jwt = require("jsonwebtoken");
 const crypto = require("crypto");
-const path = require("path");
-const fs = require("fs");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
 const { logAudit } = require("../utils/auditLog");
-
-const UPLOADS_DIR = path.join(__dirname, "../../uploads");
-
-function deleteFile(fileUrl) {
-  if (!fileUrl || !fileUrl.startsWith("/uploads/")) return;
-  const filePath = path.join(UPLOADS_DIR, path.basename(fileUrl));
-  if (fs.existsSync(filePath)) {
-    try { fs.unlinkSync(filePath); } catch (_) {}
-  }
-}
+const { deleteFile } = require("../utils/storage");
 const {
   sendVerificationEmail,
   sendPasswordResetEmail,
@@ -1034,7 +1023,7 @@ async function deleteAccount(req, res) {
         ...expert.certifications.map((c) => c.document_url),
         ...(expert.insurance ? [expert.insurance.document_url] : []),
       ].filter(Boolean);
-      for (const fileUrl of filesToDelete) deleteFile(fileUrl);
+      for (const fileUrl of filesToDelete) await deleteFile(fileUrl);
 
       // 3. Delete credential and operational records (not financial — no DAC7 obligation)
       await prisma.qualification.deleteMany({ where: { expert_id: expert.id } });
