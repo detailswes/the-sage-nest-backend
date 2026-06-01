@@ -1,4 +1,3 @@
-const nodemailer = require("nodemailer");
 const {
   verificationEmailHtml,
 } = require("./email_templates/verificationEmail");
@@ -33,47 +32,16 @@ const {
   expertCancelledSessionEmailHtml,
 } = require("./email_templates/expertCancelledSessionEmail");
 
-// ─── Transporter (lazy — created after dotenv has loaded) ────────────────────
-let _transporter = null;
-
-const getTransporter = () => {
-  if (_transporter) return _transporter;
-
-  const required = ['BREVO_SMTP_SERVER', 'BREVO_LOGIN', 'BREVO_SMTP_KEY', 'EMAIL_FROM'];
-  const missing  = required.filter((k) => !process.env[k]);
-  if (missing.length) {
-    throw new Error(`Brevo SMTP not configured — missing env vars: ${missing.join(', ')}`);
-  }
-
-  _transporter = nodemailer.createTransport({
-    host:   process.env.BREVO_SMTP_SERVER,
-    port:   587,
-    secure: false, // STARTTLS on 587
-    auth: {
-      user: process.env.BREVO_LOGIN,
-      pass: process.env.BREVO_SMTP_KEY,
-    },
-  });
-
-  return _transporter;
-};
+const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
 
 // ─── Verify config (call once at server startup) ──────────────────────────────
 const verifyEmailConnection = async () => {
-  let transporter;
-  try {
-    transporter = getTransporter();
-  } catch (err) {
-    console.warn('⚠️  Brevo SMTP not configured:', err.message);
+  const missing = ['BREVO_API_KEY', 'EMAIL_FROM'].filter((k) => !process.env[k]);
+  if (missing.length) {
+    console.warn(`⚠️  Brevo not configured — missing env vars: ${missing.join(', ')}`);
     return;
   }
-
-  try {
-    await transporter.verify();
-    console.log(`✅ Brevo SMTP OK — sending as ${process.env.EMAIL_FROM}`);
-  } catch (err) {
-    console.warn('⚠️  Brevo SMTP connection failed:', err.message);
-  }
+  console.log(`✅ Brevo API configured — sending as ${process.env.EMAIL_FROM}`);
 };
 
 // ─── Base sender ─────────────────────────────────────────────────────────────
@@ -81,14 +49,30 @@ const verifyEmailConnection = async () => {
  * @param {{ to: string, subject: string, html: string, text?: string }} options
  */
 const sendEmail = async ({ to, subject, html, text }) => {
-  const transporter = getTransporter();
-  await transporter.sendMail({
-    from:    `"Sage Nest" <${process.env.EMAIL_FROM}>`,
-    to,
-    subject,
-    text:    text || subject,
-    html,
+  if (!process.env.BREVO_API_KEY) {
+    throw new Error('Brevo not configured — missing BREVO_API_KEY env var');
+  }
+
+  const res = await fetch(BREVO_API_URL, {
+    method: 'POST',
+    headers: {
+      'accept':       'application/json',
+      'content-type': 'application/json',
+      'api-key':      process.env.BREVO_API_KEY,
+    },
+    body: JSON.stringify({
+      sender:      { name: 'Sage Nest', email: process.env.EMAIL_FROM },
+      to:          [{ email: to }],
+      subject,
+      textContent: text || subject,
+      htmlContent: html,
+    }),
   });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Brevo API error ${res.status}: ${body}`);
+  }
 };
 
 
