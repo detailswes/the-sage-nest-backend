@@ -228,10 +228,15 @@ const sendPasswordResetEmail = ({ to, name, resetToken }) => {
  * Template lives in email_templates/verificationEmail.js
  * @param {{ to: string, name: string, userId: number, verificationCode: string }} param0
  */
-const sendVerificationEmail = ({ to, name, userId, verificationCode }) => {
-  const verificationUrl =
+const sendVerificationEmail = ({ to, name, userId, verificationCode, returnTo }) => {
+  let verificationUrl =
     `${process.env.CLIENT_URL}/verify-email` +
     `?auth_user=true&userId=${userId}&verificationCode=${verificationCode}`;
+
+  // Only embed relative paths — prevents open-redirect abuse
+  if (returnTo && typeof returnTo === 'string' && returnTo.startsWith('/')) {
+    verificationUrl += `&returnTo=${encodeURIComponent(returnTo)}`;
+  }
 
   return sendEmail({
     to,

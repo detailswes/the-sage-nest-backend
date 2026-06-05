@@ -129,10 +129,19 @@ async function createBooking(req, res) {
       orderBy: { effective_from: 'desc' },
     });
     if (currentTcDoc) {
-      const accepted = await prisma.tcAcceptance.findUnique({
-        where: { user_id_version: { user_id: req.user.id, version: currentTcDoc.version } },
-      });
-      if (!accepted) {
+      // Check booking-flow acceptances first (TcAcceptance), then fall back to
+      // registration-time acceptance (PrivacyPolicyAcceptance.tc_version). Parents
+      // who accepted T&C during registration never get a TcAcceptance row, so both
+      // tables must be checked — same logic as getCurrentTcVersion.
+      const [bookingAccepted, regAccepted] = await Promise.all([
+        prisma.tcAcceptance.findUnique({
+          where: { user_id_version: { user_id: req.user.id, version: currentTcDoc.version } },
+        }),
+        prisma.privacyPolicyAcceptance.findFirst({
+          where: { user_id: req.user.id, tc_version: currentTcDoc.version },
+        }),
+      ]);
+      if (!bookingAccepted && !regAccepted) {
         return res.status(400).json({ error: 'You must accept the current Terms & Conditions before proceeding.' });
       }
     }
