@@ -112,7 +112,7 @@ function validatePasswordStrength(password) {
 
 // ─── Register ───────────────────────────────────────────────────────────────
 async function register(req, res) {
-  const { email, password, role, name, phone, timezone, privacyPolicyAccepted, termsAccepted, marketingConsent } = req.body;
+  const { email, password, role, name, phone, timezone, privacyPolicyAccepted, termsAccepted, marketingConsent, returnTo } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
@@ -202,6 +202,7 @@ async function register(req, res) {
       name: user.name,
       userId: user.id,
       verificationCode,
+      returnTo: typeof returnTo === 'string' && returnTo.startsWith('/') ? returnTo : undefined,
     }).catch((err) =>
       console.error("Failed to send verification email:", err.message)
     );
@@ -260,7 +261,20 @@ async function verifyEmail(req, res) {
       },
     });
 
-    return res.json({ verified: true });
+    // Issue tokens immediately so the parent can continue their booking
+    // without having to sign in again on a separate page.
+    const accessToken  = generateAccessToken(user);
+    const refreshToken = generateRefreshToken();
+    await storeRefreshToken(user.id, refreshToken);
+
+    res.cookie("refreshToken", refreshToken, {
+      httpOnly: true,
+      secure:   process.env.NODE_ENV === "production",
+      sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+      maxAge:   REFRESH_TOKEN_EXPIRES_MS,
+    });
+
+    return res.json({ verified: true, accessToken, user: userPayload(user) });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -546,7 +560,7 @@ async function logout(req, res) {
 
 // ─── Resend Verification Email ────────────────────────────────────────────────
 async function resendVerification(req, res) {
-  const { email } = req.body;
+  const { email, returnTo } = req.body;
   if (!email) {
     return res.status(400).json({ error: "Email is required" });
   }
@@ -583,6 +597,7 @@ async function resendVerification(req, res) {
       name: user.name,
       userId: user.id,
       verificationCode,
+      returnTo: typeof returnTo === 'string' && returnTo.startsWith('/') ? returnTo : undefined,
     }).catch((err) =>
       console.error("Failed to resend verification email:", err.message)
     );
