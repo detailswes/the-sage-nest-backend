@@ -148,7 +148,7 @@ async function getAvailableSlots(req, res) {
         where: {
           expert_id: expert.id,
           scheduled_at: { gte: dayStart, lt: dayEnd },
-          status: { in: ['CONFIRMED', 'PENDING_PAYMENT'] },
+          status: { in: ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'] },
         },
         select: { scheduled_at: true, duration_minutes: true },
       }),
@@ -341,7 +341,7 @@ async function getAvailabilityConflicts(req, res) {
       where: {
         expert_id: expert.id,
         scheduled_at: { gt: new Date() },
-        status: { in: ['CONFIRMED', 'PENDING_PAYMENT'] },
+        status: { in: ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'] },
       },
       select: {
         id: true,
@@ -425,7 +425,7 @@ async function getAvailableDatesInMonth(req, res) {
         where: {
           expert_id: expert.id,
           scheduled_at: { gte: rangeStart, lt: rangeEnd },
-          status: { in: ['CONFIRMED', 'PENDING_PAYMENT'] },
+          status: { in: ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'] },
         },
         select: { scheduled_at: true, duration_minutes: true },
       }),
