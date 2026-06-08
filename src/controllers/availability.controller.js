@@ -528,6 +528,20 @@ async function lockSlot(req, res) {
   const expiresAt   = new Date(now.getTime() + SLOT_LOCK_MINUTES * 60 * 1000);
 
   try {
+    // Reject immediately if the slot already has an active booking — this fires
+    // before the lock is created so no timer is started for an impossible slot.
+    const existingBooking = await prisma.booking.findFirst({
+      where: {
+        expert_id:    expertIdInt,
+        scheduled_at: slotStartDate,
+        status:       { in: ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'] },
+      },
+      select: { id: true },
+    });
+    if (existingBooking) {
+      return res.status(409).json({ error: 'This slot is no longer available. Please go back and choose another time.' });
+    }
+
     // Release any existing lock this parent holds for this expert (slot change)
     await prisma.slotLock.deleteMany({
       where: { expert_id: expertIdInt, parent_id: req.user.id },
