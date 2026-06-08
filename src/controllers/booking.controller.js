@@ -238,9 +238,10 @@ async function createBooking(req, res) {
     console.log(`[Payment] Booking ${booking.id} ready — clientSecret issued to parent`);
 
     return res.status(201).json({
-      bookingId:    booking.id,
-      clientSecret: paymentIntent.client_secret,
-      currency:     currency.toUpperCase(),
+      bookingId:        booking.id,
+      clientSecret:     paymentIntent.client_secret,
+      currency:         currency.toUpperCase(),
+      paymentExpiresAt: booking.payment_expires_at,
     });
   } catch (err) {
     console.error('[createBooking] Error:', err);
