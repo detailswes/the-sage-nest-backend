@@ -205,10 +205,15 @@ async function buildExpertFields(expert, slug) {
 }
 
 async function buildServiceFields(service, expertId, expertWebflowItemId) {
+  const currency = (service.currency || 'EUR').toUpperCase();
+  const formattedPrice = new Intl.NumberFormat('en', {
+    style: 'currency', currency, minimumFractionDigits: 0, maximumFractionDigits: 2,
+  }).format(Number(service.price));
+
   const fields = {
     name:          service.title,
     slug:          serviceSlug(service.title, service.id),
-    price:         Number(service.price),
+    'price-new':   formattedPrice,
     'booking-url': `${APP_URL}/book?expertId=${expertId}&serviceId=${service.id}`,
   };
 
