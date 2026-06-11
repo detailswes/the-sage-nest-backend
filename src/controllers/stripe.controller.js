@@ -285,6 +285,37 @@ async function handleWebhook(req, res) {
         break;
       }
 
+      // ── Dispute opened: freeze payout and flag for admin ─────────────────
+      case 'charge.dispute.created': {
+        const dispute = event.data.object;
+        console.log(`[Webhook] charge.dispute.created — dispute=${dispute.id} charge=${dispute.charge} reason=${dispute.reason}`);
+
+        const booking = await prisma.booking.findFirst({
+          where: { stripe_charge_id: dispute.charge },
+        });
+
+        if (!booking) {
+          console.warn(`[Webhook] charge.dispute.created — no booking found for charge=${dispute.charge}`);
+          break;
+        }
+
+        await prisma.booking.update({
+          where: { id: booking.id },
+          data: {
+            is_disputed:     true,
+            dispute_reason:  dispute.reason,
+            disputed_at:     new Date(dispute.created * 1000),
+            transfer_status: 'skipped',
+          },
+        });
+
+        logAudit(booking.parent_id, 'DISPUTE_OPENED', 'BOOKING', booking.id,
+          `Dispute ${dispute.id} opened · reason: ${dispute.reason} · charge: ${dispute.charge}`);
+
+        console.log(`[Webhook] Booking ${booking.id} frozen — is_disputed=true transfer_status=skipped`);
+        break;
+      }
+
       // ── Account updated (expert onboarding / capability changes) ──────────
       case 'account.updated': {
         const account = event.data.object;

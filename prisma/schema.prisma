@@ -241,6 +241,7 @@ model Booking {
   internal_admin_note      String?
   is_disputed              Boolean        @default(false)
   is_reschedule            Boolean        @default(false)
+  min_refund_percent       Int            @default(100)
   stripe_payout_id         String?
   refunded_at              DateTime?
   expert_note              String?
