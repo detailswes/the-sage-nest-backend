@@ -90,10 +90,11 @@ async function runTransfers() {
     // we release those funds to their bank 24 h after the session ends by
     // creating a payout *on their account* via the stripeAccount header.
     try {
+      const payoutCurrency = (booking.currency || 'EUR').toLowerCase();
       const payout = await stripe.payouts.create(
         {
           amount:      expertAmountPence,
-          currency:    'gbp',
+          currency:    payoutCurrency,
           description: `Payout for booking #${booking.id}`,
           metadata:    { booking_id: String(booking.id) },
         },

@@ -208,18 +208,21 @@ async function createBooking(req, res) {
 
     let paymentIntent;
     try {
-      paymentIntent = await stripe.paymentIntents.create({
-        amount:                 amountInPence,
-        currency,
-        on_behalf_of:           expert.stripe_account_id,
-        transfer_data:          { destination: expert.stripe_account_id },
-        application_fee_amount: applicationFeePence,
-        metadata: {
-          booking_id: booking.id.toString(),
-          expert_id:  expert.id.toString(),
-          parent_id:  req.user.id.toString(),
+      paymentIntent = await stripe.paymentIntents.create(
+        {
+          amount:                 amountInPence,
+          currency,
+          on_behalf_of:           expert.stripe_account_id,
+          transfer_data:          { destination: expert.stripe_account_id },
+          application_fee_amount: applicationFeePence,
+          metadata: {
+            booking_id: booking.id.toString(),
+            expert_id:  expert.id.toString(),
+            parent_id:  req.user.id.toString(),
+          },
         },
-      });
+        { idempotencyKey: `booking-pi-${booking.id}` },
+      );
       console.log(`[Payment] PaymentIntent created — id=${paymentIntent.id} status=${paymentIntent.status}`);
     } catch (stripeErr) {
       // Clean up the booking if PaymentIntent creation fails
@@ -352,9 +355,14 @@ async function cancelBooking(req, res) {
 
     // Determine refund tier. Boundaries are inclusive on the more-favourable side:
     //   >= 24 h → 100%, >= 12 h → 50%, < 12 h → 0%
-    const refundPercent = hoursUntilSession >= 24 ? 100
-                        : hoursUntilSession >= 12 ? 50
-                        : 0;
+    // min_refund_percent is the worst tier this booking ever reached across all
+    // reschedules. Taking the minimum of the two values ensures a reschedule can
+    // never improve the tier: if the parent was already in the 50% band when they
+    // rescheduled, the floor stays at 50% even if the new slot is far in the future.
+    const tierAtCancellation = hoursUntilSession >= 24 ? 100
+                             : hoursUntilSession >= 12 ? 50
+                             : 0;
+    const refundPercent = Math.min(tierAtCancellation, booking.min_refund_percent);
 
     console.log(`[cancelBooking] booking=${booking.id} status=${booking.status} hoursUntilSession=${hoursUntilSession.toFixed(4)} refundPercent=${refundPercent}% wasConfirmed=${wasConfirmed} paymentIntentId=${booking.stripe_payment_intent_id} chargeId=${booking.stripe_charge_id}`);
 
@@ -538,17 +546,25 @@ async function rescheduleBooking(req, res) {
     const newSessionEnd    = new Date(newDate.getTime() + booking.duration_minutes * 60 * 1000);
     const newTransferDueAt = new Date(newSessionEnd.getTime() + 24 * 60 * 60 * 1000);
 
+    // Snapshot the refund tier at this moment (before moving scheduled_at).
+    // hoursUntilCurrent is already computed above; reschedule is blocked at <12h
+    // so only 100 or 50 is possible here. Take the worst of the stored floor and
+    // the current tier so the floor can only ratchet down, never up.
+    const tierNow             = hoursUntilCurrent >= 24 ? 100 : 50;
+    const newMinRefundPercent = Math.min(booking.min_refund_percent, tierNow);
+
     const previousScheduledAt = booking.scheduled_at;
     const now = new Date();
     await prisma.booking.update({
       where: { id: booking.id },
       data: {
-        scheduled_at:      newDate,
-        is_reschedule:     true,        // guards against refund logic misfiring
-        rescheduled_at:    now,
-        transfer_due_at:   newTransferDueAt,
-        reminder_1h_sent:  false,       // reset so reminders fire for the new time
-        reminder_24h_sent: false,
+        scheduled_at:       newDate,
+        is_reschedule:      true,        // guards against refund logic misfiring
+        rescheduled_at:     now,
+        transfer_due_at:    newTransferDueAt,
+        reminder_1h_sent:   false,       // reset so reminders fire for the new time
+        reminder_24h_sent:  false,
+        min_refund_percent: newMinRefundPercent,
       },
     });
 
