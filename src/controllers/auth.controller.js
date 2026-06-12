@@ -6,6 +6,7 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
 const { logAudit } = require("../utils/auditLog");
 const { deleteFile } = require("../utils/storage");
+const { decryptIban } = require("../utils/encryption");
 const webflowService = require("../services/webflow.service");
 const {
   sendVerificationEmail,
@@ -19,6 +20,12 @@ const {
 const OTP_EXPIRY_MS   = 300 * 1000;       // 5 minutes
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000; // 60 seconds between resends
 const OTP_MAX_ATTEMPTS = 5;
+
+// SHA-256 digest of a raw token — used to store reset/verification tokens hashed
+// at rest so a DB leak cannot be used directly for account takeover.
+function hashToken(raw) {
+  return crypto.createHash('sha256').update(raw).digest('hex');
+}
 
 function generateOtpCode() {
   // crypto.randomInt is available from Node 14.10+
@@ -47,6 +54,13 @@ const ACCESS_TOKEN_EXPIRES = "15m";
 const REFRESH_TOKEN_EXPIRES_MS = 30 * 24 * 60 * 60 * 1000; // 30 days (sliding via rotation)
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
+
+// Canonical marketing opt-in statement — stored verbatim alongside consent so
+// the exact text shown to the user is demonstrable under GDPR Art. 7(1) and
+// the Danish Markedsføringslov. Increment version when the statement changes.
+const MARKETING_CONSENT_VERSION = "v1";
+const MARKETING_CONSENT_STATEMENT =
+  "I'd like to receive tips, expert advice, and updates from Sage Nest by email. You can unsubscribe at any time.";
 
 // Argon2id — OWASP recommended settings (64 MB memory cost)
 const ARGON2_OPTIONS = {
@@ -143,7 +157,9 @@ async function register(req, res) {
   try {
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) {
-      return res.status(409).json({ error: "Email already registered" });
+      // Enumeration-safe: return the same response as a successful registration.
+      // The caller cannot distinguish a duplicate from a new account.
+      return res.status(201).json({ verification_email_sent: true, email });
     }
 
     const password_hash = await hashPassword(password);
@@ -161,7 +177,7 @@ async function register(req, res) {
         password_hash,
         role: assignedRole,
         is_verified: false,
-        verification_code: verificationCode,
+        verification_code: hashToken(verificationCode),
         verification_expires_at: verificationExpiresAt,
       },
     });
@@ -192,8 +208,9 @@ async function register(req, res) {
         accepted_at:           consentTimestamp,
         tc_version:            currentTc?.version ?? "1.0",
         tc_accepted_at:        consentTimestamp,
-        marketing_consent:     marketingConsent === true,
-        marketing_accepted_at: marketingConsent === true ? consentTimestamp : null,
+        marketing_consent:      marketingConsent === true,
+        marketing_accepted_at:  marketingConsent === true ? consentTimestamp : null,
+        marketing_consent_text: marketingConsent === true ? `${MARKETING_CONSENT_VERSION}: ${MARKETING_CONSENT_STATEMENT}` : null,
       },
     });
 
@@ -248,7 +265,7 @@ async function verifyEmail(req, res) {
       });
     }
 
-    if (user.verification_code !== verificationCode) {
+    if (user.verification_code !== hashToken(verificationCode)) {
       return res.status(400).json({ error: "Invalid verification link." });
     }
 
@@ -470,8 +487,6 @@ async function refresh(req, res) {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
-  console.log('[refresh] cookies received:', req.cookies);
-  console.log('[refresh] headers origin:', req.headers.origin);
   const refreshToken = req.cookies?.refreshToken;
 
   if (!refreshToken) {
@@ -587,7 +602,7 @@ async function resendVerification(req, res) {
     await prisma.user.update({
       where: { id: user.id },
       data: {
-        verification_code: verificationCode,
+        verification_code: hashToken(verificationCode),
         verification_expires_at: verificationExpiresAt,
       },
     });
@@ -637,7 +652,7 @@ async function forgotPassword(req, res) {
 
     await prisma.user.update({
       where: { id: user.id },
-      data: { reset_token: resetToken, reset_token_expires_at: resetTokenExpiresAt },
+      data: { reset_token: hashToken(resetToken), reset_token_expires_at: resetTokenExpiresAt },
     });
 
     sendPasswordResetEmail({
@@ -666,7 +681,7 @@ async function resetPassword(req, res) {
   if (pwError) return res.status(400).json({ error: pwError });
 
   try {
-    const user = await prisma.user.findFirst({ where: { reset_token: token } });
+    const user = await prisma.user.findFirst({ where: { reset_token: hashToken(token) } });
 
     if (!user) {
       return res.status(400).json({ error: "Invalid or expired reset link." });
@@ -796,7 +811,7 @@ async function updateEmail(req, res) {
       data: {
         email,
         is_verified: false,
-        verification_code: verificationCode,
+        verification_code: hashToken(verificationCode),
         verification_expires_at: verificationExpiresAt,
       },
     });
@@ -1439,6 +1454,8 @@ async function getLegalConsents(req, res) {
           accepted_at: true,
           marketing_consent: true,
           marketing_accepted_at: true,
+          marketing_consent_text: true,
+          marketing_withdrawn_at: true,
           tc_version: true,
           tc_accepted_at: true,
         },
@@ -1466,6 +1483,8 @@ async function getLegalConsents(req, res) {
       })),
       marketing_consent: latest?.marketing_consent ?? false,
       marketing_accepted_at: latest?.marketing_accepted_at ?? null,
+      marketing_consent_text: latest?.marketing_consent_text ?? null,
+      marketing_withdrawn_at: latest?.marketing_withdrawn_at ?? null,
     });
   } catch (err) {
     console.error(err);
@@ -1490,13 +1509,25 @@ async function updateMarketingConsent(req, res) {
       return res.status(404).json({ error: "No consent record found" });
     }
 
+    const now = new Date();
     const updated = await prisma.privacyPolicyAcceptance.update({
       where: { id: latest.id },
       data: {
-        marketing_consent: consent,
-        marketing_accepted_at: consent ? new Date() : null,
+        marketing_consent:      consent,
+        // Grant: record when + what statement was accepted. Never null on withdrawal
+        // so the original opt-in timestamp is preserved for the audit trail.
+        marketing_accepted_at:  consent ? now : latest.marketing_accepted_at,
+        marketing_consent_text: consent
+          ? `${MARKETING_CONSENT_VERSION}: ${MARKETING_CONSENT_STATEMENT}`
+          : latest.marketing_consent_text,
+        // Withdrawal: record when consent was withdrawn. Cleared if re-granting.
+        marketing_withdrawn_at: consent ? null : now,
       },
-      select: { marketing_consent: true, marketing_accepted_at: true },
+      select: {
+        marketing_consent: true,
+        marketing_accepted_at: true,
+        marketing_withdrawn_at: true,
+      },
     });
 
     return res.json(updated);
@@ -1603,22 +1634,215 @@ async function exportMyData(req, res) {
 
     if (!user) return res.status(404).json({ error: "User not found" });
 
-    const payload = {
+    const personalInformation = {
+      name: user.name,
+      email: user.email,
+      phone: user.phone,
+      role: user.role,
+      account_created: user.created_at,
+      email_verified: user.is_verified,
+      two_factor_enabled: user.two_factor_enabled,
+    };
+
+    const loginProviders = user.oauth_accounts.map((a) => ({
+      provider: a.provider,
+      linked_at: a.created_at,
+    }));
+
+    const consentRecords = {
+      privacy_policy: user.pp_acceptances.map((a) => ({
+        version: a.version,
+        accepted_at: a.accepted_at,
+        marketing_consent: a.marketing_consent,
+        marketing_accepted_at: a.marketing_accepted_at,
+      })),
+      terms_and_conditions: user.pp_acceptances
+        .filter((a) => a.tc_version)
+        .map((a) => ({ version: a.tc_version, accepted_at: a.tc_accepted_at })),
+    };
+
+    const filename = `sage-nest-data-export-${new Date().toISOString().split("T")[0]}.json`;
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Type", "application/json");
+
+    // ── Expert branch ──────────────────────────────────────────────────────────
+    if (user.role === "EXPERT") {
+      const expert = await prisma.expert.findUnique({
+        where: { user_id: user.id },
+        select: {
+          bio: true,
+          expertise: true,
+          position: true,
+          summary: true,
+          languages: true,
+          timezone: true,
+          session_format: true,
+          address_street: true,
+          address_city: true,
+          address_postcode: true,
+          instagram: true,
+          facebook: true,
+          linkedin: true,
+          advance_booking_days: true,
+          buffer_minutes: true,
+          min_notice_hours: true,
+          created_at: true,
+          business_info: {
+            select: {
+              entity_type: true,
+              legal_name: true,
+              date_of_birth: true,
+              tin: true,
+              vat_number: true,
+              company_reg_number: true,
+              iban: true,
+              business_email: true,
+              website: true,
+              address_street: true,
+              address_city: true,
+              address_postal_code: true,
+              address_country: true,
+            },
+          },
+          services: {
+            select: {
+              title: true,
+              description: true,
+              duration_minutes: true,
+              price: true,
+              currency: true,
+              format: true,
+              cluster: true,
+              is_active: true,
+            },
+          },
+          qualifications: {
+            select: { type: true, custom_name: true, created_at: true },
+          },
+          certifications: {
+            select: { name: true, created_at: true },
+          },
+          bookings: {
+            select: {
+              id: true,
+              scheduled_at: true,
+              duration_minutes: true,
+              format: true,
+              status: true,
+              amount: true,
+              currency: true,
+              platform_fee: true,
+              created_at: true,
+              cancelled_at: true,
+              cancellation_reason: true,
+              completed_at: true,
+              service: { select: { title: true } },
+              parent: { select: { name: true } },
+            },
+            orderBy: { scheduled_at: "desc" },
+          },
+          reviews: {
+            select: { rating: true, comment: true, created_at: true },
+            orderBy: { created_at: "desc" },
+          },
+        },
+      });
+
+      const bi = expert?.business_info;
+
+      return res.json({
+        exported_at: new Date().toISOString(),
+        gdpr_basis: "Article 20 — Right to data portability",
+        personal_information: personalInformation,
+        login_providers: loginProviders,
+        expert_profile: expert ? {
+          bio: expert.bio,
+          expertise: expert.expertise,
+          position: expert.position,
+          summary: expert.summary,
+          languages: expert.languages,
+          timezone: expert.timezone,
+          session_format: expert.session_format,
+          address_street: expert.address_street,
+          address_city: expert.address_city,
+          address_postcode: expert.address_postcode,
+          social_links: {
+            instagram: expert.instagram,
+            facebook: expert.facebook,
+            linkedin: expert.linkedin,
+          },
+          booking_settings: {
+            advance_booking_days: expert.advance_booking_days,
+            buffer_minutes: expert.buffer_minutes,
+            min_notice_hours: expert.min_notice_hours,
+          },
+          profile_created: expert.created_at,
+        } : null,
+        business_information: bi ? {
+          entity_type: bi.entity_type,
+          legal_name: bi.legal_name,
+          date_of_birth: bi.date_of_birth,
+          tin: bi.tin,
+          vat_number: bi.vat_number,
+          company_reg_number: bi.company_reg_number,
+          iban: decryptIban(bi.iban),
+          business_email: bi.business_email,
+          website: bi.website,
+          address_street: bi.address_street,
+          address_city: bi.address_city,
+          address_postal_code: bi.address_postal_code,
+          address_country: bi.address_country,
+        } : null,
+        services: (expert?.services ?? []).map((s) => ({
+          title: s.title,
+          description: s.description,
+          duration_minutes: s.duration_minutes,
+          price: s.price,
+          currency: s.currency,
+          format: s.format,
+          cluster: s.cluster,
+          is_active: s.is_active,
+        })),
+        qualifications: (expert?.qualifications ?? []).map((q) => ({
+          type: q.type,
+          name: q.custom_name,
+          added_at: q.created_at,
+        })),
+        certifications: (expert?.certifications ?? []).map((c) => ({
+          name: c.name,
+          added_at: c.created_at,
+        })),
+        session_history: (expert?.bookings ?? []).map((b) => ({
+          booking_id: b.id,
+          service: b.service.title,
+          parent_name: b.parent.name,
+          scheduled_at: b.scheduled_at,
+          duration_minutes: b.duration_minutes,
+          format: b.format,
+          status: b.status,
+          amount: b.amount,
+          currency: b.currency,
+          platform_fee: b.platform_fee,
+          booked_at: b.created_at,
+          cancelled_at: b.cancelled_at,
+          cancellation_reason: b.cancellation_reason,
+          completed_at: b.completed_at,
+        })),
+        reviews_received: (expert?.reviews ?? []).map((r) => ({
+          rating: r.rating,
+          comment: r.comment,
+          submitted_at: r.created_at,
+        })),
+        consent_records: consentRecords,
+      });
+    }
+
+    // ── Parent branch ──────────────────────────────────────────────────────────
+    return res.json({
       exported_at: new Date().toISOString(),
       gdpr_basis: "Article 20 — Right to data portability",
-      personal_information: {
-        name: user.name,
-        email: user.email,
-        phone: user.phone,
-        role: user.role,
-        account_created: user.created_at,
-        email_verified: user.is_verified,
-        two_factor_enabled: user.two_factor_enabled,
-      },
-      login_providers: user.oauth_accounts.map((a) => ({
-        provider: a.provider,
-        linked_at: a.created_at,
-      })),
+      personal_information: personalInformation,
+      login_providers: loginProviders,
       booking_history: user.bookings_as_parent.map((b) => ({
         booking_id: b.id,
         service: b.service.title,
@@ -1637,25 +1861,9 @@ async function exportMyData(req, res) {
         review: b.review
           ? { rating: b.review.rating, comment: b.review.comment, submitted_at: b.review.created_at }
           : null,
-        terms_accepted: null,
       })),
-      consent_records: {
-        privacy_policy: user.pp_acceptances.map((a) => ({
-          version: a.version,
-          accepted_at: a.accepted_at,
-          marketing_consent: a.marketing_consent,
-          marketing_accepted_at: a.marketing_accepted_at,
-        })),
-        terms_and_conditions: user.pp_acceptances
-          .filter((a) => a.tc_version)
-          .map((a) => ({ version: a.tc_version, accepted_at: a.tc_accepted_at })),
-      },
-    };
-
-    const filename = `sage-nest-data-export-${new Date().toISOString().split("T")[0]}.json`;
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    res.setHeader("Content-Type", "application/json");
-    return res.json(payload);
+      consent_records: consentRecords,
+    });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });

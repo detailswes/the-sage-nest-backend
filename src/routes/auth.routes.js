@@ -13,17 +13,17 @@ const {
   getLegalConsents, updateMarketingConsent,
 } = require('../controllers/auth.controller');
 const { authenticate } = require('../middleware/auth.middleware');
-const { registrationLimiter, passwordResetLimiter, otpResendLimiter } = require('../middleware/rateLimiter');
+const { registrationLimiter, passwordResetLimiter, otpResendLimiter, loginLimiter, resetPasswordLimiter } = require('../middleware/rateLimiter');
 
 router.get ('/legal-versions',       getLegalVersions);  // public — used by policy pages
 router.post('/register',            registrationLimiter, register);
-router.post('/login',               login);
+router.post('/login',               loginLimiter, login);
 router.post('/refresh',             refresh);
 router.post('/logout',              logout);
 router.post('/verify-email',        verifyEmail);
 router.post('/resend-verification', otpResendLimiter, resendVerification);
 router.post('/forgot-password',     passwordResetLimiter, forgotPassword);
-router.post('/reset-password',      resetPassword);
+router.post('/reset-password',      resetPasswordLimiter, resetPassword);
 
 // ── Profile management — all require authentication ───────────────────────────
 router.get   ('/profile',          authenticate, getProfile);
