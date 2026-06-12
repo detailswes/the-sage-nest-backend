@@ -89,11 +89,226 @@ async function handleStripeReturn(req, res) {
   }
 }
 
+// ─── processStripeEvent ───────────────────────────────────────────────────────
+//
+// Pure business logic for every Stripe event type. No HTTP concerns here.
+// Called by handleWebhook (live delivery) and retryFailedWebhooks (retry job).
+// All handlers are idempotent: status guards prevent double-state-transitions
+// even if the same event is somehow dispatched twice.
+//
+async function processStripeEvent(event) {
+  switch (event.type) {
+
+    // ── Payment succeeded: confirm the booking and send email ──────────────
+    case 'payment_intent.succeeded': {
+      const pi = event.data.object;
+      console.log(`[Webhook] payment_intent.succeeded — pi=${pi.id} amount=${pi.amount}`);
+
+      const booking = await prisma.booking.findFirst({
+        where: { stripe_payment_intent_id: pi.id },
+        include: {
+          parent:  { select: { name: true, email: true, notify_booking_confirmation: true } },
+          expert:  { select: { address_street: true, address_city: true, address_postcode: true, timezone: true, user: { select: { name: true, email: true } } } },
+          service: { select: { title: true } },
+        },
+      });
+
+      if (!booking) {
+        console.warn(`[Webhook] payment_intent.succeeded — no booking found for pi=${pi.id}`);
+        break;
+      }
+
+      console.log(`[Webhook] Found booking ${booking.id} with status=${booking.status}`);
+
+      if (booking.status === 'PENDING_PAYMENT') {
+        // transfer_due_at = session end time + 24 hours
+        const sessionEndTime = new Date(
+          booking.scheduled_at.getTime() + booking.duration_minutes * 60 * 1000
+        );
+        const transferDueAt = new Date(sessionEndTime.getTime() + 24 * 60 * 60 * 1000);
+
+        await prisma.booking.update({
+          where: { id: booking.id },
+          data: {
+            status:           'CONFIRMED',
+            stripe_charge_id: pi.latest_charge || null,
+            transfer_status:  'pending',
+            transfer_due_at:  transferDueAt,
+          },
+        });
+        console.log(
+          `[Webhook] Booking ${booking.id} → CONFIRMED | ` +
+          `charge=${pi.latest_charge} transfer_due=${transferDueAt.toISOString()}`
+        );
+
+        logAudit(booking.parent_id, 'BOOKING_CONFIRMED', 'PARENT', booking.parent_id,
+          `Booking #${booking.id} confirmed · payment received`);
+
+        // Fire-and-forget: parent confirmation + expert new-booking notification
+        const expertAddress = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
+        if (booking.parent.notify_booking_confirmation !== false) {
+          sendBookingConfirmationEmail({
+            to:              booking.parent.email,
+            name:            booking.parent.name,
+            expertName:      booking.expert.user.name,
+            serviceTitle:    booking.service.title,
+            format:          booking.format,
+            scheduledAt:     booking.scheduled_at,
+            durationMinutes: booking.duration_minutes,
+            location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
+          }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));
+        }
+
+        sendNewBookingNotificationEmail({
+          to:              booking.expert.user.email,
+          expertName:      booking.expert.user.name,
+          parentName:      booking.parent.name,
+          parentEmail:     booking.parent.email,
+          serviceTitle:    booking.service.title,
+          format:          booking.format,
+          scheduledAt:     booking.scheduled_at,
+          durationMinutes: booking.duration_minutes,
+          bookingId:       booking.id,
+          timezone:        booking.expert.timezone,
+        }).catch((e) => console.error('[Email] Expert notification email failed:', e.message));
+      } else {
+        console.log(`[Webhook] Booking ${booking.id} already has status=${booking.status} — skipping update`);
+      }
+      break;
+    }
+
+    // ── Checkout session completed (Checkout Session flow — also covers PI) ─
+    case 'checkout.session.completed': {
+      const session = event.data.object;
+      if (session.payment_intent) {
+        await prisma.booking.updateMany({
+          where: {
+            stripe_payment_intent_id: session.payment_intent,
+            status: 'PENDING_PAYMENT',
+          },
+          data: { status: 'CONFIRMED' },
+        });
+      }
+      break;
+    }
+
+    // ── Payment intent canceled (e.g. by cleanup job or Stripe expiry) ──────
+    case 'payment_intent.canceled': {
+      const pi = event.data.object;
+      console.log(`[Webhook] payment_intent.canceled — pi=${pi.id}`);
+      await prisma.booking.deleteMany({
+        where: {
+          stripe_payment_intent_id: pi.id,
+          status: 'PENDING_PAYMENT',
+        },
+      });
+      break;
+    }
+
+    // ── Payment failed: delete the booking — no payment was made ────────────
+    case 'payment_intent.payment_failed': {
+      const pi = event.data.object;
+      console.log(`[Webhook] payment_intent.payment_failed — pi=${pi.id}`);
+      await prisma.booking.deleteMany({
+        where: {
+          stripe_payment_intent_id: pi.id,
+          status: 'PENDING_PAYMENT',
+        },
+      });
+      break;
+    }
+
+    // ── Charge refunded: mark booking as refunded ─────────────────────────
+    case 'charge.refunded': {
+      const charge = event.data.object;
+      if (charge.payment_intent) {
+        const latestRefund = charge.refunds?.data?.[0];
+        await prisma.booking.updateMany({
+          where: { stripe_payment_intent_id: charge.payment_intent },
+          data: {
+            status: 'REFUNDED',
+            ...(latestRefund ? {
+              stripe_refund_id: latestRefund.id,
+              refund_status:    latestRefund.status,
+              refund_amount:    latestRefund.amount / 100,
+              refunded_at:      new Date(latestRefund.created * 1000),
+            } : {}),
+          },
+        });
+      }
+      break;
+    }
+
+    // ── Dispute opened: freeze payout and flag for admin ─────────────────
+    case 'charge.dispute.created': {
+      const dispute = event.data.object;
+      console.log(`[Webhook] charge.dispute.created — dispute=${dispute.id} charge=${dispute.charge} reason=${dispute.reason}`);
+
+      const booking = await prisma.booking.findFirst({
+        where: { stripe_charge_id: dispute.charge },
+      });
+
+      if (!booking) {
+        console.warn(`[Webhook] charge.dispute.created — no booking found for charge=${dispute.charge}`);
+        break;
+      }
+
+      await prisma.booking.update({
+        where: { id: booking.id },
+        data: {
+          is_disputed:     true,
+          dispute_reason:  dispute.reason,
+          disputed_at:     new Date(dispute.created * 1000),
+          transfer_status: 'skipped',
+        },
+      });
+
+      logAudit(booking.parent_id, 'DISPUTE_OPENED', 'BOOKING', booking.id,
+        `Dispute ${dispute.id} opened · reason: ${dispute.reason} · charge: ${dispute.charge}`);
+
+      console.log(`[Webhook] Booking ${booking.id} frozen — is_disputed=true transfer_status=skipped`);
+      break;
+    }
+
+    // ── Account updated (expert onboarding / capability changes) ──────────
+    case 'account.updated': {
+      const account = event.data.object;
+      const cardPaymentsActive = account.capabilities?.card_payments === 'active';
+      console.log(`[Webhook] account.updated: ${account.id}, details_submitted=${account.details_submitted}, card_payments=${account.capabilities?.card_payments}`);
+
+      await prisma.expert.updateMany({
+        where: { stripe_account_id: account.id },
+        data:  { stripe_onboarding_complete: account.details_submitted === true && cardPaymentsActive },
+      });
+      break;
+    }
+
+    // ── Account application authorised ────────────────────────────────────
+    case 'account.application.authorized': {
+      console.log('[Webhook] account.application.authorized:', event.data.object);
+      break;
+    }
+
+    // ── Transfer created (platform payout to expert) ──────────────────────
+    case 'transfer.created': {
+      const transfer = event.data.object;
+      console.log(`[Webhook] transfer.created: ${transfer.id}, amount=${transfer.amount}, destination=${transfer.destination}`);
+      break;
+    }
+
+    default:
+      console.log(`[Webhook] Unhandled event type: ${event.type}`);
+  }
+}
+
 // ─── Webhook: single source of truth for all payment outcomes ────────────────
 //
 // Called from stripe.webhook.routes.js which already applies express.raw().
-// Signature verification + idempotency guard ensure each event is processed
-// exactly once even under duplicate / out-of-order deliveries.
+// Two-phase idempotency:
+//   1. Write StripeEvent row (processed=false) before processing — dedup guard
+//      ensures duplicate deliveries are no-ops without entering processStripeEvent.
+//   2. Mark processed=true only after processStripeEvent completes cleanly.
+//      Rows stuck at processed=false are picked up by retryFailedWebhooks job.
 //
 async function handleWebhook(req, res) {
   const sig = req.headers['stripe-signature'];
@@ -113,7 +328,7 @@ async function handleWebhook(req, res) {
   let event;
   try {
     event = stripe.webhooks.constructEvent(
-      req.body,                              // raw Buffer — provided by express.raw()
+      req.body,
       sig,
       process.env.STRIPE_WEBHOOK_SECRET
     );
@@ -123,11 +338,10 @@ async function handleWebhook(req, res) {
     return res.status(400).json({ error: `Webhook signature error: ${err.message}` });
   }
 
-  // ── Idempotency guard: skip already-processed events ────────────────────────
+  // ── Phase 1: dedup guard — write before processing ──────────────────────────
   try {
-    await prisma.stripeEvent.create({ data: { stripe_event_id: event.id } });
+    await prisma.stripeEvent.create({ data: { stripe_event_id: event.id, processed: false } });
   } catch (err) {
-    // Unique constraint violation — event already processed
     if (err.code === 'P2002') {
       console.log(`[Webhook] Duplicate event skipped: ${event.id}`);
       return res.json({ received: true, duplicate: true });
@@ -136,224 +350,21 @@ async function handleWebhook(req, res) {
     return res.status(500).json({ error: 'Server error' });
   }
 
+  // ── Phase 2: process, then mark as done ─────────────────────────────────────
   console.log(`[Webhook] Processing event: ${event.type} (${event.id})`);
-
   try {
-    switch (event.type) {
-
-      // ── Payment succeeded: confirm the booking and send email ──────────────
-      case 'payment_intent.succeeded': {
-        const pi = event.data.object;
-        console.log(`[Webhook] payment_intent.succeeded — pi=${pi.id} amount=${pi.amount}`);
-
-        const booking = await prisma.booking.findFirst({
-          where: { stripe_payment_intent_id: pi.id },
-          include: {
-            parent:  { select: { name: true, email: true, notify_booking_confirmation: true } },
-            expert:  { select: { address_street: true, address_city: true, address_postcode: true, timezone: true, user: { select: { name: true, email: true } } } },
-            service: { select: { title: true } },
-          },
-        });
-
-        if (!booking) {
-          console.warn(`[Webhook] payment_intent.succeeded — no booking found for pi=${pi.id}`);
-          break;
-        }
-
-        console.log(`[Webhook] Found booking ${booking.id} with status=${booking.status}`);
-
-        if (booking.status === 'PENDING_PAYMENT') {
-          // transfer_due_at = session end time + 24 hours
-          const sessionEndTime = new Date(
-            booking.scheduled_at.getTime() + booking.duration_minutes * 60 * 1000
-          );
-          const transferDueAt = new Date(sessionEndTime.getTime() + 24 * 60 * 60 * 1000);
-
-          await prisma.booking.update({
-            where: { id: booking.id },
-            data: {
-              status:           'CONFIRMED',
-              stripe_charge_id: pi.latest_charge || null,
-              transfer_status:  'pending',
-              transfer_due_at:  transferDueAt,
-            },
-          });
-          console.log(
-            `[Webhook] Booking ${booking.id} → CONFIRMED | ` +
-            `charge=${pi.latest_charge} transfer_due=${transferDueAt.toISOString()}`
-          );
-
-          logAudit(booking.parent_id, 'BOOKING_CONFIRMED', 'PARENT', booking.parent_id,
-            `Booking #${booking.id} confirmed · payment received`);
-
-          // Fire-and-forget: parent confirmation + expert new-booking notification
-          const expertAddress = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
-          if (booking.parent.notify_booking_confirmation !== false) {
-            sendBookingConfirmationEmail({
-              to:              booking.parent.email,
-              name:            booking.parent.name,
-              expertName:      booking.expert.user.name,
-              serviceTitle:    booking.service.title,
-              format:          booking.format,
-              scheduledAt:     booking.scheduled_at,
-              durationMinutes: booking.duration_minutes,
-              location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
-            }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));
-          }
-
-          sendNewBookingNotificationEmail({
-            to:              booking.expert.user.email,
-            expertName:      booking.expert.user.name,
-            parentName:      booking.parent.name,
-            parentEmail:     booking.parent.email,
-            serviceTitle:    booking.service.title,
-            format:          booking.format,
-            scheduledAt:     booking.scheduled_at,
-            durationMinutes: booking.duration_minutes,
-            bookingId:       booking.id,
-            timezone:        booking.expert.timezone,
-          }).catch((e) => console.error('[Email] Expert notification email failed:', e.message));
-        } else {
-          console.log(`[Webhook] Booking ${booking.id} already has status=${booking.status} — skipping update`);
-        }
-        break;
-      }
-
-      // ── Checkout session completed (Checkout Session flow — also covers PI) ─
-      case 'checkout.session.completed': {
-        const session = event.data.object;
-        if (session.payment_intent) {
-          await prisma.booking.updateMany({
-            where: {
-              stripe_payment_intent_id: session.payment_intent,
-              status: 'PENDING_PAYMENT',
-            },
-            data: { status: 'CONFIRMED' },
-          });
-        }
-        break;
-      }
-    
-      // ── Payment intent canceled (e.g. by cleanup job or Stripe expiry) ──────
-      case 'payment_intent.canceled': {
-        const pi = event.data.object;
-        console.log(`[Webhook] payment_intent.canceled — pi=${pi.id}`);
-        // DELETE — no payment was made, freeing the unique slot constraint
-        await prisma.booking.deleteMany({
-          where: {
-            stripe_payment_intent_id: pi.id,
-            status: 'PENDING_PAYMENT',
-          },
-        });
-        break;
-      }
-
-      // ── Payment failed: delete the booking — no payment was made ────────────
-      case 'payment_intent.payment_failed': {
-        const pi = event.data.object;
-        console.log(`[Webhook] payment_intent.payment_failed — pi=${pi.id}`);
-        // DELETE — no payment was made, freeing the unique slot constraint
-        // so the parent (or another parent) can retry the same slot
-        await prisma.booking.deleteMany({
-          where: {
-            stripe_payment_intent_id: pi.id,
-            status: 'PENDING_PAYMENT',
-          },
-        });
-        break;
-      }
-
-      // ── Charge refunded: mark booking as refunded ─────────────────────────
-      case 'charge.refunded': {
-        const charge = event.data.object;
-        if (charge.payment_intent) {
-          // Extract the most recent refund object from the charge
-          const latestRefund = charge.refunds?.data?.[0];
-          await prisma.booking.updateMany({
-            where: { stripe_payment_intent_id: charge.payment_intent },
-            data: {
-              status: 'REFUNDED',
-              ...(latestRefund ? {
-                stripe_refund_id: latestRefund.id,
-                refund_status:    latestRefund.status,
-                refund_amount:    latestRefund.amount / 100,
-                refunded_at:      new Date(latestRefund.created * 1000),
-              } : {}),
-            },
-          });
-        }
-        break;
-      }
-
-      // ── Dispute opened: freeze payout and flag for admin ─────────────────
-      case 'charge.dispute.created': {
-        const dispute = event.data.object;
-        console.log(`[Webhook] charge.dispute.created — dispute=${dispute.id} charge=${dispute.charge} reason=${dispute.reason}`);
-
-        const booking = await prisma.booking.findFirst({
-          where: { stripe_charge_id: dispute.charge },
-        });
-
-        if (!booking) {
-          console.warn(`[Webhook] charge.dispute.created — no booking found for charge=${dispute.charge}`);
-          break;
-        }
-
-        await prisma.booking.update({
-          where: { id: booking.id },
-          data: {
-            is_disputed:     true,
-            dispute_reason:  dispute.reason,
-            disputed_at:     new Date(dispute.created * 1000),
-            transfer_status: 'skipped',
-          },
-        });
-
-        logAudit(booking.parent_id, 'DISPUTE_OPENED', 'BOOKING', booking.id,
-          `Dispute ${dispute.id} opened · reason: ${dispute.reason} · charge: ${dispute.charge}`);
-
-        console.log(`[Webhook] Booking ${booking.id} frozen — is_disputed=true transfer_status=skipped`);
-        break;
-      }
-
-      // ── Account updated (expert onboarding / capability changes) ──────────
-      case 'account.updated': {
-        const account = event.data.object;
-        const cardPaymentsActive = account.capabilities?.card_payments === 'active';
-        console.log(`[Webhook] account.updated: ${account.id}, details_submitted=${account.details_submitted}, card_payments=${account.capabilities?.card_payments}`);
-
-        // Both details_submitted AND card_payments active are required for the
-        // expert to be usable as a destination charge MoR with on_behalf_of.
-        await prisma.expert.updateMany({
-          where: { stripe_account_id: account.id },
-          data:  { stripe_onboarding_complete: account.details_submitted === true && cardPaymentsActive },
-        });
-        break;
-      }
-
-      // ── Account application authorised ────────────────────────────────────
-      case 'account.application.authorized': {
-        console.log('[Webhook] account.application.authorized:', event.data.object);
-        break;
-      }
-
-      // ── Transfer created (platform payout to expert) ──────────────────────
-      case 'transfer.created': {
-        const transfer = event.data.object;
-        console.log(`[Webhook] transfer.created: ${transfer.id}, amount=${transfer.amount}, destination=${transfer.destination}`);
-        break;
-      }
-
-      default:
-        console.log(`[Webhook] Unhandled event type: ${event.type}`);
-    }
+    await processStripeEvent(event);
+    await prisma.stripeEvent.update({
+      where: { stripe_event_id: event.id },
+      data:  { processed: true },
+    });
   } catch (err) {
-    console.error(`[Webhook] Error processing ${event.type}:`, err);
-    // Still return 200 so Stripe does not re-deliver — the event is already
-    // recorded in the idempotency table and we log the error for investigation.
+    // Processing failed — event stays processed=false so the retry job can pick
+    // it up. Still return 200: Stripe must not redeliver (the dedup row exists).
+    console.error(`[Webhook] Error processing ${event.type} (${event.id}):`, err);
   }
 
   return res.json({ received: true });
 }
 
-module.exports = { createConnectLink, handleStripeReturn, handleWebhook };
+module.exports = { createConnectLink, handleStripeReturn, handleWebhook, processStripeEvent };
