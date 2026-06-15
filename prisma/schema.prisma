@@ -269,15 +269,17 @@ model LegalDocument {
 }
 
 model PrivacyPolicyAcceptance {
-  id                    Int       @id @default(autoincrement())
-  user_id               Int
-  version               String
-  accepted_at           DateTime  @default(now())
-  marketing_consent     Boolean   @default(false)
-  marketing_accepted_at DateTime?
-  tc_version            String?
-  tc_accepted_at        DateTime?
-  user                  User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+  id                       Int       @id @default(autoincrement())
+  user_id                  Int
+  version                  String
+  accepted_at              DateTime  @default(now())
+  marketing_consent        Boolean   @default(false)
+  marketing_accepted_at    DateTime?
+  marketing_consent_text   String?
+  marketing_withdrawn_at   DateTime?
+  tc_version               String?
+  tc_accepted_at           DateTime?
+  user                     User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
 }
 
 model TcAcceptance {
@@ -304,6 +306,7 @@ model StripeEvent {
   id              Int      @id @default(autoincrement())
   stripe_event_id String   @unique
   processed_at    DateTime @default(now())
+  processed       Boolean  @default(false)
 }
 
 model SavedExpert {

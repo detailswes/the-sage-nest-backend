@@ -54,6 +54,7 @@ const { startReminderJob }       = require('./jobs/sendReminders');
 const { startMarkCompletedJob }  = require('./jobs/markCompletedBookings');
 const { startWebflowSyncJob }    = require('./jobs/webflowSyncJob');
 const { startTokenCleanupJob }   = require('./jobs/cleanupExpiredTokens');
+const { startWebhookRetryJob }   = require('./jobs/retryFailedWebhooks');
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
@@ -67,4 +68,5 @@ app.listen(PORT, () => {
   startMarkCompletedJob();
   startWebflowSyncJob();
   startTokenCleanupJob();
+  startWebhookRetryJob();
 });

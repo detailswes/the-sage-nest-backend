@@ -31,4 +31,32 @@ const otpResendLimiter = rateLimit({
   message:         { error: 'Too many code requests. Please wait before requesting another.' },
 });
 
-module.exports = { registrationLimiter, passwordResetLimiter, otpResendLimiter };
+// ─── Login: 10 attempts per IP per 15 minutes ────────────────────────────────
+// Complements the per-account lockout (5 attempts). An attacker rotating across
+// many accounts can exhaust 4 attempts per account before being blocked here.
+const loginLimiter = rateLimit({
+  windowMs:        15 * 60 * 1000,
+  max:             10,
+  standardHeaders: true,
+  legacyHeaders:   false,
+  message:         { error: 'Too many login attempts from this address. Please try again in 15 minutes.' },
+});
+
+// ─── Password reset token submission: 5 per IP per 15 minutes ────────────────
+// Prevents token grinding — the token is 64-byte hex but rate-limiting adds
+// a low-cost defence-in-depth layer.
+const resetPasswordLimiter = rateLimit({
+  windowMs:        15 * 60 * 1000,
+  max:             5,
+  standardHeaders: true,
+  legacyHeaders:   false,
+  message:         { error: 'Too many password reset attempts. Please try again in 15 minutes.' },
+});
+
+module.exports = {
+  registrationLimiter,
+  passwordResetLimiter,
+  otpResendLimiter,
+  loginLimiter,
+  resetPasswordLimiter,
+};
