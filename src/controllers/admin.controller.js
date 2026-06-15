@@ -2812,6 +2812,24 @@ async function exportTransactionsCsv(req, res) {
 
 // ─── Language approval ────────────────────────────────────────────────────────
 
+const DRAFT_CONTENT_FIELDS = [
+  'bio', 'expertise', 'summary', 'position', 'session_format',
+  'address_street', 'address_city', 'address_postcode', 'timezone',
+  'instagram', 'facebook', 'linkedin',
+];
+
+async function cleanupStaleDraft(expertId, liveExpert) {
+  const draft = await prisma.expertProfileDraft.findUnique({ where: { expert_id: expertId } });
+  if (!draft || draft.status !== 'REJECTED') return;
+  const hasRealChange =
+    DRAFT_CONTENT_FIELDS.some((f) => draft[f] !== liveExpert[f]) ||
+    JSON.stringify([...(draft.languages || [])].sort()) !==
+    JSON.stringify([...(liveExpert.languages || [])].sort());
+  if (!hasRealChange) {
+    await prisma.expertProfileDraft.delete({ where: { expert_id: expertId } });
+  }
+}
+
 async function approveLanguage(req, res) {
   const { id } = req.params;
   const { language } = req.body;
@@ -2829,6 +2847,7 @@ async function approveLanguage(req, res) {
         pending_languages: expert.pending_languages.filter((l) => l !== language),
       },
     });
+    await cleanupStaleDraft(parseInt(id), expert);
     return res.json({ languages: updated.languages, pending_languages: updated.pending_languages });
   } catch (err) {
     console.error(err);
@@ -2847,6 +2866,7 @@ async function rejectLanguage(req, res) {
       where: { id: parseInt(id) },
       data: { pending_languages: expert.pending_languages.filter((l) => l !== language) },
     });
+    await cleanupStaleDraft(parseInt(id), expert);
     return res.json({ languages: updated.languages, pending_languages: updated.pending_languages });
   } catch (err) {
     console.error(err);
@@ -2971,17 +2991,19 @@ async function markTransferResolved(req, res) {
 // Each notification type is a simple query; add new types here as needed.
 async function getAdminNotifications(req, res) {
   try {
-    const pendingDrafts = await prisma.expertProfileDraft.findMany({
-      where: { status: "PENDING_REVIEW" },
-      include: {
-        expert: {
-          include: { user: { select: { name: true } } },
-        },
-      },
-      orderBy: { submitted_at: "desc" },
-    });
+    const [pendingDrafts, expertsWithPendingLanguages] = await Promise.all([
+      prisma.expertProfileDraft.findMany({
+        where: { status: "PENDING_REVIEW" },
+        include: { expert: { include: { user: { select: { name: true } } } } },
+        orderBy: { submitted_at: "desc" },
+      }),
+      prisma.expert.findMany({
+        where: { pending_languages: { isEmpty: false } },
+        include: { user: { select: { name: true } } },
+      }),
+    ]);
 
-    const notifications = pendingDrafts.map((draft) => ({
+    const draftNotifications = pendingDrafts.map((draft) => ({
       id:        `draft_${draft.expert_id}`,
       type:      "EXPERT_DRAFT_PENDING",
       title:     "Profile edit awaiting review",
@@ -2991,7 +3013,20 @@ async function getAdminNotifications(req, res) {
       createdAt: draft.submitted_at,
     }));
 
-    return res.json(notifications);
+    const languageNotifications = expertsWithPendingLanguages.map((expert) => {
+      const langKey = [...expert.pending_languages].sort().join(",");
+      return {
+        id:        `lang_${expert.id}_${langKey}`,
+        type:      "EXPERT_LANGUAGE_PENDING",
+        title:     "Custom language awaiting approval",
+        body:      `${expert.user.name} requested to add: ${expert.pending_languages.join(", ")}.`,
+        href:      `/dashboard/admin/experts/${expert.id}`,
+        expertId:  expert.id,
+        createdAt: null,
+      };
+    });
+
+    return res.json([...draftNotifications, ...languageNotifications]);
   } catch (err) {
     console.error("[getAdminNotifications]", err);
     return res.status(500).json({ error: "Server error" });
