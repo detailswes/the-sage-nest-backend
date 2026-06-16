@@ -151,7 +151,13 @@ async function updateMyProfile(req, res) {
   try {
     const current = await prisma.expert.findUnique({
       where:  { user_id: req.user.id },
-      select: { id: true, status: true },
+      select: {
+        id: true, status: true,
+        bio: true, expertise: true, summary: true, position: true,
+        session_format: true, address_street: true, address_city: true,
+        address_postcode: true, languages: true, timezone: true,
+        instagram: true, facebook: true, linkedin: true,
+      },
     });
     if (!current) return res.status(404).json({ error: 'Expert profile not found' });
 
@@ -168,32 +174,44 @@ async function updateMyProfile(req, res) {
         ...(address_street   !== undefined && { address_street:   address_street   || null }),
         ...(address_city     !== undefined && { address_city:     address_city     || null }),
         ...(address_postcode !== undefined && { address_postcode: address_postcode || null }),
-        ...(parsedLanguages        !== undefined && { languages:         parsedLanguages }),
-        ...(parsedPendingLanguages !== undefined && { pending_languages: parsedPendingLanguages }),
+        ...(parsedLanguages !== undefined && { languages: parsedLanguages }),
         ...(timezone  !== undefined && timezone !== null && timezone !== '' && { timezone }),
         ...(instagram !== undefined && { instagram: instagram || null }),
         ...(facebook  !== undefined && { facebook:  facebook  || null }),
         ...(linkedin  !== undefined && { linkedin:  linkedin  || null }),
       };
 
-      // Upsert the draft — replaces any existing rejected draft too
+      // Only upsert the draft if at least one profile-content field actually changed
+      const hasProfileChange = Object.keys(draftData).some((key) => {
+        const live = current[key];
+        const proposed = draftData[key];
+        if (Array.isArray(live) && Array.isArray(proposed)) {
+          return JSON.stringify([...live].sort()) !== JSON.stringify([...proposed].sort());
+        }
+        return live !== proposed;
+      });
+
+      // Apply operational/direct-approval fields straight to the live record (bypasses draft review)
+      const directUpdate = {
+        ...(buffer_minutes       !== undefined && { buffer_minutes:       parseInt(buffer_minutes, 10) }),
+        ...(advance_booking_days !== undefined && { advance_booking_days: parseInt(advance_booking_days, 10) }),
+        ...(min_notice_hours     !== undefined && { min_notice_hours:     parseInt(min_notice_hours,     10) }),
+        // Custom languages have their own per-language approve/reject flow, not the draft review
+        ...(parsedPendingLanguages !== undefined && { pending_languages: parsedPendingLanguages }),
+      };
+      if (Object.keys(directUpdate).length > 0) {
+        await prisma.expert.update({ where: { id: current.id }, data: directUpdate });
+      }
+
+      if (!hasProfileChange) {
+        return res.json({ draft: false });
+      }
+
       const draft = await prisma.expertProfileDraft.upsert({
         where:  { expert_id: current.id },
         create: { expert_id: current.id, ...draftData },
         update: { ...draftData, status: 'PENDING_REVIEW', submitted_at: new Date(), reviewed_at: null, rejection_note: null },
       });
-
-      // Apply scheduling settings directly to the live record (they are operational, not public-facing content)
-      if (buffer_minutes !== undefined || advance_booking_days !== undefined || min_notice_hours !== undefined) {
-        await prisma.expert.update({
-          where: { id: current.id },
-          data: {
-            ...(buffer_minutes       !== undefined && { buffer_minutes:       parseInt(buffer_minutes, 10) }),
-            ...(advance_booking_days !== undefined && { advance_booking_days: parseInt(advance_booking_days, 10) }),
-            ...(min_notice_hours     !== undefined && { min_notice_hours:     parseInt(min_notice_hours,     10) }),
-          },
-        });
-      }
 
       logExpertEvent(req.user.id, 'EXPERT_PROFILE_DRAFT_SUBMITTED', current.id);
       return res.json({ draft: true, profile_draft: draft });
