@@ -239,6 +239,71 @@ async function processStripeEvent(event) {
       break;
     }
 
+    // ── Refund status updated (succeeded / failed / pending / canceled) ───
+    // Handles the case where a refund transitions asynchronously — most
+    // critically when a bank rejects the refund and status becomes "failed".
+    // "succeeded" is belt-and-suspenders alongside charge.refunded.
+    case 'refund.updated': {
+      const refund = event.data.object;
+      console.log(`[Webhook] refund.updated — refund=${refund.id} status=${refund.status} pi=${refund.payment_intent}`);
+
+      if (!refund.payment_intent) break;
+
+      const booking = await prisma.booking.findFirst({
+        where: { stripe_payment_intent_id: refund.payment_intent },
+      });
+
+      if (!booking) {
+        console.warn(`[Webhook] refund.updated — no booking found for pi=${refund.payment_intent}`);
+        break;
+      }
+
+      if (refund.status === 'succeeded') {
+        // Only promote CANCELLED → REFUNDED; leave CONFIRMED (partial refund)
+        // and already-REFUNDED bookings untouched — charge.refunded may have
+        // already handled this transition.
+        const data = {
+          stripe_refund_id: refund.id,
+          refund_status:    'succeeded',
+          refund_amount:    refund.amount / 100,
+          refunded_at:      new Date(refund.created * 1000),
+        };
+        if (booking.status === 'CANCELLED') {
+          data.status = 'REFUNDED';
+        }
+        await prisma.booking.update({ where: { id: booking.id }, data });
+        console.log(`[Webhook] refund.updated succeeded — booking=${booking.id} refund=${refund.id}`);
+
+      } else if (refund.status === 'failed') {
+        // Bank/card network rejected the refund — flag for admin, do not
+        // change booking status (stays CANCELLED so admin can act).
+        await prisma.booking.update({
+          where: { id: booking.id },
+          data: {
+            refund_status:       'failed',
+            internal_admin_note: `Refund ${refund.id} failed — reason: ${refund.failure_reason || 'unknown'}. Manual refund required.`,
+          },
+        });
+        logAudit(
+          booking.parent_id,
+          'REFUND_FAILED',
+          'BOOKING',
+          booking.id,
+          `Stripe refund ${refund.id} failed — reason: ${refund.failure_reason || 'unknown'}. Manual intervention required.`
+        );
+        console.error(`[Webhook] refund.updated FAILED — booking=${booking.id} refund=${refund.id} reason=${refund.failure_reason}`);
+
+      } else {
+        // pending / canceled — keep refund_status in sync for admin visibility
+        await prisma.booking.update({
+          where: { id: booking.id },
+          data: { refund_status: refund.status },
+        });
+        console.log(`[Webhook] refund.updated ${refund.status} — booking=${booking.id} refund=${refund.id}`);
+      }
+      break;
+    }
+
     // ── Dispute opened: freeze payout and flag for admin ─────────────────
     case 'charge.dispute.created': {
       const dispute = event.data.object;
