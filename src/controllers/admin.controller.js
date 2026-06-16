@@ -54,8 +54,13 @@ async function listExperts(req, res) {
   const where = { ...baseWhere };
 
   if (isAdmin) {
-    if (status && VALID_STATUSES.includes(status)) {
+    if (status === "DELETED") {
+      where.user = { ...where.user, account_deleted: true };
+    } else if (status && VALID_STATUSES.includes(status)) {
       where.status = status;
+      if (status === "SUSPENDED") {
+        where.user = { ...where.user, account_deleted: false };
+      }
     }
   } else {
     // Public callers may only ever see approved experts
@@ -131,6 +136,7 @@ async function listExperts(req, res) {
         rejectedCount,
         suspendedCount,
         changesCount,
+        deletedCount,
       ] = await Promise.all([
         prisma.expert.count({ where }),
         prisma.expert.findMany({
@@ -143,10 +149,11 @@ async function listExperts(req, res) {
         prisma.expert.count({ where: { ...baseWhere, status: "PENDING" } }),
         prisma.expert.count({ where: { ...baseWhere, status: "APPROVED" } }),
         prisma.expert.count({ where: { ...baseWhere, status: "REJECTED" } }),
-        prisma.expert.count({ where: { ...baseWhere, status: "SUSPENDED" } }),
+        prisma.expert.count({ where: { user: { role: "EXPERT", account_deleted: false }, status: "SUSPENDED" } }),
         prisma.expert.count({
           where: { ...baseWhere, status: "CHANGES_REQUESTED" },
         }),
+        prisma.expert.count({ where: { user: { role: "EXPERT", account_deleted: true } } }),
       ]);
 
       data.forEach((e) => {
@@ -207,12 +214,14 @@ async function listExperts(req, res) {
             approvedCount +
             rejectedCount +
             suspendedCount +
-            changesCount,
+            changesCount +
+            deletedCount,
           PENDING: pendingCount,
           APPROVED: approvedCount,
           REJECTED: rejectedCount,
           SUSPENDED: suspendedCount,
           CHANGES_REQUESTED: changesCount,
+          DELETED: deletedCount,
         },
       });
     } else {
@@ -2162,7 +2171,14 @@ async function exportExperts(req, res) {
 
   const where = { user: { role: "EXPERT" } };
 
-  if (status && VALID_STATUSES.includes(status)) where.status = status;
+  if (status === "DELETED") {
+    where.user = { ...where.user, account_deleted: true };
+  } else if (status && VALID_STATUSES.includes(status)) {
+    where.status = status;
+    if (status === "SUSPENDED") {
+      where.user = { ...where.user, account_deleted: false };
+    }
+  }
   if (search?.trim()) {
     where.user = { ...where.user, name: { contains: search.trim(), mode: "insensitive" } };
   }
