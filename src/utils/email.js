@@ -34,21 +34,36 @@ const {
 
 const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
 
+// ─── Sender identities ────────────────────────────────────────────────────────
+// Transactional (confirmations, verification, OTP, refunds, reminders, etc.)
+const SENDER_NOTIFICATIONS = {
+  name:  'Sage Nest Notifications',
+  email: process.env.EMAIL_FROM_NOTIFICATIONS,
+};
+// Marketing / promotional campaigns only
+const SENDER_MARKETING = {
+  name:  'Sage Nest',
+  email: process.env.EMAIL_FROM_MARKETING,
+};
+
 // ─── Verify config (call once at server startup) ──────────────────────────────
 const verifyEmailConnection = async () => {
-  const missing = ['BREVO_API_KEY', 'EMAIL_FROM'].filter((k) => !process.env[k]);
+  const missing = ['BREVO_API_KEY', 'EMAIL_FROM_NOTIFICATIONS'].filter((k) => !process.env[k]);
   if (missing.length) {
     console.warn(`⚠️  Brevo not configured — missing env vars: ${missing.join(', ')}`);
     return;
   }
-  console.log(`✅ Brevo API configured — sending as ${process.env.EMAIL_FROM}`);
+  console.log(`✅ Brevo API configured — transactional: ${SENDER_NOTIFICATIONS.email}`);
+  if (process.env.EMAIL_FROM_MARKETING) {
+    console.log(`✅ Brevo API configured — marketing: ${SENDER_MARKETING.email}`);
+  }
 };
 
 // ─── Base sender ─────────────────────────────────────────────────────────────
 /**
- * @param {{ to: string, subject: string, html: string, text?: string }} options
+ * @param {{ to: string, subject: string, html: string, text?: string, sender?: { name: string, email: string } }} options
  */
-const sendEmail = async ({ to, subject, html, text }) => {
+const sendEmail = async ({ to, subject, html, text, sender = SENDER_NOTIFICATIONS }) => {
   if (!process.env.BREVO_API_KEY) {
     throw new Error('Brevo not configured — missing BREVO_API_KEY env var');
   }
@@ -61,7 +76,7 @@ const sendEmail = async ({ to, subject, html, text }) => {
       'api-key':      process.env.BREVO_API_KEY,
     },
     body: JSON.stringify({
-      sender:      { name: 'Sage Nest', email: process.env.EMAIL_FROM },
+      sender,
       to:          [{ email: to }],
       subject,
       textContent: text || subject,
@@ -74,6 +89,14 @@ const sendEmail = async ({ to, subject, html, text }) => {
     throw new Error(`Brevo API error ${res.status}: ${body}`);
   }
 };
+
+// ─── Marketing sender (campaigns only) ───────────────────────────────────────
+/**
+ * Use this for promotional / marketing emails only.
+ * Sender: "Sage Nest" <hello@sagenest.org>
+ * @param {{ to: string, subject: string, html: string, text?: string }} options
+ */
+const sendMarketingEmail = (options) => sendEmail({ ...options, sender: SENDER_MARKETING });
 
 
 // ─── HTML layout wrapper ──────────────────────────────────────────────────────
@@ -720,6 +743,7 @@ const sendExpertCancelledSessionEmail = ({
 // ─── Exports ──────────────────────────────────────────────────────────────────
 module.exports = {
   sendEmail,
+  sendMarketingEmail,
   verifyEmailConnection,
   sendWelcomeEmail,
   sendExpertApprovedEmail,
