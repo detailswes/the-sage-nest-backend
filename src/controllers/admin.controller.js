@@ -321,6 +321,14 @@ async function toggleApproval(req, res) {
       "EXPERT",
       parseInt(id)
     );
+    if (newStatus === "APPROVED") {
+      webflowService.syncExpert(parseInt(id))
+        .then(() => webflowService.syncExpertServices(parseInt(id)))
+        .catch(err => console.error("[Webflow] Sync after toggle-approve failed:", err.message));
+    } else {
+      webflowService.archiveExpert(parseInt(id))
+        .catch(err => console.error("[Webflow] Archive after toggle-reject failed:", err.message));
+    }
     return res.json({
       message: `Expert ${newStatus === "APPROVED" ? "approved" : "rejected"}`,
       expert: updated,
@@ -1048,9 +1056,12 @@ async function approveProfileDraft(req, res) {
     ]);
 
     await logAudit(req.user.id, "APPROVE_PROFILE_DRAFT", "Expert", parseInt(id));
-    webflowService.syncExpert(parseInt(id))
-      .then(() => webflowService.syncExpertServices(parseInt(id)))
-      .catch(err => console.error("[Webflow] Sync after draft approve failed:", err.message));
+    // Only sync to Webflow for APPROVED experts — drafts can exist on PENDING profiles
+    if (expert.status === "APPROVED") {
+      webflowService.syncExpert(parseInt(id))
+        .then(() => webflowService.syncExpertServices(parseInt(id)))
+        .catch(err => console.error("[Webflow] Sync after draft approve failed:", err.message));
+    }
     return res.json({ message: "Draft approved and published" });
   } catch (err) {
     console.error(err);
