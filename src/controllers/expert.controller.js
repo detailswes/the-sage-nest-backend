@@ -734,6 +734,47 @@ async function listExperts(_req, res) {
   }
 }
 
+// ─── Notification preferences ─────────────────────────────────────────────────
+
+async function getNotificationPreferences(req, res) {
+  try {
+    const expert = await prisma.expert.findUnique({
+      where:  { user_id: req.user.id },
+      select: { notify_new_booking: true, notify_cancellation: true },
+    });
+    if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
+    return res.json(expert);
+  } catch (err) {
+    console.error('[getNotificationPreferences]', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
+async function updateNotificationPreferences(req, res) {
+  try {
+    const { notify_new_booking, notify_cancellation } = req.body;
+
+    const data = {};
+    if (typeof notify_new_booking  === 'boolean') data.notify_new_booking  = notify_new_booking;
+    if (typeof notify_cancellation === 'boolean') data.notify_cancellation = notify_cancellation;
+
+    if (Object.keys(data).length === 0) {
+      return res.status(400).json({ error: 'No valid preference fields provided' });
+    }
+
+    const expert = await prisma.expert.update({
+      where:  { user_id: req.user.id },
+      data,
+      select: { notify_new_booking: true, notify_cancellation: true },
+    });
+
+    return res.json(expert);
+  } catch (err) {
+    console.error('[updateNotificationPreferences]', err);
+    return res.status(500).json({ error: 'Server error' });
+  }
+}
+
 module.exports = {
   listExperts,
   getMyProfile,
@@ -750,4 +791,6 @@ module.exports = {
   deleteInsurance,
   saveBusinessInfo,
   getMyProfileDraft,
+  getNotificationPreferences,
+  updateNotificationPreferences,
 };

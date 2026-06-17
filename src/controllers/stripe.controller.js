@@ -108,7 +108,7 @@ async function processStripeEvent(event) {
         where: { stripe_payment_intent_id: pi.id },
         include: {
           parent:  { select: { name: true, email: true, notify_booking_confirmation: true } },
-          expert:  { select: { address_street: true, address_city: true, address_postcode: true, timezone: true, user: { select: { name: true, email: true } } } },
+          expert:  { select: { address_street: true, address_city: true, address_postcode: true, timezone: true, notify_new_booking: true, user: { select: { name: true, email: true } } } },
           service: { select: { title: true } },
         },
       });
@@ -159,18 +159,20 @@ async function processStripeEvent(event) {
           }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));
         }
 
-        sendNewBookingNotificationEmail({
-          to:              booking.expert.user.email,
-          expertName:      booking.expert.user.name,
-          parentName:      booking.parent.name,
-          parentEmail:     booking.parent.email,
-          serviceTitle:    booking.service.title,
-          format:          booking.format,
-          scheduledAt:     booking.scheduled_at,
-          durationMinutes: booking.duration_minutes,
-          bookingId:       booking.id,
-          timezone:        booking.expert.timezone,
-        }).catch((e) => console.error('[Email] Expert notification email failed:', e.message));
+        if (booking.expert.notify_new_booking !== false) {
+          sendNewBookingNotificationEmail({
+            to:              booking.expert.user.email,
+            expertName:      booking.expert.user.name,
+            parentName:      booking.parent.name,
+            parentEmail:     booking.parent.email,
+            serviceTitle:    booking.service.title,
+            format:          booking.format,
+            scheduledAt:     booking.scheduled_at,
+            durationMinutes: booking.duration_minutes,
+            bookingId:       booking.id,
+            timezone:        booking.expert.timezone,
+          }).catch((e) => console.error('[Email] Expert notification email failed:', e.message));
+        }
       } else {
         console.log(`[Webhook] Booking ${booking.id} already has status=${booking.status} — skipping update`);
       }
