@@ -31,6 +31,12 @@ const {
 const {
   expertCancelledSessionEmailHtml,
 } = require("./email_templates/expertCancelledSessionEmail");
+const {
+  parentSuspendedEmailHtml,
+} = require("./email_templates/parentSuspendedEmail");
+const {
+  expertBookingCancelledSuspensionEmailHtml,
+} = require("./email_templates/expertBookingCancelledSuspensionEmail");
 
 const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
 
@@ -740,6 +746,44 @@ const sendExpertCancelledSessionEmail = ({
   });
 };
 
+// ─── Parent suspension emails ─────────────────────────────────────────────────
+
+const sendParentSuspendedEmail = ({ to, parentName, cancelledBookingCount }) =>
+  sendEmail({
+    to,
+    subject: 'Your Sage Nest account has been suspended',
+    text: `Hi ${parentName?.split(' ')[0] || 'there'}, your Sage Nest account has been suspended. ${cancelledBookingCount > 0 ? `${cancelledBookingCount} upcoming session${cancelledBookingCount !== 1 ? 's have' : ' has'} been cancelled and a full refund issued where applicable.` : ''} If you believe this is an error, contact us at hello@sagenest.org.`,
+    html: parentSuspendedEmailHtml({
+      parentName,
+      cancelledBookingCount,
+      clientUrl: process.env.CLIENT_URL,
+    }),
+  });
+
+const sendExpertBookingCancelledDueToSuspensionEmail = ({
+  to,
+  expertName,
+  serviceTitle,
+  scheduledAt,
+  bookingId,
+}) => {
+  const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
+    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  });
+  return sendEmail({
+    to,
+    subject: `Session cancelled — ${dateStr} (Booking #${bookingId})`,
+    text: `Hi ${expertName?.split(' ')[0] || 'there'}, an upcoming session (${serviceTitle}, ${dateStr}, booking #${bookingId}) has been cancelled because the parent's account is no longer active on the platform. No payout will be processed for this booking.`,
+    html: expertBookingCancelledSuspensionEmailHtml({
+      expertName,
+      serviceTitle,
+      scheduledAt,
+      bookingId,
+      clientUrl: process.env.CLIENT_URL,
+    }),
+  });
+};
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 module.exports = {
   sendEmail,
@@ -763,4 +807,6 @@ module.exports = {
   sendOtpEmail,
   sendPasswordChangedEmail,
   sendExpertCancelledSessionEmail,
+  sendParentSuspendedEmail,
+  sendExpertBookingCancelledDueToSuspensionEmail,
 };

@@ -23,6 +23,7 @@ model User {
   login_attempts              Int                       @default(0)
   phone                       String?
   parent_status               ParentStatus?
+  suspension_reason           String?
   otp_attempts                Int                       @default(0)
   otp_expires_at              DateTime?
   otp_hash                    String?
