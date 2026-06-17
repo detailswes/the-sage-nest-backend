@@ -793,7 +793,7 @@ async function verifyPayment(req, res) {
       where: { id: parseInt(id) },
       include: {
         parent:  { select: { id: true, name: true, email: true, notify_booking_confirmation: true } },
-        expert:  { select: { address_street: true, address_city: true, address_postcode: true, user: { select: { name: true, email: true } } } },
+        expert:  { select: { address_street: true, address_city: true, address_postcode: true, notify_new_booking: true, user: { select: { name: true, email: true } } } },
         service: { select: { title: true } },
       },
     });
@@ -851,17 +851,19 @@ async function verifyPayment(req, res) {
       }).catch((e) => console.error('[verifyPayment] Parent confirmation email failed:', e.message));
     }
 
-    sendNewBookingNotificationEmail({
-      to:              booking.expert.user.email,
-      expertName:      booking.expert.user.name,
-      parentName:      booking.parent.name,
-      parentEmail:     booking.parent.email,
-      serviceTitle:    booking.service.title,
-      format:          booking.format,
-      scheduledAt:     booking.scheduled_at,
-      durationMinutes: booking.duration_minutes,
-      bookingId:       booking.id,
-    }).catch((e) => console.error('[verifyPayment] Expert notification email failed:', e.message));
+    if (booking.expert.notify_new_booking !== false) {
+      sendNewBookingNotificationEmail({
+        to:              booking.expert.user.email,
+        expertName:      booking.expert.user.name,
+        parentName:      booking.parent.name,
+        parentEmail:     booking.parent.email,
+        serviceTitle:    booking.service.title,
+        format:          booking.format,
+        scheduledAt:     booking.scheduled_at,
+        durationMinutes: booking.duration_minutes,
+        bookingId:       booking.id,
+      }).catch((e) => console.error('[verifyPayment] Expert notification email failed:', e.message));
+    }
 
     return res.json({ status: 'CONFIRMED' });
   } catch (err) {

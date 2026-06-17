@@ -11,6 +11,8 @@ const {
   saveInsurance, deleteInsurance,
   saveBusinessInfo,
   getMyProfileDraft,
+  getNotificationPreferences,
+  updateNotificationPreferences,
 } = require('../controllers/expert.controller');
 
 // ── Own profile ───────────────────────────────────────────────────────────────
@@ -45,6 +47,10 @@ router.delete('/me/insurance', authenticate, deleteInsurance);
 
 // ── Business Information ───────────────────────────────────────────────────────
 router.put('/me/business-info', authenticate, saveBusinessInfo);
+
+// ── Notification preferences ──────────────────────────────────────────────────
+router.get('/me/notification-preferences', authenticate, getNotificationPreferences);
+router.put('/me/notification-preferences', authenticate, updateNotificationPreferences);
 
 // ── Public ────────────────────────────────────────────────────────────────────
 router.get('/',    listExperts);   // GET /experts        — list all approved experts
