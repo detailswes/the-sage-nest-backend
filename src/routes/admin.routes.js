@@ -37,6 +37,7 @@ const {
   listParentBookings,
   activateParent,
   suspendParent,
+  getParentSuspensionPreview,
   gdprDeleteParent,
   listTransactions,
   exportTransactionsCsv,
@@ -133,6 +134,7 @@ router.post('/parents/:id/resend-verification', resendParentVerification);
 router.post('/parents/:id/verify',              manuallyVerifyParent);
 
 // ── Parent status actions ─────────────────────────────────────────────────────
+router.get('/parents/:id/suspension-preview', getParentSuspensionPreview);
 router.post('/parents/:id/activate', activateParent);
 router.post('/parents/:id/suspend',  suspendParent);
 
