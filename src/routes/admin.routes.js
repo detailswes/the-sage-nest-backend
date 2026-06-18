@@ -40,7 +40,7 @@ const {
   getParentSuspensionPreview,
   gdprDeleteParent,
   listTransactions,
-  exportTransactionsCsv,
+  exportTransactionsXlsx,
   getRefundLog,
   retryTransfer,
   markTransferResolved,
@@ -150,7 +150,7 @@ router.post('/webflow/sync-all',         webflowSyncAll);
 
 // ── Transactions (Payment Overview) ──────────────────────────────────────────
 router.get('/transactions',        listTransactions);
-router.get('/transactions/export', exportTransactionsCsv);
+router.get('/transactions/export', exportTransactionsXlsx);
 router.get('/refund-log',          getRefundLog);
 
 module.exports = router;
