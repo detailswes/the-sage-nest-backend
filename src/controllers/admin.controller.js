@@ -411,7 +411,7 @@ async function reactivateExpert(req, res) {
     }
     const updated = await prisma.expert.update({
       where: { id: parseInt(id) },
-      data: { status: "APPROVED" },
+      data: { status: "APPROVED", is_published: true },
     });
     await logAudit(req.user.id, "REACTIVATE", "EXPERT", parseInt(id));
     webflowService.syncExpert(parseInt(id))
