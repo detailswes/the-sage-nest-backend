@@ -3040,7 +3040,7 @@ async function listTransactions(req, res) {
 
 // ─── Transaction CSV export ───────────────────────────────────────────────────
 
-async function exportTransactionsCsv(req, res) {
+async function exportTransactionsXlsx(req, res) {
   const { search, payment_status, from, to } = req.query;
 
   try {
@@ -3056,14 +3056,6 @@ async function exportTransactionsCsv(req, res) {
       },
     });
 
-    const esc = (v) => {
-      const s = v == null ? "" : String(v);
-      return s.includes(",") || s.includes('"') || s.includes("\n")
-        ? `"${s.replace(/"/g, '""')}"`
-        : s;
-    };
-    const line = (...cols) => cols.map(esc).join(",") + "\r\n";
-
     const paymentStatusLabel = (t) => {
       if (["CONFIRMED", "COMPLETED"].includes(t.status) && t.stripe_payment_intent_id) return "Succeeded";
       if (t.status === "REFUNDED")        return "Refunded";
@@ -3072,58 +3064,65 @@ async function exportTransactionsCsv(req, res) {
       return "Failed";
     };
 
-    let csv = line(
-      "Booking ID",
-      "Session Date",
-      "Parent Name",
-      "Parent Email",
-      "Specialist Name",
-      "Specialist Email",
-      "Service",
-      "Amount (£)",
-      "Platform Fee (£)",
-      "Specialist Payout (£)",
-      "Payment Status",
-      "Booking Status",
-      "Stripe Payment Intent ID",
-      "Transfer Status"
-    );
+    const workbook = new ExcelJS.Workbook();
+    workbook.creator = "Sage Nest";
+    const sheet = workbook.addWorksheet("Transactions");
+
+    sheet.columns = [
+      { header: "Booking ID",               key: "booking_id",     width: 14 },
+      { header: "Session Date",             key: "session_date",   width: 16 },
+      { header: "Parent Name",              key: "parent_name",    width: 24 },
+      { header: "Parent Email",             key: "parent_email",   width: 32 },
+      { header: "Specialist Name",          key: "expert_name",    width: 24 },
+      { header: "Specialist Email",         key: "expert_email",   width: 32 },
+      { header: "Service",                  key: "service",        width: 28 },
+      { header: "Amount (\u00a3)",           key: "amount",         width: 14 },
+      { header: "Platform Fee (\u00a3)",     key: "fee",            width: 16 },
+      { header: "Specialist Payout (\u00a3)",key: "payout",         width: 20 },
+      { header: "Payment Status",           key: "payment_status", width: 16 },
+      { header: "Booking Status",           key: "booking_status", width: 16 },
+      { header: "Stripe Payment Intent ID", key: "stripe_pi",      width: 36 },
+      { header: "Transfer Status",          key: "transfer_status",width: 16 },
+    ];
+
+    sheet.getRow(1).eachCell((cell) => {
+      cell.font      = { bold: true, color: { argb: "FFFFFFFF" } };
+      cell.fill      = { type: "pattern", pattern: "solid", fgColor: { argb: "FF445446" } };
+      cell.alignment = { vertical: "middle" };
+    });
 
     for (const t of transactions) {
-      const amount  = parseFloat(t.amount  || 0);
-      const fee     = parseFloat(t.platform_fee || 0);
-      const payout  = amount - fee;
-      csv += line(
-        t.id,
-        t.scheduled_at ? new Date(t.scheduled_at).toISOString().split("T")[0] : "",
-        t.parent?.name   || "",
-        t.parent?.email  || "",
-        t.expert?.user?.name  || "",
-        t.expert?.user?.email || "",
-        t.service?.title || "",
-        amount.toFixed(2),
-        fee.toFixed(2),
-        payout.toFixed(2),
-        paymentStatusLabel(t),
-        t.status,
-        t.stripe_payment_intent_id || "",
-        t.transfer_status || ""
-      );
+      const amount = parseFloat(t.amount       || 0);
+      const fee    = parseFloat(t.platform_fee || 0);
+      const payout = amount - fee;
+      sheet.addRow({
+        booking_id:     t.id,
+        session_date:   t.scheduled_at ? new Date(t.scheduled_at).toISOString().split("T")[0] : "",
+        parent_name:    t.parent?.name          || "",
+        parent_email:   t.parent?.email         || "",
+        expert_name:    t.expert?.user?.name    || "",
+        expert_email:   t.expert?.user?.email   || "",
+        service:        t.service?.title        || "",
+        amount:         amount.toFixed(2),
+        fee:            fee.toFixed(2),
+        payout:         payout.toFixed(2),
+        payment_status: paymentStatusLabel(t),
+        booking_status: t.status,
+        stripe_pi:      t.stripe_payment_intent_id || "",
+        transfer_status: t.transfer_status         || "",
+      });
     }
 
     const dateStamp = new Date().toISOString().split("T")[0];
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader(
-      "Content-Disposition",
-      `attachment; filename="transactions_${dateStamp}.csv"`
-    );
-    return res.send("\uFEFF" + csv);
+    res.setHeader("Content-Type", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+    res.setHeader("Content-Disposition", `attachment; filename="transactions_${dateStamp}.xlsx"`);
+    await workbook.xlsx.write(res);
+    res.end();
   } catch (err) {
-    console.error("[ADMIN] exportTransactionsCsv error:", err);
+    console.error("[ADMIN] exportTransactionsXlsx error:", err);
     return res.status(500).json({ error: "Server error" });
   }
 }
-
 // ─── Language approval ────────────────────────────────────────────────────────
 
 const DRAFT_CONTENT_FIELDS = [
@@ -3445,7 +3444,7 @@ module.exports = {
   getParentSuspensionPreview,
   gdprDeleteParent,
   listTransactions,
-  exportTransactionsCsv,
+  exportTransactionsXlsx,
   getRefundLog,
   retryTransfer,
   markTransferResolved,
