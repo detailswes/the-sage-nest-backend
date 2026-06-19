@@ -35,6 +35,7 @@ const cancellationNotificationEmailHtml = ({
   currency = 'EUR',
   timezone,
   clientUrl,
+  contactEmail,
 }) => {
   const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
     weekday: 'long',
@@ -159,13 +160,13 @@ const cancellationNotificationEmailHtml = ({
             We are sorry for the disruption to your schedule. You can view all your bookings and any updates in your Sage Nest expert dashboard.
           </p>
           <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">
-            If you have any questions, please do not hesitate to contact us at <a href="mailto:hello@sagenest.org" style="color:#445446;text-decoration:none;">hello@sagenest.org</a>.
+            If you have any questions, please do not hesitate to contact us at <a href="mailto:${contactEmail}" style="color:#445446;text-decoration:none;">${contactEmail}</a>.
           </p>
 
           <!-- Sign-off -->
           <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#445446;">The Sage Nest Team</p>
           <p style="margin:0;font-size:14px;color:#445446;">
-            <a href="mailto:hello@sagenest.org" style="color:#445446;text-decoration:none;">hello@sagenest.org</a>
+            <a href="mailto:${contactEmail}" style="color:#445446;text-decoration:none;">${contactEmail}</a>
           </p>
 
         </td></tr>
