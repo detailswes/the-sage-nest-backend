@@ -52,6 +52,9 @@ const SENDER_MARKETING = {
   email: process.env.EMAIL_FROM_MARKETING,
 };
 
+// Contact email shown inside transactional email bodies (mailto links / "contact us" text)
+const CONTACT_EMAIL = process.env.EMAIL_FROM_NOTIFICATIONS;
+
 // ─── Verify config (call once at server startup) ──────────────────────────────
 const verifyEmailConnection = async () => {
   const missing = ['BREVO_API_KEY', 'EMAIL_FROM_NOTIFICATIONS'].filter((k) => !process.env[k]);
@@ -309,6 +312,7 @@ const sendBookingConfirmationEmail = ({
       durationMinutes,
       location,
       clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
     }),
   });
 
@@ -353,6 +357,7 @@ const sendBookingCancellationNotification = ({
       currency,
       timezone,
       clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
     }),
   });
 };
@@ -394,6 +399,7 @@ const sendNewBookingNotificationEmail = ({
       bookingId,
       timezone,
       clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
     }),
   });
 
@@ -742,6 +748,7 @@ const sendExpertCancelledSessionEmail = ({
       amount,
       currency,
       clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
     }),
   });
 };
@@ -752,11 +759,12 @@ const sendParentSuspendedEmail = ({ to, parentName, cancelledBookingCount }) =>
   sendEmail({
     to,
     subject: 'Your Sage Nest account has been suspended',
-    text: `Hi ${parentName?.split(' ')[0] || 'there'}, your Sage Nest account has been suspended. ${cancelledBookingCount > 0 ? `${cancelledBookingCount} upcoming session${cancelledBookingCount !== 1 ? 's have' : ' has'} been cancelled and a full refund issued where applicable.` : ''} If you believe this is an error, contact us at hello@sagenest.org.`,
+    text: `Hi ${parentName?.split(' ')[0] || 'there'}, your Sage Nest account has been suspended. ${cancelledBookingCount > 0 ? `${cancelledBookingCount} upcoming session${cancelledBookingCount !== 1 ? 's have' : ' has'} been cancelled and a full refund issued where applicable.` : ''} If you believe this is an error, contact us at ${CONTACT_EMAIL}.`,
     html: parentSuspendedEmailHtml({
       parentName,
       cancelledBookingCount,
       clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
     }),
   });
 
@@ -780,6 +788,7 @@ const sendExpertBookingCancelledDueToSuspensionEmail = ({
       scheduledAt,
       bookingId,
       clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
     }),
   });
 };

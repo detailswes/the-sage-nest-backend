@@ -20,6 +20,7 @@ const expertCancelledSessionEmailHtml = ({
   amount,
   currency = 'EUR',
   clientUrl,
+  contactEmail,
 }) => {
   const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
     weekday: 'long',
@@ -129,7 +130,7 @@ const expertCancelledSessionEmailHtml = ({
           <!-- Sign-off -->
           <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#445446;">The Sage Nest Team</p>
           <p style="margin:0;font-size:14px;color:#445446;">
-            <a href="mailto:hello@sagenest.org" style="color:#445446;text-decoration:none;">hello@sagenest.org</a>
+            <a href="mailto:${contactEmail}" style="color:#445446;text-decoration:none;">${contactEmail}</a>
           </p>
 
         </td></tr>
