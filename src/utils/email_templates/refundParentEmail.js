@@ -58,12 +58,12 @@ const refundParentEmailHtml = ({
           <img src="${logoUrl}" alt="Sage Nest" width="60" style="display:block;width:60px;height:auto;border:0;" />
         </td></tr>
 
-        <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #E4E7E4;padding:40px 36px;">
+        <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #c5ceba;padding:40px 36px;">
 
-          <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">
+          <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#445446;">
             Your refund has been processed
           </h1>
-          <p style="margin:0 0 24px;font-size:15px;color:#4B5563;line-height:1.6;">
+          <p style="margin:0 0 24px;font-size:15px;color:#5e6d5b;line-height:1.6;">
             Hi ${parentName}, a refund has been issued for your booking with <strong>${expertName}</strong>.
             Funds will typically appear in your account within <strong>3–5 business days</strong>, depending on your bank.
           </p>
@@ -73,27 +73,27 @@ const refundParentEmailHtml = ({
             <table width="100%" cellpadding="0" cellspacing="0">
               <tr>
                 <td style="padding-bottom:12px;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Refund amount</span><br>
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Refund amount</span><br>
                   <span style="font-size:20px;font-weight:700;color:#065F46;">${amountStr}</span>
                   <span style="font-size:13px;color:#065F46;margin-left:6px;">${isPartial ? '(partial refund)' : '(full refund)'}</span>
                 </td>
               </tr>
               <tr>
                 <td style="padding-bottom:12px;border-top:1px solid #6EE7B7;padding-top:12px;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Booking</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">#${bookingId} — ${serviceTitle}</span>
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Booking</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">#${bookingId} — ${serviceTitle}</span>
                 </td>
               </tr>
               <tr>
                 <td style="padding-bottom:12px;border-top:1px solid #6EE7B7;padding-top:12px;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Specialist</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${expertName}</span>
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Specialist</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${expertName}</span>
                 </td>
               </tr>
               <tr>
                 <td style="border-top:1px solid #6EE7B7;padding-top:12px;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Session date &amp; time</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${dateStr} at ${timeStr} UTC</span>
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Session date &amp; time</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${dateStr} at ${timeStr} UTC</span>
                 </td>
               </tr>
             </table>
@@ -106,7 +106,7 @@ const refundParentEmailHtml = ({
             </p>
           </div>` : ''}
 
-          <p style="margin:0 0 28px;font-size:13px;color:#6B7280;line-height:1.6;">
+          <p style="margin:0 0 28px;font-size:13px;color:#5e6d5b;line-height:1.6;">
             If you have any questions about your refund, please don't hesitate to contact our support team.
           </p>
 
@@ -118,7 +118,7 @@ const refundParentEmailHtml = ({
         </td></tr>
 
         <tr><td align="center" style="padding-top:24px;">
-          <p style="margin:0;font-size:12px;color:#9CA3AF;">
+          <p style="margin:0;font-size:12px;color:#5e6d5b;">
             © ${new Date().getFullYear()} Sage Nest. All rights reserved.
           </p>
         </td></tr>

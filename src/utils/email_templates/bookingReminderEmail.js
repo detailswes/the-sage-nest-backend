@@ -87,7 +87,7 @@ const bookingReminderEmailHtml = ({
           <img src="${logoUrl}" alt="Sage Nest" width="60" style="display:block;width:60px;height:auto;border:0;" />
         </td></tr>
 
-        <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #E4E7E4;padding:40px 36px;">
+        <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #c5ceba;padding:40px 36px;">
 
           <!-- Reminder badge -->
           <div style="text-align:center;margin-bottom:20px;">
@@ -96,10 +96,10 @@ const bookingReminderEmailHtml = ({
             </span>
           </div>
 
-          <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;text-align:center;">
+          <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#445446;text-align:center;">
             ${headline}
           </h1>
-          <p style="margin:0 0 28px;font-size:15px;color:#4B5563;line-height:1.6;text-align:center;">
+          <p style="margin:0 0 28px;font-size:15px;color:#5e6d5b;line-height:1.6;text-align:center;">
             ${subtext}
           </p>
 
@@ -108,26 +108,26 @@ const bookingReminderEmailHtml = ({
             <table width="100%" cellpadding="0" cellspacing="0">
               <tr>
                 <td style="padding-bottom:12px;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Service</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${serviceTitle}</span>
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Service</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${serviceTitle}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding-bottom:12px;border-top:1px solid #E4E7E4;padding-top:12px;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Date &amp; Time</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${dateStr} at ${timeStr}</span>
+                <td style="padding-bottom:12px;border-top:1px solid #c5ceba;padding-top:12px;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Date &amp; Time</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${dateStr} at ${timeStr}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding-bottom:12px;border-top:1px solid #E4E7E4;padding-top:12px;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Duration</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${durationLabel}</span>
+                <td style="padding-bottom:12px;border-top:1px solid #c5ceba;padding-top:12px;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Duration</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${durationLabel}</span>
                 </td>
               </tr>
               <tr>
-                <td style="border-top:1px solid #E4E7E4;padding-top:12px;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Format</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${formatLabel}</span>
+                <td style="border-top:1px solid #c5ceba;padding-top:12px;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Format</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${formatLabel}</span>
                 </td>
               </tr>
             </table>
@@ -157,7 +157,7 @@ const bookingReminderEmailHtml = ({
         </td></tr>
 
         <tr><td align="center" style="padding-top:24px;">
-          <p style="margin:0;font-size:12px;color:#9CA3AF;">
+          <p style="margin:0;font-size:12px;color:#5e6d5b;">
             © ${new Date().getFullYear()} Sage Nest. All rights reserved. · Booking #${bookingId}
           </p>
         </td></tr>
