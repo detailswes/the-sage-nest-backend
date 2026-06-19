@@ -77,13 +77,13 @@ const cancellationNotificationEmailHtml = ({
         </td></tr>
 
         <!-- Card -->
-        <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #E4E7E4;padding:40px 36px;">
+        <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #c5ceba;padding:40px 36px;">
 
           <!-- Greeting -->
-          <p style="margin:0 0 4px;font-size:15px;color:#1F2933;line-height:1.6;">
+          <p style="margin:0 0 4px;font-size:15px;color:#445446;line-height:1.6;">
             Hi ${expertFirstName},
           </p>
-          <p style="margin:0 0 28px;font-size:15px;color:#4B5563;line-height:1.6;">
+          <p style="margin:0 0 28px;font-size:15px;color:#5e6d5b;line-height:1.6;">
             We are writing to let you know that <strong>${parentFirstName}</strong> has cancelled the following booking:
           </p>
 
@@ -93,42 +93,42 @@ const cancellationNotificationEmailHtml = ({
             <table width="100%" cellpadding="0" cellspacing="0">
               <tr>
                 <td style="padding-bottom:10px;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#6B7280;">Parent name</span>
+                  <span style="font-size:13px;color:#5e6d5b;">Parent name</span>
                 </td>
                 <td style="padding-bottom:10px;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${parentName}</span>
+                  <span style="font-size:13px;font-weight:600;color:#445446;">${parentName}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding:10px 0;border-top:1px solid #E4E7E4;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#6B7280;">Service</span>
+                <td style="padding:10px 0;border-top:1px solid #c5ceba;width:40%;vertical-align:top;">
+                  <span style="font-size:13px;color:#5e6d5b;">Service</span>
                 </td>
-                <td style="padding:10px 0;border-top:1px solid #E4E7E4;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${serviceTitle}</span>
-                </td>
-              </tr>
-              <tr>
-                <td style="padding:10px 0;border-top:1px solid #E4E7E4;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#6B7280;">Date</span>
-                </td>
-                <td style="padding:10px 0;border-top:1px solid #E4E7E4;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${dateStr}</span>
+                <td style="padding:10px 0;border-top:1px solid #c5ceba;vertical-align:top;">
+                  <span style="font-size:13px;font-weight:600;color:#445446;">${serviceTitle}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding:10px 0;border-top:1px solid #E4E7E4;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#6B7280;">Time</span>
+                <td style="padding:10px 0;border-top:1px solid #c5ceba;width:40%;vertical-align:top;">
+                  <span style="font-size:13px;color:#5e6d5b;">Date</span>
                 </td>
-                <td style="padding:10px 0;border-top:1px solid #E4E7E4;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${timeStr}</span>
+                <td style="padding:10px 0;border-top:1px solid #c5ceba;vertical-align:top;">
+                  <span style="font-size:13px;font-weight:600;color:#445446;">${dateStr}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding-top:10px;border-top:1px solid #E4E7E4;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#6B7280;">Format</span>
+                <td style="padding:10px 0;border-top:1px solid #c5ceba;width:40%;vertical-align:top;">
+                  <span style="font-size:13px;color:#5e6d5b;">Time</span>
                 </td>
-                <td style="padding-top:10px;border-top:1px solid #E4E7E4;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${format === 'ONLINE' ? 'Online' : 'In-Person'}</span>
+                <td style="padding:10px 0;border-top:1px solid #c5ceba;vertical-align:top;">
+                  <span style="font-size:13px;font-weight:600;color:#445446;">${timeStr}</span>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding-top:10px;border-top:1px solid #c5ceba;width:40%;vertical-align:top;">
+                  <span style="font-size:13px;color:#5e6d5b;">Format</span>
+                </td>
+                <td style="padding-top:10px;border-top:1px solid #c5ceba;vertical-align:top;">
+                  <span style="font-size:13px;font-weight:600;color:#445446;">${format === 'ONLINE' ? 'Online' : 'In-Person'}</span>
                 </td>
               </tr>
             </table>
@@ -139,10 +139,10 @@ const cancellationNotificationEmailHtml = ({
             <table width="100%" cellpadding="0" cellspacing="0">
               <tr>
                 <td style="width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#6B7280;">Reason</span>
+                  <span style="font-size:13px;color:#5e6d5b;">Reason</span>
                 </td>
                 <td style="vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${cancellationReason}</span>
+                  <span style="font-size:13px;font-weight:600;color:#445446;">${cancellationReason}</span>
                 </td>
               </tr>
             </table>
@@ -155,15 +155,15 @@ const cancellationNotificationEmailHtml = ({
           </div>
 
           <!-- Body -->
-          <p style="margin:0 0 12px;font-size:14px;color:#4B5563;line-height:1.6;">
+          <p style="margin:0 0 12px;font-size:14px;color:#5e6d5b;line-height:1.6;">
             We are sorry for the disruption to your schedule. You can view all your bookings and any updates in your Sage Nest expert dashboard.
           </p>
-          <p style="margin:0 0 28px;font-size:14px;color:#4B5563;line-height:1.6;">
+          <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">
             If you have any questions, please do not hesitate to contact us at <a href="mailto:hello@sagenest.org" style="color:#445446;text-decoration:none;">hello@sagenest.org</a>.
           </p>
 
           <!-- Sign-off -->
-          <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#1F2933;">The Sage Nest Team</p>
+          <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#445446;">The Sage Nest Team</p>
           <p style="margin:0;font-size:14px;color:#445446;">
             <a href="mailto:hello@sagenest.org" style="color:#445446;text-decoration:none;">hello@sagenest.org</a>
           </p>

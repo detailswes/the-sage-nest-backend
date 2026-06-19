@@ -51,12 +51,12 @@ const expertBookingCancelledSuspensionEmailHtml = ({
         </td></tr>
 
         <!-- Card -->
-        <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #E4E7E4;padding:40px 36px;">
+        <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #c5ceba;padding:40px 36px;">
 
-          <p style="margin:0 0 4px;font-size:15px;color:#1F2933;line-height:1.6;">
+          <p style="margin:0 0 4px;font-size:15px;color:#445446;line-height:1.6;">
             Hi ${expertFirstName},
           </p>
-          <p style="margin:0 0 28px;font-size:15px;color:#4B5563;line-height:1.6;">
+          <p style="margin:0 0 28px;font-size:15px;color:#5e6d5b;line-height:1.6;">
             We need to let you know that an upcoming session has been cancelled by Sage Nest. The parent's account is no longer active on the platform. You do not need to take any action.
           </p>
 
@@ -66,34 +66,34 @@ const expertBookingCancelledSuspensionEmailHtml = ({
             <table width="100%" cellpadding="0" cellspacing="0">
               <tr>
                 <td style="padding-bottom:10px;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#6B7280;">Service</span>
+                  <span style="font-size:13px;color:#5e6d5b;">Service</span>
                 </td>
                 <td style="padding-bottom:10px;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${serviceTitle}</span>
+                  <span style="font-size:13px;font-weight:600;color:#445446;">${serviceTitle}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding:10px 0;border-top:1px solid #E4E7E4;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#6B7280;">Date</span>
+                <td style="padding:10px 0;border-top:1px solid #c5ceba;width:40%;vertical-align:top;">
+                  <span style="font-size:13px;color:#5e6d5b;">Date</span>
                 </td>
-                <td style="padding:10px 0;border-top:1px solid #E4E7E4;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${dateStr}</span>
-                </td>
-              </tr>
-              <tr>
-                <td style="padding:10px 0;border-top:1px solid #E4E7E4;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#6B7280;">Time</span>
-                </td>
-                <td style="padding:10px 0;border-top:1px solid #E4E7E4;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#1F2933;">${timeStr} UTC</span>
+                <td style="padding:10px 0;border-top:1px solid #c5ceba;vertical-align:top;">
+                  <span style="font-size:13px;font-weight:600;color:#445446;">${dateStr}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding-top:10px;border-top:1px solid #E4E7E4;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#6B7280;">Booking ref</span>
+                <td style="padding:10px 0;border-top:1px solid #c5ceba;width:40%;vertical-align:top;">
+                  <span style="font-size:13px;color:#5e6d5b;">Time</span>
                 </td>
-                <td style="padding-top:10px;border-top:1px solid #E4E7E4;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#1F2933;">#${bookingId}</span>
+                <td style="padding:10px 0;border-top:1px solid #c5ceba;vertical-align:top;">
+                  <span style="font-size:13px;font-weight:600;color:#445446;">${timeStr} UTC</span>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding-top:10px;border-top:1px solid #c5ceba;width:40%;vertical-align:top;">
+                  <span style="font-size:13px;color:#5e6d5b;">Booking ref</span>
+                </td>
+                <td style="padding-top:10px;border-top:1px solid #c5ceba;vertical-align:top;">
+                  <span style="font-size:13px;font-weight:600;color:#445446;">#${bookingId}</span>
                 </td>
               </tr>
             </table>
@@ -107,12 +107,12 @@ const expertBookingCancelledSuspensionEmailHtml = ({
             </p>
           </div>
 
-          <p style="margin:0 0 28px;font-size:14px;color:#4B5563;line-height:1.6;">
+          <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">
             We apologise for the disruption to your schedule. If you have any questions, please reach out to us at any time.
           </p>
 
           <!-- Sign-off -->
-          <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#1F2933;">The Sage Nest Team</p>
+          <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#445446;">The Sage Nest Team</p>
           <p style="margin:0;font-size:14px;color:#445446;">
             <a href="mailto:hello@sagenest.org" style="color:#445446;text-decoration:none;">hello@sagenest.org</a>
           </p>
@@ -121,7 +121,7 @@ const expertBookingCancelledSuspensionEmailHtml = ({
 
         <!-- Footer -->
         <tr><td style="padding-top:24px;text-align:center;">
-          <p style="margin:0;font-size:12px;color:#9CA3AF;">
+          <p style="margin:0;font-size:12px;color:#5e6d5b;">
             © ${new Date().getFullYear()} Sage Nest. All rights reserved.
           </p>
         </td></tr>
