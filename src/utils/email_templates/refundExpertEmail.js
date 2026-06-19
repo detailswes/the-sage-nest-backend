@@ -55,12 +55,12 @@ const refundExpertEmailHtml = ({
           <img src="${logoUrl}" alt="Sage Nest" width="60" style="display:block;width:60px;height:auto;border:0;" />
         </td></tr>
 
-        <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #E4E7E4;padding:40px 36px;">
+        <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #c5ceba;padding:40px 36px;">
 
-          <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">
+          <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#445446;">
             Refund issued — booking #${bookingId}
           </h1>
-          <p style="margin:0 0 24px;font-size:15px;color:#4B5563;line-height:1.6;">
+          <p style="margin:0 0 24px;font-size:15px;color:#5e6d5b;line-height:1.6;">
             Hi ${expertName}, a ${isPartial ? 'partial' : 'full'} refund of <strong>${amountStr}</strong> has been issued
             to <strong>${parentName}</strong> for the booking below. This action was initiated by the Sage Nest admin team.
           </p>
@@ -70,25 +70,25 @@ const refundExpertEmailHtml = ({
             <table width="100%" cellpadding="0" cellspacing="0">
               <tr>
                 <td style="padding-bottom:12px;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Parent / Client</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${parentName}</span>
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Parent / Client</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${parentName}</span>
                 </td>
               </tr>
               <tr>
                 <td style="padding-bottom:12px;border-top:1px solid #FED7AA;padding-top:12px;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Service</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${serviceTitle}</span>
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Service</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${serviceTitle}</span>
                 </td>
               </tr>
               <tr>
                 <td style="padding-bottom:12px;border-top:1px solid #FED7AA;padding-top:12px;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Session date &amp; time</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${dateStr} at ${timeStr} UTC</span>
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Session date &amp; time</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${dateStr} at ${timeStr} UTC</span>
                 </td>
               </tr>
               <tr>
                 <td style="border-top:1px solid #FED7AA;padding-top:12px;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Amount refunded</span><br>
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Amount refunded</span><br>
                   <span style="font-size:15px;font-weight:600;color:#C2410C;">${amountStr} ${isPartial ? '(partial)' : '(full)'}</span>
                 </td>
               </tr>
@@ -96,14 +96,14 @@ const refundExpertEmailHtml = ({
           </div>
 
           <div style="background:#F5F7F5;border-radius:8px;padding:16px;margin-bottom:24px;">
-            <p style="margin:0;font-size:13px;color:#4B5563;line-height:1.5;">
+            <p style="margin:0;font-size:13px;color:#5e6d5b;line-height:1.5;">
               <strong>Payout note:</strong> ${isPartial
                 ? 'As a partial refund has been issued, the remaining balance for this booking will not be paid out automatically. Please contact support if you have questions.'
                 : 'As a full refund has been issued, the payout for this booking will not be processed.'}
             </p>
           </div>
 
-          <p style="margin:0 0 28px;font-size:13px;color:#6B7280;line-height:1.6;">
+          <p style="margin:0 0 28px;font-size:13px;color:#5e6d5b;line-height:1.6;">
             If you have any questions about this refund, please contact the Sage Nest support team.
           </p>
 
@@ -115,7 +115,7 @@ const refundExpertEmailHtml = ({
         </td></tr>
 
         <tr><td align="center" style="padding-top:24px;">
-          <p style="margin:0;font-size:12px;color:#9CA3AF;">
+          <p style="margin:0;font-size:12px;color:#5e6d5b;">
             © ${new Date().getFullYear()} Sage Nest. All rights reserved.
           </p>
         </td></tr>

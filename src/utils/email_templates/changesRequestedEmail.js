@@ -25,11 +25,11 @@ const changesRequestedEmailHtml = ({ name, note, dashboardUrl, clientUrl }) => `
 
           <!-- Card -->
           <tr>
-            <td style="background:#ffffff;border-radius:16px;border:1px solid #E4E7E4;padding:40px 36px;">
-              <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">
+            <td style="background:#ffffff;border-radius:16px;border:1px solid #c5ceba;padding:40px 36px;">
+              <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#445446;">
                 Profile update required
               </h1>
-              <p style="margin:0 0 20px;font-size:15px;color:#4B5563;line-height:1.6;">
+              <p style="margin:0 0 20px;font-size:15px;color:#5e6d5b;line-height:1.6;">
                 Hi ${name}, our team has reviewed your expert profile and has a few items that need to be corrected before it can be approved.
               </p>
 
@@ -41,7 +41,7 @@ const changesRequestedEmailHtml = ({ name, note, dashboardUrl, clientUrl }) => `
                 <p style="margin:0;font-size:14px;color:#78350F;line-height:1.6;white-space:pre-wrap;">${note}</p>
               </div>
 
-              <p style="margin:0 0 28px;font-size:14px;color:#6B7280;line-height:1.6;">
+              <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">
                 Please log in to your dashboard, make the necessary updates, and save your profile.
                 Once saved, your profile will automatically be resubmitted for review.
               </p>
@@ -55,7 +55,7 @@ const changesRequestedEmailHtml = ({ name, note, dashboardUrl, clientUrl }) => `
           <!-- Footer -->
           <tr>
             <td align="center" style="padding-top:24px;">
-              <p style="margin:0;font-size:12px;color:#9CA3AF;">
+              <p style="margin:0;font-size:12px;color:#5e6d5b;">
                 © ${new Date().getFullYear()} Sage Nest. All rights reserved.
               </p>
             </td>

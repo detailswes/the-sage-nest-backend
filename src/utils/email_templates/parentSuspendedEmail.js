@@ -13,7 +13,7 @@ const parentSuspendedEmailHtml = ({ parentName, cancelledBookingCount, clientUrl
   const logoUrl = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
 
   const bookingLine = cancelledBookingCount > 0
-    ? `<p style="margin:0 0 16px;font-size:15px;color:#4B5563;line-height:1.6;">
+    ? `<p style="margin:0 0 16px;font-size:15px;color:#5e6d5b;line-height:1.6;">
         Any upcoming confirmed session${cancelledBookingCount !== 1 ? 's have' : ' has'} been cancelled and a full refund issued where applicable. Refunds typically appear within 5–10 business days.
        </p>`
     : '';
@@ -37,7 +37,7 @@ const parentSuspendedEmailHtml = ({ parentName, cancelledBookingCount, clientUrl
         </td></tr>
 
         <!-- Card -->
-        <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #E4E7E4;padding:40px 36px;">
+        <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #c5ceba;padding:40px 36px;">
 
           <!-- Alert icon -->
           <div style="text-align:center;margin-bottom:24px;">
@@ -46,14 +46,14 @@ const parentSuspendedEmailHtml = ({ parentName, cancelledBookingCount, clientUrl
             </div>
           </div>
 
-          <h1 style="margin:0 0 16px;font-size:20px;font-weight:700;color:#1F2933;text-align:center;">
+          <h1 style="margin:0 0 16px;font-size:20px;font-weight:700;color:#445446;text-align:center;">
             Your account has been suspended
           </h1>
 
-          <p style="margin:0 0 16px;font-size:15px;color:#4B5563;line-height:1.6;">
+          <p style="margin:0 0 16px;font-size:15px;color:#5e6d5b;line-height:1.6;">
             Hi ${parentFirstName},
           </p>
-          <p style="margin:0 0 16px;font-size:15px;color:#4B5563;line-height:1.6;">
+          <p style="margin:0 0 16px;font-size:15px;color:#5e6d5b;line-height:1.6;">
             Your Sage Nest account has been suspended by our team. You will no longer be able to log in or make new bookings.
           </p>
 
@@ -61,8 +61,8 @@ const parentSuspendedEmailHtml = ({ parentName, cancelledBookingCount, clientUrl
 
           <!-- Contact box -->
           <div style="background:#F5F7F5;border-radius:12px;padding:20px 24px;margin-bottom:28px;">
-            <p style="margin:0 0 8px;font-size:13px;font-weight:700;color:#1F2933;">Need help?</p>
-            <p style="margin:0;font-size:13px;color:#4B5563;line-height:1.6;">
+            <p style="margin:0 0 8px;font-size:13px;font-weight:700;color:#445446;">Need help?</p>
+            <p style="margin:0;font-size:13px;color:#5e6d5b;line-height:1.6;">
               If you believe this is an error or would like to appeal, please contact us at
               <a href="mailto:hello@sagenest.org" style="color:#445446;text-decoration:none;font-weight:600;">hello@sagenest.org</a>
               and include your registered email address.
@@ -70,7 +70,7 @@ const parentSuspendedEmailHtml = ({ parentName, cancelledBookingCount, clientUrl
           </div>
 
           <!-- Sign-off -->
-          <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#1F2933;">The Sage Nest Team</p>
+          <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#445446;">The Sage Nest Team</p>
           <p style="margin:0;font-size:14px;color:#445446;">
             <a href="mailto:hello@sagenest.org" style="color:#445446;text-decoration:none;">hello@sagenest.org</a>
           </p>
@@ -79,7 +79,7 @@ const parentSuspendedEmailHtml = ({ parentName, cancelledBookingCount, clientUrl
 
         <!-- Footer -->
         <tr><td style="padding-top:24px;text-align:center;">
-          <p style="margin:0;font-size:12px;color:#9CA3AF;">
+          <p style="margin:0;font-size:12px;color:#5e6d5b;">
             © ${new Date().getFullYear()} Sage Nest. All rights reserved.
           </p>
         </td></tr>

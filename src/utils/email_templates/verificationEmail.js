@@ -33,7 +33,7 @@ const verificationEmailHtml = ({
 
           <!-- Card -->
           <tr>
-            <td style="background:#ffffff;border-radius:16px;border:1px solid #E4E7E4;padding:40px 36px;">
+            <td style="background:#ffffff;border-radius:16px;border:1px solid #c5ceba;padding:40px 36px;">
 
               <!-- Icon -->
               <div style="text-align:center;margin-bottom:28px;">
@@ -42,13 +42,13 @@ const verificationEmailHtml = ({
                 </div>
               </div>
 
-              <h1 style="margin:0 0 10px;font-size:22px;font-weight:700;color:#1F2933;text-align:center;">
+              <h1 style="margin:0 0 10px;font-size:22px;font-weight:700;color:#445446;text-align:center;">
                 ${headingOverride || 'Verify your email address'}
               </h1>
-              <p style="margin:0 0 8px;font-size:15px;color:#4B5563;line-height:1.6;text-align:center;">
+              <p style="margin:0 0 8px;font-size:15px;color:#5e6d5b;line-height:1.6;text-align:center;">
                 Hi ${name},
               </p>
-              <p style="margin:0 0 28px;font-size:14px;color:#6B7280;line-height:1.7;text-align:center;">
+              <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.7;text-align:center;">
                 ${bodyOverride || 'Thanks for signing up on Sage Nest!<br />Click the button below to verify your email and activate your account.'}
               </p>
 
@@ -63,10 +63,10 @@ const verificationEmailHtml = ({
               </div>
 
               <!-- Divider -->
-              <hr style="border:none;border-top:1px solid #E4E7E4;margin:0 0 20px;" />
+              <hr style="border:none;border-top:1px solid #c5ceba;margin:0 0 20px;" />
 
               <!-- Fallback link -->
-              <p style="margin:0 0 6px;font-size:12px;color:#9CA3AF;text-align:center;">
+              <p style="margin:0 0 6px;font-size:12px;color:#5e6d5b;text-align:center;">
                 If the button doesn't work, copy and paste this link into your browser:
               </p>
               <p style="margin:0;font-size:11px;color:#445446;word-break:break-all;text-align:center;">
@@ -79,10 +79,10 @@ const verificationEmailHtml = ({
           <!-- Footer -->
           <tr>
             <td align="center" style="padding-top:24px;">
-              <p style="margin:0 0 4px;font-size:12px;color:#9CA3AF;">
+              <p style="margin:0 0 4px;font-size:12px;color:#5e6d5b;">
                 If you didn't create a Sage Nest account, you can safely ignore this email.
               </p>
-              <p style="margin:0;font-size:12px;color:#9CA3AF;">
+              <p style="margin:0;font-size:12px;color:#5e6d5b;">
                 © ${new Date().getFullYear()} Sage Nest. All rights reserved.
               </p>
             </td>

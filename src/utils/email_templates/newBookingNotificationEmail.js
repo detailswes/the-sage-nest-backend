@@ -63,13 +63,13 @@ const newBookingNotificationEmailHtml = ({
         </td></tr>
 
         <!-- Card -->
-        <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #E4E7E4;padding:40px 36px;">
+        <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #c5ceba;padding:40px 36px;">
 
           <!-- Greeting -->
-          <p style="margin:0 0 4px;font-size:15px;color:#1F2933;line-height:1.6;">
+          <p style="margin:0 0 4px;font-size:15px;color:#445446;line-height:1.6;">
             Hi ${expertName.split(' ')[0]},
           </p>
-          <p style="margin:0 0 28px;font-size:15px;color:#4B5563;line-height:1.6;">
+          <p style="margin:0 0 28px;font-size:15px;color:#5e6d5b;line-height:1.6;">
             You have a new booking. Here are the details:
           </p>
 
@@ -79,44 +79,44 @@ const newBookingNotificationEmailHtml = ({
             <table width="100%" cellpadding="0" cellspacing="0">
               <tr>
                 <td style="padding-bottom:12px;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Parent name</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${parentName}</span>
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Parent name</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${parentName}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding:12px 0;border-top:1px solid #E4E7E4;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Parent email</span><br>
+                <td style="padding:12px 0;border-top:1px solid #c5ceba;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Parent email</span><br>
                   <a href="mailto:${parentEmail}" style="font-size:15px;font-weight:600;color:#445446;text-decoration:none;">${parentEmail}</a>
                 </td>
               </tr>
               <tr>
-                <td style="padding:12px 0;border-top:1px solid #E4E7E4;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Service</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${serviceTitle}</span>
+                <td style="padding:12px 0;border-top:1px solid #c5ceba;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Service</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${serviceTitle}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding:12px 0;border-top:1px solid #E4E7E4;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Date</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${dateStr}</span>
+                <td style="padding:12px 0;border-top:1px solid #c5ceba;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Date</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${dateStr}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding:12px 0;border-top:1px solid #E4E7E4;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Time</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${timeStr}</span>
+                <td style="padding:12px 0;border-top:1px solid #c5ceba;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Time</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${timeStr}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding:12px 0;border-top:1px solid #E4E7E4;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Duration</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${durationLabel}</span>
+                <td style="padding:12px 0;border-top:1px solid #c5ceba;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Duration</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${durationLabel}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding-top:12px;border-top:1px solid #E4E7E4;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#9CA3AF;letter-spacing:0.5px;">Format</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#1F2933;">${format === 'ONLINE' ? 'Online' : 'In-Person'}</span>
+                <td style="padding-top:12px;border-top:1px solid #c5ceba;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Format</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${format === 'ONLINE' ? 'Online' : 'In-Person'}</span>
                 </td>
               </tr>
             </table>
@@ -131,27 +131,27 @@ const newBookingNotificationEmailHtml = ({
 
           <!-- Cancellation policy -->
           <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">Cancellation Policy</p>
-          <p style="margin:0 0 12px;font-size:14px;color:#4B5563;line-height:1.6;">
+          <p style="margin:0 0 12px;font-size:14px;color:#5e6d5b;line-height:1.6;">
             For your reference, the following cancellation policy applies to this booking:
           </p>
           <ul style="margin:0 0 12px;padding-left:20px;">
-            <li style="font-size:14px;color:#4B5563;line-height:1.7;margin-bottom:4px;">Cancelled <strong>more than 24 hours</strong> before the session &rarr; Parent receives a full refund</li>
-            <li style="font-size:14px;color:#4B5563;line-height:1.7;margin-bottom:4px;">Cancelled <strong>between 12 and 24 hours</strong> before the session &rarr; Parent receives a 50% refund</li>
-            <li style="font-size:14px;color:#4B5563;line-height:1.7;">Cancelled <strong>less than 12 hours</strong> before the session or no-show &rarr; No refund issued</li>
+            <li style="font-size:14px;color:#5e6d5b;line-height:1.7;margin-bottom:4px;">Cancelled <strong>more than 24 hours</strong> before the session &rarr; Parent receives a full refund</li>
+            <li style="font-size:14px;color:#5e6d5b;line-height:1.7;margin-bottom:4px;">Cancelled <strong>between 12 and 24 hours</strong> before the session &rarr; Parent receives a 50% refund</li>
+            <li style="font-size:14px;color:#5e6d5b;line-height:1.7;">Cancelled <strong>less than 12 hours</strong> before the session or no-show &rarr; No refund issued</li>
           </ul>
-          <p style="margin:0 0 28px;font-size:14px;color:#4B5563;line-height:1.6;">
+          <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">
             If you need to cancel for any reason, please do so as early as possible. In the event of expert cancellation, the parent will always receive a full refund regardless of timing.
           </p>
 
           <!-- Your dashboard -->
           <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">Your Dashboard</p>
-          <p style="margin:0 0 28px;font-size:14px;color:#4B5563;line-height:1.6;">
+          <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">
             You can view and manage all your bookings at any time in your Sage Nest expert dashboard.
           </p>
 
           <!-- Sign-off -->
-          <p style="margin:0 0 4px;font-size:14px;color:#4B5563;line-height:1.6;">We hope it is a great session.</p>
-          <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#1F2933;">The Sage Nest Team</p>
+          <p style="margin:0 0 4px;font-size:14px;color:#5e6d5b;line-height:1.6;">We hope it is a great session.</p>
+          <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#445446;">The Sage Nest Team</p>
           <p style="margin:0;font-size:14px;color:#445446;">
             <a href="mailto:hello@sagenest.org" style="color:#445446;text-decoration:none;">hello@sagenest.org</a>
           </p>
