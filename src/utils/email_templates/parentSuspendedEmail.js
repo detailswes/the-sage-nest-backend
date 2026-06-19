@@ -8,7 +8,7 @@
  *   clientUrl: string
  * }} params
  */
-const parentSuspendedEmailHtml = ({ parentName, cancelledBookingCount, clientUrl }) => {
+const parentSuspendedEmailHtml = ({ parentName, cancelledBookingCount, clientUrl, contactEmail }) => {
   const parentFirstName = parentName?.split(' ')[0] || 'there';
   const logoUrl = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
 
@@ -64,7 +64,7 @@ const parentSuspendedEmailHtml = ({ parentName, cancelledBookingCount, clientUrl
             <p style="margin:0 0 8px;font-size:13px;font-weight:700;color:#445446;">Need help?</p>
             <p style="margin:0;font-size:13px;color:#5e6d5b;line-height:1.6;">
               If you believe this is an error or would like to appeal, please contact us at
-              <a href="mailto:hello@sagenest.org" style="color:#445446;text-decoration:none;font-weight:600;">hello@sagenest.org</a>
+              <a href="mailto:${contactEmail}" style="color:#445446;text-decoration:none;font-weight:600;">${contactEmail}</a>
               and include your registered email address.
             </p>
           </div>
@@ -72,7 +72,7 @@ const parentSuspendedEmailHtml = ({ parentName, cancelledBookingCount, clientUrl
           <!-- Sign-off -->
           <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#445446;">The Sage Nest Team</p>
           <p style="margin:0;font-size:14px;color:#445446;">
-            <a href="mailto:hello@sagenest.org" style="color:#445446;text-decoration:none;">hello@sagenest.org</a>
+            <a href="mailto:${contactEmail}" style="color:#445446;text-decoration:none;">${contactEmail}</a>
           </p>
 
         </td></tr>
