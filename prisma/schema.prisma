@@ -16,6 +16,7 @@ model User {
   is_verified                 Boolean                   @default(true)
   verification_code           String?
   verification_expires_at     DateTime?
+  pending_email               String?
   reset_token                 String?
   reset_token_expires_at      DateTime?
   account_deleted             Boolean                   @default(false)
