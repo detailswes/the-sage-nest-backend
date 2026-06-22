@@ -4,6 +4,7 @@ const { logAudit } = require('../utils/auditLog');
 const {
   sendBookingConfirmationEmail,
   sendNewBookingNotificationEmail,
+  sendAdminPayoutAlert,
 } = require('../utils/email');
 
 // ─── Step 1 & 2: Expert clicks connect — create Stripe onboarding link ────────
@@ -337,6 +338,52 @@ async function processStripeEvent(event) {
       break;
     }
 
+    // ── Payout failed on expert's connected account ───────────────────────
+    // Stripe delivers this on the connected account (event.account is set).
+    // We find the expert, write an audit note and email the ops team immediately.
+    case 'payout.failed': {
+      const payout = event.data.object;
+      const stripeAccountId = event.account; // connected account that owns the payout
+      console.error(`[Webhook] payout.failed — payout=${payout.id} account=${stripeAccountId} reason=${payout.failure_message}`);
+
+      // Find the expert so we can name them in the alert
+      const expert = stripeAccountId
+        ? await prisma.expert.findFirst({
+            where: { stripe_account_id: stripeAccountId },
+            include: { user: { select: { name: true, email: true } } },
+          })
+        : null;
+
+      // Find any booking linked to this payout so admin can act on it
+      const affectedBooking = await prisma.booking.findFirst({
+        where: { stripe_payout_id: payout.id },
+      });
+
+      if (affectedBooking) {
+        await prisma.booking.update({
+          where: { id: affectedBooking.id },
+          data: {
+            transfer_status:     'failed',
+            internal_admin_note: `Payout ${payout.id} failed — ${payout.failure_message || 'unknown reason'}. Manual intervention required.`,
+          },
+        });
+        logAudit(
+          null, 'PAYOUT_FAILED', 'BOOKING', affectedBooking.id,
+          `Stripe payout ${payout.id} failed on account ${stripeAccountId} — ${payout.failure_message || 'unknown'}`
+        );
+      }
+
+      sendAdminPayoutAlert({
+        subject: `Payout failed — ${expert?.user?.name || stripeAccountId}`,
+        body: `A bank payout from expert ${expert?.user?.name || '(unknown)'} has failed. Stripe will automatically retry, but if the account balance is negative you will need to intervene manually.${payout.failure_message ? ` Failure reason: "${payout.failure_message}".` : ''}`,
+        stripeAccountId,
+        expertName: expert?.user?.name,
+        bookingId:  affectedBooking?.id,
+      }).catch((e) => console.error('[Email] Admin payout alert failed:', e.message));
+
+      break;
+    }
+
     // ── Account updated (expert onboarding / capability changes) ──────────
     case 'account.updated': {
       const account = event.data.object;
@@ -347,6 +394,23 @@ async function processStripeEvent(event) {
         where: { stripe_account_id: account.id },
         data:  { stripe_onboarding_complete: account.details_submitted === true && cardPaymentsActive },
       });
+
+      // Alert admin if the account has been disabled or has past-due requirements
+      // that could block future payouts (e.g. after a chargeback that goes unresolved).
+      const disabledReason = account.requirements?.disabled_reason;
+      const pastDue = account.requirements?.past_due ?? [];
+      if (disabledReason || pastDue.length > 0) {
+        const expert = await prisma.expert.findFirst({
+          where:   { stripe_account_id: account.id },
+          include: { user: { select: { name: true } } },
+        });
+        sendAdminPayoutAlert({
+          subject:        `Connected account restricted — ${expert?.user?.name || account.id}`,
+          body:           `Expert Stripe account ${account.id} has been restricted by Stripe.${disabledReason ? ` Disabled reason: "${disabledReason}".` : ''} ${pastDue.length > 0 ? `Past-due requirements: ${pastDue.join(', ')}.` : ''} Payouts will be blocked until resolved.`,
+          stripeAccountId: account.id,
+          expertName:      expert?.user?.name,
+        }).catch((e) => console.error('[Email] Admin account restriction alert failed:', e.message));
+      }
       break;
     }
 

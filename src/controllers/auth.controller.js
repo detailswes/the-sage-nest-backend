@@ -251,6 +251,43 @@ async function verifyEmail(req, res) {
       return res.status(404).json({ error: "User not found" });
     }
 
+    // ── Email-change verification path ─────────────────────────────────────────
+    // When a user has requested an email change we store the new address in
+    // pending_email and leave their current email + is_verified untouched.
+    // We handle this before the is_verified early-return below.
+    if (user.pending_email) {
+      if (
+        user.verification_expires_at &&
+        new Date() > user.verification_expires_at
+      ) {
+        return res.status(410).json({
+          error: "Verification link has expired. Please request a new email change.",
+          expired: true,
+        });
+      }
+
+      if (user.verification_code !== hashToken(verificationCode)) {
+        return res.status(400).json({ error: "Invalid verification link." });
+      }
+
+      // Swap pending_email → email and invalidate all sessions so the user
+      // must re-login with the new address.
+      await prisma.user.update({
+        where: { id: user.id },
+        data: {
+          email:                   user.pending_email,
+          pending_email:           null,
+          verification_code:       null,
+          verification_expires_at: null,
+        },
+      });
+
+      await prisma.refreshToken.deleteMany({ where: { user_id: user.id } });
+
+      return res.json({ email_changed: true });
+    }
+
+    // ── First-time registration verification path ──────────────────────────────
     if (user.is_verified) {
       return res.json({ already_verified: true });
     }
@@ -325,11 +362,15 @@ async function login(req, res) {
       return res.status(401).json({ error: INVALID_CREDENTIALS_ERROR });
     }
 
-    // OAuth-only accounts have no password
+    // OAuth-only accounts have no password. Run the dummy hash so response
+    // timing is indistinguishable from a wrong-password attempt, then return
+    // the same generic error — avoids a pre-auth social-login oracle.
     if (!user.password_hash) {
-      return res.status(401).json({
-        error: "This account uses social login. Please sign in with Google or Apple.",
-      });
+      await argon2.verify(
+        '$argon2id$v=19$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        password,
+      ).catch(() => {});
+      return res.status(401).json({ error: INVALID_CREDENTIALS_ERROR });
     }
 
     // Account lockout check
@@ -382,7 +423,7 @@ async function login(req, res) {
       return res.status(403).json({
         error: "Please verify your email address before logging in.",
         email_not_verified: true,
-        email: user.email,
+        // email intentionally omitted — client already has it from form.email
       });
     }
 
@@ -720,7 +761,7 @@ async function getProfile(req, res) {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
-      select: { id: true, name: true, email: true, phone: true, city: true, timezone: true, is_verified: true, role: true },
+      select: { id: true, name: true, email: true, pending_email: true, phone: true, city: true, timezone: true, is_verified: true, role: true },
     });
     if (!user) return res.status(404).json({ error: "User not found" });
     return res.json(user);
@@ -803,21 +844,25 @@ async function updateEmail(req, res) {
     const existing = await prisma.user.findUnique({ where: { email } });
     if (existing) return res.status(409).json({ error: "Email already in use" });
 
+    // Check the pending address isn't already taken by another account
+    const existingPending = await prisma.user.findFirst({ where: { pending_email: email } });
+    if (existingPending && existingPending.id !== req.user.id) {
+      return res.status(409).json({ error: "Email already in use" });
+    }
+
     const verificationCode = crypto.randomBytes(32).toString("hex");
     const verificationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
+    // Store the new address as pending — the live email stays unchanged until verified.
+    // This prevents lockout if the user mistyped the new address.
     await prisma.user.update({
       where: { id: req.user.id },
       data: {
-        email,
-        is_verified: false,
+        pending_email: email,
         verification_code: hashToken(verificationCode),
         verification_expires_at: verificationExpiresAt,
       },
     });
-
-    // Invalidate all sessions — user must re-login after verifying new email
-    await prisma.refreshToken.deleteMany({ where: { user_id: req.user.id } });
 
     sendEmailChangeVerification({
       to: email,

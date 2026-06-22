@@ -793,6 +793,35 @@ const sendExpertBookingCancelledDueToSuspensionEmail = ({
   });
 };
 
+// ─── Internal ops alert — payout / balance issues ────────────────────────────
+// Sent to ADMIN_ALERT_EMAIL (or falls back to EMAIL_FROM_NOTIFICATIONS) whenever
+// an expert's connected account has a payout failure or negative balance.
+const sendAdminPayoutAlert = ({ subject, body, stripeAccountId, expertName, bookingId }) => {
+  const adminTo = process.env.ADMIN_ALERT_EMAIL || process.env.EMAIL_FROM_NOTIFICATIONS;
+  if (!adminTo) {
+    console.error('[Email] sendAdminPayoutAlert: no recipient configured (set ADMIN_ALERT_EMAIL)');
+    return Promise.resolve();
+  }
+  const rows = [
+    expertName    && `<tr><td style="padding:4px 0;color:#6B7280;font-size:13px;">Expert</td><td style="padding:4px 0 4px 16px;font-size:13px;color:#1F2933;font-weight:600;">${expertName}</td></tr>`,
+    stripeAccountId && `<tr><td style="padding:4px 0;color:#6B7280;font-size:13px;">Stripe account</td><td style="padding:4px 0 4px 16px;font-size:13px;color:#1F2933;font-family:monospace;">${stripeAccountId}</td></tr>`,
+    bookingId     && `<tr><td style="padding:4px 0;color:#6B7280;font-size:13px;">Booking #</td><td style="padding:4px 0 4px 16px;font-size:13px;color:#1F2933;">${bookingId}</td></tr>`,
+  ].filter(Boolean).join('');
+
+  return sendEmail({
+    to: adminTo,
+    subject: `[Sage Nest Ops] ${subject}`,
+    text: `${subject}\n\n${body}${stripeAccountId ? `\n\nStripe account: ${stripeAccountId}` : ''}${bookingId ? `\nBooking: #${bookingId}` : ''}`,
+    html: layout(`
+      <p style="margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#EF4444;">Operator Alert</p>
+      <h1 style="margin:0 0 16px;font-size:20px;font-weight:700;color:#1F2933;">${subject}</h1>
+      <p style="margin:0 0 20px;font-size:14px;color:#4B5563;line-height:1.6;">${body}</p>
+      ${rows ? `<table style="border-collapse:collapse;width:100%;margin-bottom:24px;">${rows}</table>` : ''}
+      <p style="margin:0;font-size:12px;color:#9CA3AF;">This is an automated alert from the Sage Nest platform. Please review the Stripe dashboard and take action.</p>
+    `),
+  });
+};
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 module.exports = {
   sendEmail,
@@ -818,4 +847,5 @@ module.exports = {
   sendExpertCancelledSessionEmail,
   sendParentSuspendedEmail,
   sendExpertBookingCancelledDueToSuspensionEmail,
+  sendAdminPayoutAlert,
 };

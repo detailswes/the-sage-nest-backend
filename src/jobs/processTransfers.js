@@ -1,6 +1,7 @@
 const cron = require('node-cron');
 const stripe = require('stripe')(process.env.STRIPE_SECRET_KEY);
 const prisma = require('../prisma/client');
+const { sendAdminPayoutAlert } = require('../utils/email');
 
 // After this many consecutive Stripe failures the transfer is marked 'failed'
 // and removed from the cron queue so it does not retry forever.
@@ -137,6 +138,12 @@ async function runTransfers() {
           `[Transfers] Booking ${booking.id} — max attempts reached, marked FAILED. ` +
           `Manual intervention required.`
         );
+        sendAdminPayoutAlert({
+          subject:        `Transfer failed after ${MAX_ATTEMPTS} attempts — Booking #${booking.id}`,
+          body:           `The automated payout for booking #${booking.id} failed ${MAX_ATTEMPTS} times and has been marked as permanently failed. Last Stripe error: "${stripeErr.message}". Please check the expert's connected account balance and issue the payout manually from the Stripe dashboard.`,
+          stripeAccountId: expertStripeId,
+          bookingId:       booking.id,
+        }).catch((e) => console.error('[Email] Admin transfer-failed alert failed:', e.message));
       }
     }
   }
