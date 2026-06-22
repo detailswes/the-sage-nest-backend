@@ -325,11 +325,15 @@ async function login(req, res) {
       return res.status(401).json({ error: INVALID_CREDENTIALS_ERROR });
     }
 
-    // OAuth-only accounts have no password
+    // OAuth-only accounts have no password. Run the dummy hash so response
+    // timing is indistinguishable from a wrong-password attempt, then return
+    // the same generic error — avoids a pre-auth social-login oracle.
     if (!user.password_hash) {
-      return res.status(401).json({
-        error: "This account uses social login. Please sign in with Google or Apple.",
-      });
+      await argon2.verify(
+        '$argon2id$v=19$m=65536,t=3,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        password,
+      ).catch(() => {});
+      return res.status(401).json({ error: INVALID_CREDENTIALS_ERROR });
     }
 
     // Account lockout check
@@ -382,7 +386,7 @@ async function login(req, res) {
       return res.status(403).json({
         error: "Please verify your email address before logging in.",
         email_not_verified: true,
-        email: user.email,
+        // email intentionally omitted — client already has it from form.email
       });
     }
 

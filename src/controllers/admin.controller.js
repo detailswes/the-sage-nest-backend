@@ -1227,7 +1227,25 @@ async function manualRefund(req, res) {
         return res.status(400).json({ error: "This charge is under dispute and cannot be refunded." });
       }
       if (code === "insufficient_funds") {
-        return res.status(400).json({ error: "Refund failed: insufficient funds in Stripe balance." });
+        // Expert's connected account has no funds — retry without reversing the
+        // transfer so the platform absorbs the refund cost (same fallback used by
+        // the booking cancellation path).
+        try {
+          stripeRefund = await stripe.refunds.create({
+            charge: chargeId,
+            ...(isPartial ? { amount: Math.round(refundAmountValue * 100) } : {}),
+            refund_application_fee: true,
+          });
+          // Flag for audit so admin knows the platform absorbed this cost.
+          const { sendAdminPayoutAlert } = require('../utils/email');
+          sendAdminPayoutAlert({
+            subject: `Admin refund platform-funded — Booking #${id}`,
+            body:    `A manual refund of £${refundAmountValue.toFixed(2)} for booking #${id} could not reverse the expert's transfer (insufficient funds). The platform has absorbed the cost. Please reconcile the expert's Stripe balance.`,
+            bookingId: parseInt(id),
+          }).catch((e) => console.error('[Email] Admin payout alert failed:', e.message));
+        } catch (retryErr) {
+          return res.status(400).json({ error: retryErr.message || "Stripe refund failed." });
+        }
       }
       // Pre-Connect / legacy charges have no transfer and no application fee.
       // Fall back to a bare refund so the customer still gets their money back.
