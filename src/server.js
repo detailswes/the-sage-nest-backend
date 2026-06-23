@@ -9,7 +9,10 @@ require('dotenv').config({
 
 const app = express();
 
-app.set('trust proxy', 1); // trust first hop (Render's reverse proxy) for correct IP detection
+// Deployment chain: Client → Cloudflare → Render → Express (2 hops).
+// Trusting both lets req.ip resolve to the real client address via X-Forwarded-For.
+// The rate limiters additionally read CF-Connecting-IP directly for reliability.
+app.set('trust proxy', 2);
 
 app.use(cors({
   origin: process.env.CLIENT_URL,

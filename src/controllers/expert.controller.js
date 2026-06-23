@@ -1,6 +1,7 @@
 const prisma = require('../prisma/client');
 const { encryptIban, decryptIban } = require('../utils/encryption');
 const { uploadFile, deleteFile } = require('../utils/storage');
+const { syncExpert } = require('../services/webflow.service');
 
 const VALID_SESSION_FORMATS = ['ONLINE', 'IN_PERSON', 'BOTH'];
 
@@ -248,6 +249,17 @@ async function updateMyProfile(req, res) {
         ...(min_notice_hours     !== undefined && { min_notice_hours:     parseInt(min_notice_hours,     10) }),
       },
     });
+
+    // When profile session_format is locked to ONLINE or IN_PERSON, cascade to
+    // all services so they stay in sync. BOTH means the expert controls each
+    // service individually, so we leave those untouched.
+    if (session_format === 'ONLINE' || session_format === 'IN_PERSON') {
+      await prisma.service.updateMany({
+        where: { expert_id: current.id },
+        data:  { format: session_format },
+      });
+    }
+
     logExpertEvent(
       req.user.id,
       isResubmission ? 'EXPERT_PROFILE_RESUBMITTED' : 'EXPERT_PROFILE_SAVED',
@@ -319,6 +331,14 @@ async function uploadProfileImage(req, res) {
 
     // DB update succeeded — safe to delete old image now
     await deleteFile(oldImageUrl);
+
+    // Push the new image to Webflow immediately for approved, published experts.
+    // Fire-and-forget so the API response is not delayed by the Webflow call.
+    if (existing?.status === 'APPROVED' && existing?.webflow_item_id) {
+      syncExpert(existing.id).catch((e) =>
+        console.error('[Webflow] Profile image sync failed:', e.message)
+      );
+    }
 
     return res.json({ profile_image: newImageUrl, expert });
   } catch (err) {
