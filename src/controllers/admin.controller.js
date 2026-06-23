@@ -1066,6 +1066,15 @@ async function approveProfileDraft(req, res) {
       prisma.expertProfileDraft.delete({ where: { expert_id: parseInt(id) } }),
     ]);
 
+    // Cascade session_format to all services when it is locked to a single mode.
+    // BOTH means the expert controls each service individually — leave untouched.
+    if (session_format === 'ONLINE' || session_format === 'IN_PERSON') {
+      await prisma.service.updateMany({
+        where: { expert_id: parseInt(id) },
+        data:  { format: session_format },
+      });
+    }
+
     await logAudit(req.user.id, "APPROVE_PROFILE_DRAFT", "Expert", parseInt(id));
     // Only sync to Webflow for APPROVED experts — drafts can exist on PENDING profiles
     if (expert.status === "APPROVED") {
