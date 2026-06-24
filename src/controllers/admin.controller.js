@@ -3043,7 +3043,10 @@ async function listTransactions(req, res) {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = parseInt(limit);
 
-    const [transactions, total] = await Promise.all([
+    const [
+      transactions, total,
+      cAll, cSucceeded, cRefunded, cPending, cFailed, cTransferFailed,
+    ] = await Promise.all([
       prisma.booking.findMany({
         where,
         orderBy: { scheduled_at: "desc" },
@@ -3056,9 +3059,28 @@ async function listTransactions(req, res) {
         },
       }),
       prisma.booking.count({ where }),
+      prisma.booking.count({ where: buildTransactionWhere({ from, to, search }) }),
+      prisma.booking.count({ where: buildTransactionWhere({ payment_status: "succeeded",      from, to, search }) }),
+      prisma.booking.count({ where: buildTransactionWhere({ payment_status: "refunded",       from, to, search }) }),
+      prisma.booking.count({ where: buildTransactionWhere({ payment_status: "pending",        from, to, search }) }),
+      prisma.booking.count({ where: buildTransactionWhere({ payment_status: "failed",         from, to, search }) }),
+      prisma.booking.count({ where: buildTransactionWhere({ payment_status: "transfer_failed",from, to, search }) }),
     ]);
 
-    return res.json({ transactions, total, page: parseInt(page), limit: take });
+    return res.json({
+      transactions,
+      total,
+      page: parseInt(page),
+      limit: take,
+      counts: {
+        ALL:             cAll,
+        succeeded:       cSucceeded,
+        refunded:        cRefunded,
+        pending:         cPending,
+        failed:          cFailed,
+        transfer_failed: cTransferFailed,
+      },
+    });
   } catch (err) {
     console.error("[ADMIN] listTransactions error:", err);
     return res.status(500).json({ error: "Server error" });
