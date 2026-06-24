@@ -94,6 +94,30 @@ async function listExperts(req, res) {
     };
   }
 
+  // filterWhere: non-status filters only, used for accurate per-status counts
+  const filterWhere = { user: { role: "EXPERT" } };
+  if (search?.trim()) {
+    filterWhere.user = { ...filterWhere.user, name: { contains: search.trim(), mode: "insensitive" } };
+  }
+  if (city?.trim()) {
+    filterWhere.address_city = { contains: city.trim(), mode: "insensitive" };
+  }
+  if (qualification && VALID_QUALIFICATION_TYPES.includes(qualification)) {
+    filterWhere.qualifications = { some: { type: qualification } };
+  }
+  if (cluster && VALID_CLUSTERS.includes(cluster)) {
+    filterWhere.services = { some: { cluster } };
+  }
+  if (isAdmin && (from || to)) {
+    filterWhere.user = {
+      ...filterWhere.user,
+      created_at: {
+        ...(from ? { gte: new Date(from) } : {}),
+        ...(to   ? { lte: new Date(to + "T23:59:59.999Z") } : {}),
+      },
+    };
+  }
+
   const adminInclude = {
     user: {
       select: {
@@ -148,14 +172,12 @@ async function listExperts(req, res) {
           skip,
           take: limit,
         }),
-        prisma.expert.count({ where: { ...baseWhere, status: "PENDING" } }),
-        prisma.expert.count({ where: { ...baseWhere, status: "APPROVED" } }),
-        prisma.expert.count({ where: { ...baseWhere, status: "REJECTED" } }),
-        prisma.expert.count({ where: { user: { role: "EXPERT", account_deleted: false }, status: "SUSPENDED" } }),
-        prisma.expert.count({
-          where: { ...baseWhere, status: "CHANGES_REQUESTED" },
-        }),
-        prisma.expert.count({ where: { user: { role: "EXPERT", account_deleted: true } } }),
+        prisma.expert.count({ where: { ...filterWhere, status: "PENDING" } }),
+        prisma.expert.count({ where: { ...filterWhere, status: "APPROVED" } }),
+        prisma.expert.count({ where: { ...filterWhere, status: "REJECTED" } }),
+        prisma.expert.count({ where: { ...filterWhere, user: { ...filterWhere.user, account_deleted: false }, status: "SUSPENDED" } }),
+        prisma.expert.count({ where: { ...filterWhere, status: "CHANGES_REQUESTED" } }),
+        prisma.expert.count({ where: { ...filterWhere, user: { ...filterWhere.user, account_deleted: true } } }),
       ]);
 
       data.forEach((e) => {
@@ -2322,6 +2344,25 @@ async function listParents(req, res) {
   }
   if (andConditions.length > 0) where.AND = andConditions;
 
+  // filterWhere: search + date only, no status, for accurate per-status counts
+  const filterAndConds = [];
+  if (search?.trim()) {
+    filterAndConds.push({
+      OR: [
+        { name:  { contains: search.trim(), mode: "insensitive" } },
+        { email: { contains: search.trim(), mode: "insensitive" } },
+      ],
+    });
+  }
+  const filterWhere = { ...baseWhere };
+  if (from || to) {
+    filterWhere.created_at = {
+      ...(from ? { gte: new Date(from) } : {}),
+      ...(to   ? { lte: new Date(to + "T23:59:59.999Z") } : {}),
+    };
+  }
+  if (filterAndConds.length) filterWhere.AND = filterAndConds;
+
   try {
     const [total, data, activeCount, suspendedCount] =
       await Promise.all([
@@ -2344,10 +2385,13 @@ async function listParents(req, res) {
         }),
         // null = ACTIVE for count (Prisma doesn't allow null in enum `in` — use OR)
         prisma.user.count({
-          where: { ...baseWhere, AND: [{ OR: [{ parent_status: "ACTIVE" }, { parent_status: null }] }] },
+          where: {
+            ...filterWhere,
+            AND: [...(filterWhere.AND || []), { OR: [{ parent_status: "ACTIVE" }, { parent_status: null }] }],
+          },
         }),
         prisma.user.count({
-          where: { ...baseWhere, parent_status: "SUSPENDED" },
+          where: { ...filterWhere, parent_status: "SUSPENDED" },
         }),
       ]);
 
