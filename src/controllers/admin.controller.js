@@ -1416,7 +1416,31 @@ async function listAllBookings(req, res) {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = parseInt(limit);
 
-    const [bookings, total] = await Promise.all([
+    // filterWhere: search + date only (no status), for accurate per-status counts
+    const filterWhere = {};
+    if (from || to) {
+      filterWhere.scheduled_at = {
+        ...(from ? { gte: new Date(from) } : {}),
+        ...(to   ? { lte: new Date(to)   } : {}),
+      };
+    }
+    if (search && search.trim()) {
+      const term    = search.trim();
+      const termInt = parseInt(term);
+      const orClauses = [
+        { parent: { name: { contains: term, mode: "insensitive" } } },
+        { expert: { user: { name: { contains: term, mode: "insensitive" } } } },
+      ];
+      if (!isNaN(termInt)) orClauses.push({ id: termInt });
+      filterWhere.OR = orClauses;
+    }
+
+    const now = new Date();
+
+    const [
+      bookings, total,
+      cAll, cUpcoming, cConfirmed, cCompleted, cPendingPayment, cCancelled, cRefunded, cDisputed,
+    ] = await Promise.all([
       prisma.booking.findMany({
         where,
         omit:    { expert_note: true },
@@ -1430,9 +1454,29 @@ async function listAllBookings(req, res) {
         },
       }),
       prisma.booking.count({ where }),
+      prisma.booking.count({ where: filterWhere }),
+      prisma.booking.count({ where: { ...filterWhere, status: "CONFIRMED", scheduled_at: { ...filterWhere.scheduled_at, gt: now } } }),
+      prisma.booking.count({ where: { ...filterWhere, status: "CONFIRMED" } }),
+      prisma.booking.count({ where: { ...filterWhere, status: "COMPLETED" } }),
+      prisma.booking.count({ where: { ...filterWhere, status: "PENDING_PAYMENT" } }),
+      prisma.booking.count({ where: { ...filterWhere, status: "CANCELLED" } }),
+      prisma.booking.count({ where: { ...filterWhere, status: "REFUNDED" } }),
+      prisma.booking.count({ where: { ...filterWhere, is_disputed: true } }),
     ]);
 
-    return res.json({ bookings, total, page: parseInt(page), limit: take });
+    return res.json({
+      bookings, total, page: parseInt(page), limit: take,
+      counts: {
+        ALL: cAll,
+        UPCOMING: cUpcoming,
+        CONFIRMED: cConfirmed,
+        COMPLETED: cCompleted,
+        PENDING_PAYMENT: cPendingPayment,
+        CANCELLED: cCancelled,
+        REFUNDED: cRefunded,
+        DISPUTED: cDisputed,
+      },
+    });
   } catch (err) {
     console.error("[ADMIN] listAllBookings error:", err);
     return res.status(500).json({ error: "Server error" });
