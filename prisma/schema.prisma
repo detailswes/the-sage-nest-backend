@@ -177,7 +177,7 @@ model BusinessInfo {
   vat_number          String?
   company_reg_number  String?
   iban                String
-  business_email      String
+  business_email      String?
   website             String?
   municipality        String?
   business_address    String?
