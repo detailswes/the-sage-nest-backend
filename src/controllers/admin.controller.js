@@ -94,6 +94,30 @@ async function listExperts(req, res) {
     };
   }
 
+  // filterWhere: non-status filters only, used for accurate per-status counts
+  const filterWhere = { user: { role: "EXPERT" } };
+  if (search?.trim()) {
+    filterWhere.user = { ...filterWhere.user, name: { contains: search.trim(), mode: "insensitive" } };
+  }
+  if (city?.trim()) {
+    filterWhere.address_city = { contains: city.trim(), mode: "insensitive" };
+  }
+  if (qualification && VALID_QUALIFICATION_TYPES.includes(qualification)) {
+    filterWhere.qualifications = { some: { type: qualification } };
+  }
+  if (cluster && VALID_CLUSTERS.includes(cluster)) {
+    filterWhere.services = { some: { cluster } };
+  }
+  if (isAdmin && (from || to)) {
+    filterWhere.user = {
+      ...filterWhere.user,
+      created_at: {
+        ...(from ? { gte: new Date(from) } : {}),
+        ...(to   ? { lte: new Date(to + "T23:59:59.999Z") } : {}),
+      },
+    };
+  }
+
   const adminInclude = {
     user: {
       select: {
@@ -148,14 +172,12 @@ async function listExperts(req, res) {
           skip,
           take: limit,
         }),
-        prisma.expert.count({ where: { ...baseWhere, status: "PENDING" } }),
-        prisma.expert.count({ where: { ...baseWhere, status: "APPROVED" } }),
-        prisma.expert.count({ where: { ...baseWhere, status: "REJECTED" } }),
-        prisma.expert.count({ where: { user: { role: "EXPERT", account_deleted: false }, status: "SUSPENDED" } }),
-        prisma.expert.count({
-          where: { ...baseWhere, status: "CHANGES_REQUESTED" },
-        }),
-        prisma.expert.count({ where: { user: { role: "EXPERT", account_deleted: true } } }),
+        prisma.expert.count({ where: { ...filterWhere, status: "PENDING" } }),
+        prisma.expert.count({ where: { ...filterWhere, status: "APPROVED" } }),
+        prisma.expert.count({ where: { ...filterWhere, status: "REJECTED" } }),
+        prisma.expert.count({ where: { ...filterWhere, user: { ...filterWhere.user, account_deleted: false }, status: "SUSPENDED" } }),
+        prisma.expert.count({ where: { ...filterWhere, status: "CHANGES_REQUESTED" } }),
+        prisma.expert.count({ where: { ...filterWhere, user: { ...filterWhere.user, account_deleted: true } } }),
       ]);
 
       data.forEach((e) => {
@@ -1394,7 +1416,31 @@ async function listAllBookings(req, res) {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = parseInt(limit);
 
-    const [bookings, total] = await Promise.all([
+    // filterWhere: search + date only (no status), for accurate per-status counts
+    const filterWhere = {};
+    if (from || to) {
+      filterWhere.scheduled_at = {
+        ...(from ? { gte: new Date(from) } : {}),
+        ...(to   ? { lte: new Date(to)   } : {}),
+      };
+    }
+    if (search && search.trim()) {
+      const term    = search.trim();
+      const termInt = parseInt(term);
+      const orClauses = [
+        { parent: { name: { contains: term, mode: "insensitive" } } },
+        { expert: { user: { name: { contains: term, mode: "insensitive" } } } },
+      ];
+      if (!isNaN(termInt)) orClauses.push({ id: termInt });
+      filterWhere.OR = orClauses;
+    }
+
+    const now = new Date();
+
+    const [
+      bookings, total,
+      cAll, cUpcoming, cConfirmed, cCompleted, cPendingPayment, cCancelled, cRefunded, cDisputed,
+    ] = await Promise.all([
       prisma.booking.findMany({
         where,
         omit:    { expert_note: true },
@@ -1408,9 +1454,29 @@ async function listAllBookings(req, res) {
         },
       }),
       prisma.booking.count({ where }),
+      prisma.booking.count({ where: filterWhere }),
+      prisma.booking.count({ where: { ...filterWhere, status: "CONFIRMED", scheduled_at: { ...filterWhere.scheduled_at, gt: now } } }),
+      prisma.booking.count({ where: { ...filterWhere, status: "CONFIRMED" } }),
+      prisma.booking.count({ where: { ...filterWhere, status: "COMPLETED" } }),
+      prisma.booking.count({ where: { ...filterWhere, status: "PENDING_PAYMENT" } }),
+      prisma.booking.count({ where: { ...filterWhere, status: "CANCELLED" } }),
+      prisma.booking.count({ where: { ...filterWhere, status: "REFUNDED" } }),
+      prisma.booking.count({ where: { ...filterWhere, is_disputed: true } }),
     ]);
 
-    return res.json({ bookings, total, page: parseInt(page), limit: take });
+    return res.json({
+      bookings, total, page: parseInt(page), limit: take,
+      counts: {
+        ALL: cAll,
+        UPCOMING: cUpcoming,
+        CONFIRMED: cConfirmed,
+        COMPLETED: cCompleted,
+        PENDING_PAYMENT: cPendingPayment,
+        CANCELLED: cCancelled,
+        REFUNDED: cRefunded,
+        DISPUTED: cDisputed,
+      },
+    });
   } catch (err) {
     console.error("[ADMIN] listAllBookings error:", err);
     return res.status(500).json({ error: "Server error" });
@@ -2322,6 +2388,25 @@ async function listParents(req, res) {
   }
   if (andConditions.length > 0) where.AND = andConditions;
 
+  // filterWhere: search + date only, no status, for accurate per-status counts
+  const filterAndConds = [];
+  if (search?.trim()) {
+    filterAndConds.push({
+      OR: [
+        { name:  { contains: search.trim(), mode: "insensitive" } },
+        { email: { contains: search.trim(), mode: "insensitive" } },
+      ],
+    });
+  }
+  const filterWhere = { ...baseWhere };
+  if (from || to) {
+    filterWhere.created_at = {
+      ...(from ? { gte: new Date(from) } : {}),
+      ...(to   ? { lte: new Date(to + "T23:59:59.999Z") } : {}),
+    };
+  }
+  if (filterAndConds.length) filterWhere.AND = filterAndConds;
+
   try {
     const [total, data, activeCount, suspendedCount] =
       await Promise.all([
@@ -2344,10 +2429,13 @@ async function listParents(req, res) {
         }),
         // null = ACTIVE for count (Prisma doesn't allow null in enum `in` — use OR)
         prisma.user.count({
-          where: { ...baseWhere, AND: [{ OR: [{ parent_status: "ACTIVE" }, { parent_status: null }] }] },
+          where: {
+            ...filterWhere,
+            AND: [...(filterWhere.AND || []), { OR: [{ parent_status: "ACTIVE" }, { parent_status: null }] }],
+          },
         }),
         prisma.user.count({
-          where: { ...baseWhere, parent_status: "SUSPENDED" },
+          where: { ...filterWhere, parent_status: "SUSPENDED" },
         }),
       ]);
 
@@ -3043,7 +3131,10 @@ async function listTransactions(req, res) {
     const skip = (parseInt(page) - 1) * parseInt(limit);
     const take = parseInt(limit);
 
-    const [transactions, total] = await Promise.all([
+    const [
+      transactions, total,
+      cAll, cSucceeded, cRefunded, cPending, cFailed, cTransferFailed,
+    ] = await Promise.all([
       prisma.booking.findMany({
         where,
         orderBy: { scheduled_at: "desc" },
@@ -3056,9 +3147,28 @@ async function listTransactions(req, res) {
         },
       }),
       prisma.booking.count({ where }),
+      prisma.booking.count({ where: buildTransactionWhere({ from, to, search }) }),
+      prisma.booking.count({ where: buildTransactionWhere({ payment_status: "succeeded",      from, to, search }) }),
+      prisma.booking.count({ where: buildTransactionWhere({ payment_status: "refunded",       from, to, search }) }),
+      prisma.booking.count({ where: buildTransactionWhere({ payment_status: "pending",        from, to, search }) }),
+      prisma.booking.count({ where: buildTransactionWhere({ payment_status: "failed",         from, to, search }) }),
+      prisma.booking.count({ where: buildTransactionWhere({ payment_status: "transfer_failed",from, to, search }) }),
     ]);
 
-    return res.json({ transactions, total, page: parseInt(page), limit: take });
+    return res.json({
+      transactions,
+      total,
+      page: parseInt(page),
+      limit: take,
+      counts: {
+        ALL:             cAll,
+        succeeded:       cSucceeded,
+        refunded:        cRefunded,
+        pending:         cPending,
+        failed:          cFailed,
+        transfer_failed: cTransferFailed,
+      },
+    });
   } catch (err) {
     console.error("[ADMIN] listTransactions error:", err);
     return res.status(500).json({ error: "Server error" });
