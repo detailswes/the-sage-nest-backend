@@ -99,6 +99,10 @@ async function storeRefreshToken(userId, token) {
   await prisma.refreshToken.create({
     data: { token, user_id: userId, expires_at: expiresAt },
   });
+  // Sweep this user's expired tokens so the table doesn't grow unboundedly
+  await prisma.refreshToken.deleteMany({
+    where: { user_id: userId, expires_at: { lt: new Date() } },
+  });
 }
 
 function userPayload(user) {
