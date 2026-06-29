@@ -10,7 +10,7 @@ require('dotenv').config({ path: path.join(__dirname, '../.env') });
 
 const { PrismaClient } = require('@prisma/client');
 const { PrismaPg } = require('@prisma/adapter-pg');
-const bcrypt = require('bcrypt');
+const argon2 = require('argon2');
 
 const adapter = new PrismaPg({ connectionString: process.env.DATABASE_URL });
 const prisma = new PrismaClient({ adapter });
@@ -37,7 +37,7 @@ async function main() {
   let parentUser = await prisma.user.findUnique({ where: { email: parentEmail } });
 
   if (!parentUser) {
-    const password_hash = await bcrypt.hash('TestParent123!', 10);
+    const password_hash = await argon2.hash('TestParent123!', { type: argon2.argon2id });
     parentUser = await prisma.user.create({
       data: {
         name: 'Sarah Murphy',
