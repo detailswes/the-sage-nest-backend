@@ -329,7 +329,6 @@ async function verifyEmail(req, res) {
       }).then((ppa) => addOrUpdateBrevoContact({
         email: user.email,
         name: user.name,
-        phone: user.phone,
         marketingConsent: ppa?.marketing_consent ?? false,
       })).catch((err) => console.error('[Brevo] Failed to sync verified parent:', err.message));
     }
