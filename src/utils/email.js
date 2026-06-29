@@ -37,8 +37,12 @@ const {
 const {
   expertBookingCancelledSuspensionEmailHtml,
 } = require("./email_templates/expertBookingCancelledSuspensionEmail");
+const {
+  imLateEmailHtml,
+} = require("./email_templates/imLateEmail");
 
-const BREVO_API_URL = 'https://api.brevo.com/v3/smtp/email';
+const BREVO_API_URL     = 'https://api.brevo.com/v3/smtp/email';
+const BREVO_SMS_API_URL = 'https://api.brevo.com/v3/transactionalSMS/send';
 
 // ─── Sender identities ────────────────────────────────────────────────────────
 // Transactional (confirmations, verification, OTP, refunds, reminders, etc.)
@@ -822,6 +826,101 @@ const sendAdminPayoutAlert = ({ subject, body, stripeAccountId, expertName, book
   });
 };
 
+// ─── Brevo Transactional SMS ──────────────────────────────────────────────────
+// Sends a transactional SMS via Brevo SMS API.
+// Throws on API error; caller decides how to handle failure.
+const sendSms = async ({ to, message }) => {
+  const sender = process.env.BREVO_SMS_SENDER;
+  if (!sender) throw new Error('BREVO_SMS_SENDER not configured');
+  if (!process.env.BREVO_API_KEY) throw new Error('BREVO_API_KEY not configured');
+
+  const res = await fetch(BREVO_SMS_API_URL, {
+    method: 'POST',
+    headers: {
+      'accept':       'application/json',
+      'content-type': 'application/json',
+      'api-key':      process.env.BREVO_API_KEY,
+    },
+    body: JSON.stringify({
+      sender,
+      recipient: to,
+      content:   message,
+      type:      'transactional',
+    }),
+  });
+
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(`Brevo SMS API error ${res.status}: ${body}`);
+  }
+};
+
+// ─── "I'm Late" notification ──────────────────────────────────────────────────
+// Fires an email to the expert and, if the expert has a phone and SMS is
+// configured, an SMS as well.
+// Returns { emailStatus, smsStatus, emailError, smsError }.
+const sendImLateNotification = async ({
+  expertEmail,
+  expertPhone,
+  expertName,
+  expertTimezone,
+  parentName,
+  serviceTitle,
+  scheduledAt,
+  delayMinutes,
+  note,
+}) => {
+  const clientUrl    = process.env.CLIENT_URL    || '';
+  const contactEmail = process.env.EMAIL_FROM_NOTIFICATIONS || '';
+
+  let emailStatus = 'failed';
+  let emailError  = null;
+  let smsStatus   = expertPhone ? 'failed' : 'no_phone';
+  let smsError    = null;
+
+  // Primary channel: email (always attempted)
+  try {
+    await sendEmail({
+      to:      expertEmail,
+      subject: `[Sage Nest] ${parentName} is running ~${delayMinutes} min late`,
+      html:    imLateEmailHtml({
+        expertName,
+        parentName,
+        serviceTitle,
+        scheduledAt,
+        timezone: expertTimezone,
+        delayMinutes,
+        note,
+        clientUrl,
+        contactEmail,
+      }),
+      text: `Hi ${expertName}, your client ${parentName} is running approximately ${delayMinutes} minute(s) late for your session (${serviceTitle}).${note ? ` Their message: "${note}"` : ''} Please hold tight.`,
+    });
+    emailStatus = 'sent';
+  } catch (err) {
+    emailError = err.message;
+    console.error('[ImLate] Email send failed:', err.message);
+  }
+
+  // Secondary channel: SMS (only if expert has phone AND SMS is configured)
+  if (expertPhone && process.env.BREVO_SMS_SENDER) {
+    const noteSnippet = note ? ` Msg: "${note.slice(0, 50)}${note.length > 50 ? '…' : ''}"` : '';
+    const smsText = `Sage Nest: ${parentName} will be ~${delayMinutes}min late for your session.${noteSnippet}`;
+    try {
+      await sendSms({ to: expertPhone, message: smsText });
+      smsStatus = 'sent';
+    } catch (err) {
+      smsStatus = 'failed';
+      smsError  = err.message;
+      console.error('[ImLate] SMS send failed:', err.message);
+    }
+  } else if (!process.env.BREVO_SMS_SENDER) {
+    smsStatus = 'not_configured';
+  }
+
+  return { emailStatus, smsStatus, emailError, smsError };
+};
+
 // ─── Exports ──────────────────────────────────────────────────────────────────
 module.exports = {
   sendEmail,
@@ -848,4 +947,5 @@ module.exports = {
   sendParentSuspendedEmail,
   sendExpertBookingCancelledDueToSuspensionEmail,
   sendAdminPayoutAlert,
+  sendImLateNotification,
 };
