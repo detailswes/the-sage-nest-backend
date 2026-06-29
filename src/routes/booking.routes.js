@@ -18,6 +18,7 @@ const {
   verifyPayment,
   getCurrentTcVersion,
   acceptTc,
+  reportImLate,
 } = require('../controllers/booking.controller');
 
 router.use(authenticate);
@@ -30,6 +31,7 @@ router.get('/my',              getMyBookings);           // GET    /bookings/my
 router.delete('/:id',          cancelBooking);           // DELETE /bookings/:id
 router.post('/:id/abandon',    abandonBooking);           // POST   /bookings/:id/abandon
 router.patch('/:id/reschedule', rescheduleBooking);       // PATCH  /bookings/:id/reschedule
+router.post('/:id/im-late',    reportImLate);             // POST   /bookings/:id/im-late
 
 // ── Expert routes ─────────────────────────────────────────────────────────────
 router.get('/upcoming',              getUpcomingAppointments); // GET    /bookings/upcoming

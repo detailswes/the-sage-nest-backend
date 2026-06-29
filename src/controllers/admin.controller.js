@@ -1494,11 +1494,24 @@ async function getBookingDetail(req, res) {
           select: {
             id:               true,
             timezone:         true,
-            user:             { select: { name: true, email: true } },
+            user:             { select: { name: true, email: true, phone: true } },
             stripe_account_id: true,
           },
         },
         service: { select: { title: true, price: true, duration_minutes: true } },
+        late_notifications: {
+          orderBy: { fired_at: 'desc' },
+          select: {
+            id:            true,
+            delay_minutes: true,
+            note:          true,
+            fired_at:      true,
+            email_status:  true,
+            sms_status:    true,
+            email_error:   true,
+            sms_error:     true,
+          },
+        },
       },
     });
     if (!booking) return res.status(404).json({ error: "Booking not found" });
