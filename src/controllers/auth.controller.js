@@ -16,6 +16,7 @@ const {
   sendOtpEmail,
   sendPasswordChangedEmail,
 } = require("../utils/email");
+const { addOrUpdateBrevoContact } = require("../utils/brevo");
 
 const OTP_EXPIRY_MS   = 300 * 1000;       // 5 minutes
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000; // 60 seconds between resends
@@ -318,6 +319,20 @@ async function verifyEmail(req, res) {
         verification_expires_at: null,
       },
     });
+
+    // Sync verified parent to Brevo for marketing campaign management (fire-and-forget)
+    if (user.role === 'PARENT') {
+      prisma.privacyPolicyAcceptance.findFirst({
+        where: { user_id: user.id },
+        orderBy: { accepted_at: 'desc' },
+        select: { marketing_consent: true },
+      }).then((ppa) => addOrUpdateBrevoContact({
+        email: user.email,
+        name: user.name,
+        phone: user.phone,
+        marketingConsent: ppa?.marketing_consent ?? false,
+      })).catch((err) => console.error('[Brevo] Failed to sync verified parent:', err.message));
+    }
 
     // Issue tokens immediately so the parent can continue their booking
     // without having to sign in again on a separate page.
