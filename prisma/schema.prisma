@@ -46,6 +46,7 @@ model User {
   saved_experts               SavedExpert[]             @relation("ParentSavedExperts")
   tc_acceptances              TcAcceptance[]
   slot_locks                  SlotLock[]                @relation("ParentSlotLocks")
+  late_notifications          LateNotification[]        @relation("ParentLateNotifications")
 }
 
 model RefreshToken {
@@ -257,6 +258,7 @@ model Booking {
   service                  Service        @relation(fields: [service_id], references: [id], onDelete: Cascade)
   notifications            Notification[]
   review                   Review?
+  late_notifications       LateNotification[]
 
   @@unique([expert_id, scheduled_at])
 }
@@ -388,6 +390,23 @@ model SlotLock {
   parent     User     @relation("ParentSlotLocks", fields: [parent_id], references: [id], onDelete: Cascade)
 
   @@unique([expert_id, slot_start])
+}
+
+model LateNotification {
+  id            Int      @id @default(autoincrement())
+  booking_id    Int
+  parent_id     Int
+  delay_minutes Int
+  note          String?
+  fired_at      DateTime @default(now())
+  email_status  String
+  sms_status    String
+  email_error   String?
+  sms_error     String?
+  booking       Booking  @relation(fields: [booking_id], references: [id], onDelete: Cascade)
+  parent        User     @relation("ParentLateNotifications", fields: [parent_id], references: [id], onDelete: Cascade)
+
+  @@index([booking_id])
 }
 
 enum Role {
