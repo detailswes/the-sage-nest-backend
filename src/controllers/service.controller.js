@@ -2,7 +2,7 @@ const prisma = require('../prisma/client');
 const webflowService = require('../services/webflow.service');
 
 const VALID_FORMATS    = ['ONLINE', 'IN_PERSON'];
-const VALID_CLUSTERS   = ['FOR_PARENTS', 'FOR_BABY', 'PACKAGE', 'GIFT', 'EVENT'];
+const VALID_CLUSTERS   = ['FOR_PARENTS', 'FOR_BABY', 'FOR_FAMILY', 'PACKAGE', 'GIFT', 'EVENT'];
 const VALID_CURRENCIES = ['EUR', 'GBP', 'DKK', 'SEK', 'NOK', 'CHF'];
 
 const PRICE_LIMITS = {
@@ -47,7 +47,7 @@ async function createService(req, res) {
     return res.status(400).json({ error: 'Invalid format. Must be ONLINE or IN_PERSON.' });
   }
   if (!VALID_CLUSTERS.includes(cluster)) {
-    return res.status(400).json({ error: 'Invalid cluster. Must be FOR_PARENTS, FOR_BABY, PACKAGE, GIFT, or EVENT.' });
+    return res.status(400).json({ error: 'Invalid cluster. Must be FOR_PARENTS, FOR_BABY, FOR_FAMILY, PACKAGE, GIFT, or EVENT.' });
   }
 
   try {
@@ -121,7 +121,7 @@ async function updateService(req, res) {
     return res.status(400).json({ error: 'Invalid format. Must be ONLINE or IN_PERSON.' });
   }
   if (cluster !== undefined && cluster !== null && cluster !== '' && !VALID_CLUSTERS.includes(cluster)) {
-    return res.status(400).json({ error: 'Invalid cluster. Must be FOR_PARENTS, FOR_BABY, PACKAGE, GIFT, or EVENT.' });
+    return res.status(400).json({ error: 'Invalid cluster. Must be FOR_PARENTS, FOR_BABY, FOR_FAMILY, PACKAGE, GIFT, or EVENT.' });
   }
 
   try {

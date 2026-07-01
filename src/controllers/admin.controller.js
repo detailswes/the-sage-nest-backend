@@ -37,7 +37,7 @@ const VALID_QUALIFICATION_TYPES = [
   "PARENTING_COACH",
   "OTHER",
 ];
-const VALID_CLUSTERS = ["FOR_PARENTS", "FOR_BABY", "PACKAGE", "GIFT", "EVENT"];
+const VALID_CLUSTERS = ["FOR_PARENTS", "FOR_BABY", "FOR_FAMILY", "PACKAGE", "GIFT", "EVENT"];
 
 // ─── Expert list ──────────────────────────────────────────────────────────────
 

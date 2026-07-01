@@ -442,6 +442,7 @@ enum ServiceFormat {
 enum ServiceCluster {
   FOR_PARENTS
   FOR_BABY
+  FOR_FAMILY
   PACKAGE
   GIFT
   EVENT

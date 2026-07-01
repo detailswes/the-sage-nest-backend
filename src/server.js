@@ -59,6 +59,7 @@ const { startWebflowSyncJob }    = require('./jobs/webflowSyncJob');
 const { startTokenCleanupJob }   = require('./jobs/cleanupExpiredTokens');
 const { startWebhookRetryJob }          = require('./jobs/retryFailedWebhooks');
 const { startBalanceReconciliationJob } = require('./jobs/reconcileBalances');
+const { startFinancialPurgeJob }        = require('./jobs/purgeFinancialRecords');
 
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
@@ -74,4 +75,5 @@ app.listen(PORT, () => {
   startTokenCleanupJob();
   startWebhookRetryJob();
   startBalanceReconciliationJob();
+  startFinancialPurgeJob();
 });
