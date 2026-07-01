@@ -17,6 +17,7 @@ const CATEGORIES_COL_ID     = process.env.WEBFLOW_CATEGORIES_COLLECTION_ID;
 const CLUSTER_DISPLAY = {
   FOR_PARENTS: 'service for the mum',
   FOR_BABY:    'services for the baby',
+  FOR_FAMILY:  'service for the family',
   PACKAGE:     'package',
   GIFT:        'gift cards',
   EVENT:       'event',
