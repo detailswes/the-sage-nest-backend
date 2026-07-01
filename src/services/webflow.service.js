@@ -16,9 +16,9 @@ const CATEGORIES_COL_ID     = process.env.WEBFLOW_CATEGORIES_COLLECTION_ID;
 // ServiceCluster enum → Webflow Services Categories item name (must match exactly, case-insensitive)
 const CLUSTER_DISPLAY = {
   FOR_PARENTS: 'service for the mum',
-  FOR_BABY:    'services for the baby',
+  FOR_BABY:    'service for the baby',
   FOR_FAMILY:  'service for the family',
-  PACKAGE:     'package',
+  PACKAGE:     'service for the package',
   GIFT:        'gift cards',
   EVENT:       'event',
 };
