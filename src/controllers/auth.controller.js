@@ -7,6 +7,7 @@ const prisma = require("../prisma/client");
 const { logAudit } = require("../utils/auditLog");
 const { deleteFile } = require("../utils/storage");
 const { decryptIban } = require("../utils/encryption");
+const { normalizeConsentLanguage } = require("../utils/language");
 const webflowService = require("../services/webflow.service");
 const {
   sendVerificationEmail,
@@ -131,7 +132,7 @@ function validatePasswordStrength(password) {
 
 // ─── Register ───────────────────────────────────────────────────────────────
 async function register(req, res) {
-  const { email, password, role, name, phone, timezone, privacyPolicyAccepted, termsAccepted, marketingConsent, returnTo } = req.body;
+  const { email, password, role, name, phone, timezone, privacyPolicyAccepted, termsAccepted, marketingConsent, returnTo, language } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
@@ -210,6 +211,7 @@ async function register(req, res) {
       data: {
         user_id:               user.id,
         version:               currentPp?.version ?? "1.0",
+        language:              normalizeConsentLanguage(language),
         accepted_at:           consentTimestamp,
         tc_version:            currentTc?.version ?? "1.0",
         tc_accepted_at:        consentTimestamp,
@@ -1494,6 +1496,7 @@ async function acceptPrivacyPolicy(req, res) {
       data: {
         user_id: req.user.id,
         version: currentPp.version,
+        language: normalizeConsentLanguage(req.body?.language),
       },
     });
 
@@ -1514,6 +1517,7 @@ async function getLegalConsents(req, res) {
         select: {
           id: true,
           version: true,
+          language: true,
           accepted_at: true,
           marketing_consent: true,
           marketing_accepted_at: true,
@@ -1526,7 +1530,7 @@ async function getLegalConsents(req, res) {
       prisma.tcAcceptance.findMany({
         where: { user_id: req.user.id },
         orderBy: { accepted_at: "desc" },
-        select: { id: true, version: true, accepted_at: true },
+        select: { id: true, version: true, language: true, accepted_at: true },
       }),
     ]);
 
@@ -1535,13 +1539,15 @@ async function getLegalConsents(req, res) {
     return res.json({
       privacy_policy: ppAcceptances.map((a) => ({
         version: a.version,
+        language: a.language,
         accepted_at: a.accepted_at,
       })),
       terms_registration: ppAcceptances
         .filter((a) => a.tc_version)
-        .map((a) => ({ version: a.tc_version, accepted_at: a.tc_accepted_at })),
+        .map((a) => ({ version: a.tc_version, language: a.language, accepted_at: a.tc_accepted_at })),
       terms_per_booking: tcAcceptances.map((a) => ({
         version: a.version,
+        language: a.language,
         accepted_at: a.accepted_at,
       })),
       marketing_consent: latest?.marketing_consent ?? false,
@@ -1684,6 +1690,7 @@ async function exportMyData(req, res) {
         pp_acceptances: {
           select: {
             version: true,
+            language: true,
             accepted_at: true,
             marketing_consent: true,
             marketing_accepted_at: true,
@@ -1715,13 +1722,14 @@ async function exportMyData(req, res) {
     const consentRecords = {
       privacy_policy: user.pp_acceptances.map((a) => ({
         version: a.version,
+        language: a.language,
         accepted_at: a.accepted_at,
         marketing_consent: a.marketing_consent,
         marketing_accepted_at: a.marketing_accepted_at,
       })),
       terms_and_conditions: user.pp_acceptances
         .filter((a) => a.tc_version)
-        .map((a) => ({ version: a.tc_version, accepted_at: a.tc_accepted_at })),
+        .map((a) => ({ version: a.tc_version, language: a.language, accepted_at: a.tc_accepted_at })),
     };
 
     const filename = `sage-nest-data-export-${new Date().toISOString().split("T")[0]}.json`;

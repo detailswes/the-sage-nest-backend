@@ -1726,17 +1726,29 @@ async function getLegalDocuments(req, res) {
         orderBy: { effective_from: "desc" },
       }),
       prisma.privacyPolicyAcceptance.groupBy({
-        by: ["version"],
+        by: ["version", "language"],
         _count: { version: true },
       }),
       prisma.tcAcceptance.groupBy({
-        by: ["version"],
+        by: ["version", "language"],
         _count: { version: true },
       }),
     ]);
 
-    const toMap  = (counts) => Object.fromEntries(counts.map((c) => [c.version, c._count.version]));
-    const enrich = (docs, countMap) => docs.map((d) => ({ ...d, accepted_count: countMap[d.version] ?? 0 }));
+    const toMap = (counts) => {
+      const byVersion = {};
+      for (const c of counts) {
+        byVersion[c.version] ??= { total: 0, by_language: {} };
+        byVersion[c.version].total += c._count.version;
+        byVersion[c.version].by_language[c.language] = c._count.version;
+      }
+      return byVersion;
+    };
+    const enrich = (docs, countMap) => docs.map((d) => ({
+      ...d,
+      accepted_count: countMap[d.version]?.total ?? 0,
+      accepted_count_by_language: countMap[d.version]?.by_language ?? {},
+    }));
 
     return res.json({
       privacy_policy:   enrich(ppDocs, toMap(ppCounts)),
@@ -1783,11 +1795,20 @@ async function bumpLegalDocument(req, res) {
     const [allDocs, acceptanceCounts] = await Promise.all([
       prisma.legalDocument.findMany({ where: { type }, orderBy: { effective_from: "desc" } }),
       type === "PRIVACY_POLICY"
-        ? prisma.privacyPolicyAcceptance.groupBy({ by: ["version"], _count: { version: true } })
-        : prisma.tcAcceptance.groupBy({ by: ["version"], _count: { version: true } }),
+        ? prisma.privacyPolicyAcceptance.groupBy({ by: ["version", "language"], _count: { version: true } })
+        : prisma.tcAcceptance.groupBy({ by: ["version", "language"], _count: { version: true } }),
     ]);
-    const countMap = Object.fromEntries(acceptanceCounts.map((c) => [c.version, c._count.version]));
-    return res.status(201).json(allDocs.map((d) => ({ ...d, accepted_count: countMap[d.version] ?? 0 })));
+    const countMap = {};
+    for (const c of acceptanceCounts) {
+      countMap[c.version] ??= { total: 0, by_language: {} };
+      countMap[c.version].total += c._count.version;
+      countMap[c.version].by_language[c.language] = c._count.version;
+    }
+    return res.status(201).json(allDocs.map((d) => ({
+      ...d,
+      accepted_count: countMap[d.version]?.total ?? 0,
+      accepted_count_by_language: countMap[d.version]?.by_language ?? {},
+    })));
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });

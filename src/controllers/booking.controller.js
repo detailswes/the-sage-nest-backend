@@ -1,6 +1,7 @@
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
 const { logAudit } = require("../utils/auditLog");
+const { normalizeConsentLanguage } = require("../utils/language");
 const {
   sendBookingCancellationNotification,
   sendBookingConfirmationEmail,
@@ -1588,7 +1589,14 @@ async function acceptTc(req, res) {
       where: {
         user_id_version: { user_id: req.user.id, version: currentTc.version },
       },
-      create: { user_id: req.user.id, version: currentTc.version },
+      // update: {} is intentional — if this version was already accepted, the
+      // originally recorded language is preserved rather than overwritten, so
+      // the acceptance record stays an immutable snapshot of what was agreed to.
+      create: {
+        user_id: req.user.id,
+        version: currentTc.version,
+        language: normalizeConsentLanguage(req.body?.language),
+      },
       update: {},
     });
 
