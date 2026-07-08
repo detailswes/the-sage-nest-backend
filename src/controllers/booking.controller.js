@@ -125,6 +125,16 @@ async function createBooking(req, res) {
         .json({ error: "Expert has not connected their Stripe account yet" });
     }
 
+    // Enforce the expert's minimum-notice window server-side — the slot list
+    // already hides these times, but that's client-side only, so a request sent
+    // straight to this endpoint must be checked independently.
+    const noticeMs = (expert.min_notice_hours ?? 24) * 60 * 60 * 1000;
+    if (scheduledDate.getTime() - Date.now() < noticeMs) {
+      return res.status(400).json({
+        error: "This slot is inside the expert's minimum notice window. Please choose a later time.",
+      });
+    }
+
     // Verify the connected account has card_payments active — required for
     // on_behalf_of (destination charge with expert as Merchant of Record).
     try {
@@ -801,6 +811,11 @@ async function rescheduleBooking(req, res) {
       return res
         .status(400)
         .json({ error: "Only confirmed bookings can be rescheduled" });
+    }
+    if (booking.is_reschedule) {
+      return res
+        .status(400)
+        .json({ error: "This booking has already been rescheduled once" });
     }
 
     // Enforce the 12 h window using the same boundary as cancellation
