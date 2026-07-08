@@ -528,6 +528,19 @@ async function lockSlot(req, res) {
   const expiresAt   = new Date(now.getTime() + SLOT_LOCK_MINUTES * 60 * 1000);
 
   try {
+    // Enforce the expert's minimum-notice window server-side — getAvailableSlots
+    // already filters these out, but that's the slot list, not a hard rule, so a
+    // request sent straight to this endpoint must be checked independently.
+    const expert = await prisma.expert.findUnique({
+      where: { id: expertIdInt },
+      select: { min_notice_hours: true },
+    });
+    if (!expert) return res.status(404).json({ error: 'Expert not found' });
+    const noticeMs = (expert.min_notice_hours ?? 24) * 60 * 60 * 1000;
+    if (slotStartDate.getTime() - now.getTime() < noticeMs) {
+      return res.status(400).json({ error: "This slot is inside the expert's minimum notice window. Please choose a later time." });
+    }
+
     // Reject immediately if the slot already has an active booking — this fires
     // before the lock is created so no timer is started for an impossible slot.
     const existingBooking = await prisma.booking.findFirst({
