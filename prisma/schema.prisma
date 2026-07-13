@@ -135,6 +135,7 @@ model Service {
   webflow_slug        String?
   webflow_sync_status WebflowSyncStatus  @default(UNSYNCED)
   webflow_synced_at   DateTime?
+  webflow_sync_error  String?
   bookings            Booking[]
   expert              Expert             @relation(fields: [expert_id], references: [id], onDelete: Cascade)
 }
@@ -503,4 +504,28 @@ enum WebflowSyncStatus {
   UNSYNCED
   SYNCED
   FAILED
+}
+
+// Dead-letter queue for Webflow sync calls that exhausted all retry attempts.
+// One open row per entity (idempotency_key), resolved (not deleted) on successful re-sync
+// so the admin panel retains a history of what previously failed.
+model WebflowSyncFailure {
+  id              Int                      @id @default(autoincrement())
+  entity_type     String                   // "expert" | "service"
+  entity_id       Int
+  idempotency_key String                   @unique
+  payload         Json
+  last_error      String
+  attempts        Int                      @default(0)
+  status          WebflowSyncFailureStatus @default(PENDING_RETRY)
+  alerted_at      DateTime?
+  created_at      DateTime                 @default(now())
+  updated_at      DateTime                 @updatedAt
+
+  @@index([status])
+}
+
+enum WebflowSyncFailureStatus {
+  PENDING_RETRY
+  RESOLVED
 }

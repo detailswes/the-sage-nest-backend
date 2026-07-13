@@ -3574,6 +3574,85 @@ async function webflowSyncAll(req, res) {
   }
 }
 
+// ─── Webflow sync health (dead-letter queue) ──────────────────────────────────
+
+async function listWebflowSyncFailures(req, res) {
+  try {
+    const page = Math.max(1, parseInt(req.query.page) || 1);
+    const limit = Math.min(100, Math.max(1, parseInt(req.query.limit) || 25));
+    const skip = (page - 1) * limit;
+    const { status, entityType } = req.query;
+
+    const where = {};
+    where.status = status === "all" ? undefined : (status || "PENDING_RETRY");
+    if (entityType === "expert" || entityType === "service") {
+      where.entity_type = entityType;
+    }
+
+    const [failures, total] = await Promise.all([
+      prisma.webflowSyncFailure.findMany({
+        where,
+        orderBy: { updated_at: "desc" },
+        skip,
+        take: limit,
+      }),
+      prisma.webflowSyncFailure.count({ where }),
+    ]);
+
+    return res.json({ failures, total, page, pages: Math.ceil(total / limit) || 1 });
+  } catch (err) {
+    console.error("[listWebflowSyncFailures]", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function retryWebflowSyncFailure(req, res) {
+  const { id } = req.params;
+  try {
+    const failure = await prisma.webflowSyncFailure.findUnique({ where: { id: parseInt(id) } });
+    if (!failure) return res.status(404).json({ error: "Sync failure not found" });
+
+    const syncFn = failure.entity_type === "expert" ? webflowService.syncExpert : webflowService.syncService;
+    let synced = true;
+    try {
+      await syncFn(failure.entity_id);
+    } catch (err) {
+      synced = false;
+    }
+
+    const updated = await prisma.webflowSyncFailure.findUnique({ where: { id: parseInt(id) } });
+    return res.json({ synced, failure: updated });
+  } catch (err) {
+    console.error("[retryWebflowSyncFailure]", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function retryAllWebflowSyncFailures(req, res) {
+  try {
+    const pending = await prisma.webflowSyncFailure.findMany({
+      where:  { status: "PENDING_RETRY" },
+      select: { id: true, entity_type: true, entity_id: true },
+    });
+
+    let ok = 0, failed = 0;
+    for (let i = 0; i < pending.length; i += 3) {
+      const batch = pending.slice(i, i + 3);
+      await Promise.all(
+        batch.map(f => {
+          const syncFn = f.entity_type === "expert" ? webflowService.syncExpert : webflowService.syncService;
+          return syncFn(f.entity_id).then(() => { ok++; }).catch(() => { failed++; });
+        }),
+      );
+    }
+
+    return res.json({ synced: ok, failed, total: pending.length });
+  } catch (err) {
+    console.error("[retryAllWebflowSyncFailures]", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 // ─── Exports ─────────────────────────────────────────────────────────────────
 
 module.exports = {
@@ -3628,4 +3707,7 @@ module.exports = {
   getParentComplianceList,
   webflowSyncExpert,
   webflowSyncAll,
+  listWebflowSyncFailures,
+  retryWebflowSyncFailure,
+  retryAllWebflowSyncFailures,
 };

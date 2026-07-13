@@ -826,6 +826,58 @@ const sendAdminPayoutAlert = ({ subject, body, stripeAccountId, expertName, book
   });
 };
 
+// ─── Webflow sync failure alerts ───────────────────────────────────────────────
+// Fires when an app→Webflow sync exhausts all retries and lands in the dead-letter
+// queue, or when that queue grows past a configured threshold — see webflow.service.js
+// and jobs/webflowSyncJob.js.
+const sendWebflowSyncFailureAlert = ({ entityType, entityId, lastError, attempts }) => {
+  const adminTo = process.env.ADMIN_ALERT_EMAIL || process.env.EMAIL_FROM_NOTIFICATIONS;
+  if (!adminTo) {
+    console.error('[Email] sendWebflowSyncFailureAlert: no recipient configured (set ADMIN_ALERT_EMAIL)');
+    return Promise.resolve();
+  }
+  const subject = `Webflow sync failed after ${attempts} attempts — ${entityType} #${entityId}`;
+  const rows = [
+    `<tr><td style="padding:4px 0;color:#6B7280;font-size:13px;">Entity</td><td style="padding:4px 0 4px 16px;font-size:13px;color:#1F2933;font-weight:600;">${entityType} #${entityId}</td></tr>`,
+    `<tr><td style="padding:4px 0;color:#6B7280;font-size:13px;">Attempts</td><td style="padding:4px 0 4px 16px;font-size:13px;color:#1F2933;">${attempts}</td></tr>`,
+    `<tr><td style="padding:4px 0;color:#6B7280;font-size:13px;">Last error</td><td style="padding:4px 0 4px 16px;font-size:13px;color:#1F2933;font-family:monospace;">${lastError}</td></tr>`,
+  ].join('');
+
+  return sendEmail({
+    to: adminTo,
+    subject: `[Sage Nest Ops] ${subject}`,
+    text: `${subject}\n\nEntity: ${entityType} #${entityId}\nAttempts: ${attempts}\nLast error: ${lastError}`,
+    html: layout(`
+      <p style="margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#EF4444;">Operator Alert</p>
+      <h1 style="margin:0 0 16px;font-size:20px;font-weight:700;color:#1F2933;">${subject}</h1>
+      <p style="margin:0 0 20px;font-size:14px;color:#4B5563;line-height:1.6;">This item has been moved to the Webflow sync dead-letter queue and needs manual re-sync from the admin dashboard.</p>
+      <table style="border-collapse:collapse;width:100%;margin-bottom:24px;">${rows}</table>
+      <p style="margin:0;font-size:12px;color:#9CA3AF;">This is an automated alert from the Sage Nest platform. Review the Webflow Sync Health panel in the admin dashboard.</p>
+    `),
+  });
+};
+
+const sendWebflowQueueThresholdAlert = ({ pendingCount, threshold }) => {
+  const adminTo = process.env.ADMIN_ALERT_EMAIL || process.env.EMAIL_FROM_NOTIFICATIONS;
+  if (!adminTo) {
+    console.error('[Email] sendWebflowQueueThresholdAlert: no recipient configured (set ADMIN_ALERT_EMAIL)');
+    return Promise.resolve();
+  }
+  const subject = `Webflow sync failure queue exceeds threshold (${pendingCount}/${threshold})`;
+
+  return sendEmail({
+    to: adminTo,
+    subject: `[Sage Nest Ops] ${subject}`,
+    text: `${subject}\n\n${pendingCount} items are pending retry in the Webflow sync dead-letter queue, above the configured threshold of ${threshold}.`,
+    html: layout(`
+      <p style="margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#EF4444;">Operator Alert</p>
+      <h1 style="margin:0 0 16px;font-size:20px;font-weight:700;color:#1F2933;">${subject}</h1>
+      <p style="margin:0 0 20px;font-size:14px;color:#4B5563;line-height:1.6;">${pendingCount} items are pending retry in the Webflow sync dead-letter queue, above the configured threshold of ${threshold}. This usually means a systemic issue (bad token, Webflow outage, rate limiting) rather than isolated item failures.</p>
+      <p style="margin:0;font-size:12px;color:#9CA3AF;">This is an automated alert from the Sage Nest platform. Review the Webflow Sync Health panel in the admin dashboard.</p>
+    `),
+  });
+};
+
 // ─── Brevo Transactional SMS ──────────────────────────────────────────────────
 // Sends a transactional SMS via Brevo SMS API.
 // Throws on API error; caller decides how to handle failure.
@@ -948,4 +1000,6 @@ module.exports = {
   sendExpertBookingCancelledDueToSuspensionEmail,
   sendAdminPayoutAlert,
   sendImLateNotification,
+  sendWebflowSyncFailureAlert,
+  sendWebflowQueueThresholdAlert,
 };
