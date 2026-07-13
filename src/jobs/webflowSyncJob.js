@@ -1,38 +1,39 @@
 const cron   = require('node-cron');
 const prisma  = require('../prisma/client');
 const { syncExpert, syncService } = require('../services/webflow.service');
+const { sendWebflowQueueThresholdAlert } = require('../utils/email');
+
+const QUEUE_THRESHOLD = Number(process.env.WEBFLOW_FAILURE_QUEUE_THRESHOLD) || 10;
+// Throttle the queue-depth alert to at most once per hour, independent of tick cadence.
+const THRESHOLD_ALERT_THROTTLE_MS = 60 * 60 * 1000;
+let lastThresholdAlertAt = 0;
 
 async function runWebflowSync() {
   if (!process.env.WEBFLOW_API_TOKEN) return;
 
-  // Retry FAILED experts that are still live (APPROVED + published)
-  const failedExperts = await prisma.expert.findMany({
-    where:  { webflow_sync_status: 'FAILED', status: 'APPROVED', is_published: true },
-    select: { id: true },
+  // Sweep the dead-letter queue: each row gets syncExpert/syncService run again,
+  // which re-enters the full retry+backoff+dead-letter cycle (see webflow.service.js).
+  const pending = await prisma.webflowSyncFailure.findMany({
+    where:  { status: 'PENDING_RETRY' },
+    select: { id: true, entity_type: true, entity_id: true },
   });
 
-  for (const expert of failedExperts) {
-    await syncExpert(expert.id).catch(() => {}); // status updated inside syncExpert
+  let retried = 0;
+  for (const failure of pending) {
+    const syncFn = failure.entity_type === 'expert' ? syncExpert : syncService;
+    await syncFn(failure.entity_id).catch(() => {}); // status/dead-letter row updated inside
+    retried++;
   }
 
-  // Retry FAILED services whose expert is already synced
-  const failedServices = await prisma.service.findMany({
-    where: {
-      webflow_sync_status: 'FAILED',
-      is_active:           true,
-      expert:              { status: 'APPROVED', webflow_item_id: { not: null } },
-    },
-    select: { id: true },
-  });
-
-  for (const svc of failedServices) {
-    await syncService(svc.id).catch(() => {});
+  if (retried) {
+    console.log(`[WebflowSync] Swept ${retried} dead-lettered item(s) from the retry queue`);
   }
 
-  if (failedExperts.length || failedServices.length) {
-    console.log(
-      `[WebflowSync] Retried ${failedExperts.length} expert(s), ${failedServices.length} service(s)`,
-    );
+  const pendingCount = await prisma.webflowSyncFailure.count({ where: { status: 'PENDING_RETRY' } });
+  if (pendingCount > QUEUE_THRESHOLD && Date.now() - lastThresholdAlertAt > THRESHOLD_ALERT_THROTTLE_MS) {
+    lastThresholdAlertAt = Date.now();
+    await sendWebflowQueueThresholdAlert({ pendingCount, threshold: QUEUE_THRESHOLD })
+      .catch(err => console.error('[WebflowSync] Failed to send queue-threshold alert:', err.message));
   }
 }
 
@@ -50,7 +51,7 @@ function startWebflowSyncJob() {
     }
   });
 
-  console.log('[WebflowSync] Retry job scheduled (every 10 min)');
+  console.log('[WebflowSync] Dead-letter sweep job scheduled (every 10 min)');
 }
 
 module.exports = { startWebflowSyncJob, runWebflowSync };

@@ -53,6 +53,9 @@ const {
   getParentComplianceList,
   webflowSyncExpert,
   webflowSyncAll,
+  listWebflowSyncFailures,
+  retryWebflowSyncFailure,
+  retryAllWebflowSyncFailures,
 } = require('../controllers/admin.controller');
 
 // ── Public routes (no auth required) ─────────────────────────────────────────
@@ -147,6 +150,11 @@ router.get('/compliance/parents', getParentComplianceList);
 // ── Webflow sync ──────────────────────────────────────────────────────────────
 router.post('/experts/:id/webflow-sync', webflowSyncExpert);
 router.post('/webflow/sync-all',         webflowSyncAll);
+
+// ── Webflow sync health (dead-letter queue) ───────────────────────────────────
+router.get('/webflow/failures',                listWebflowSyncFailures);
+router.post('/webflow/failures/:id/retry',      retryWebflowSyncFailure);
+router.post('/webflow/failures/retry-bulk',     retryAllWebflowSyncFailures);
 
 // ── Transactions (Payment Overview) ──────────────────────────────────────────
 router.get('/transactions',        listTransactions);
