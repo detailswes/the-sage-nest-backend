@@ -5,7 +5,7 @@ const WEBFLOW_API_BASE      = 'https://api.webflow.com/v2';
 const EXPERTS_COLLECTION_ID  = process.env.WEBFLOW_EXPERTS_COLLECTION_ID;
 const SERVICES_COLLECTION_ID = process.env.WEBFLOW_SERVICES_COLLECTION_ID;
 const SITE_ID                = process.env.WEBFLOW_SITE_ID;
-const APP_URL                = process.env.APP_URL || 'https://the-sage-nest-frontend-2.onrender.com';
+const APP_URL                = process.env.APP_URL || 'https://portal.sagenest.org';
 
 // Reference collection IDs
 const ONLINE_COL_ID         = process.env.WEBFLOW_ONLINE_COLLECTION_ID;
