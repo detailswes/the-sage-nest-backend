@@ -282,11 +282,16 @@ model BookingConsent {
   id                                Int       @id @default(autoincrement())
   booking_id                        Int       @unique
   user_id                           Int
+  tc_accepted                       Boolean   @default(true)
   tc_version                        String
   tc_accepted_at                    DateTime
+  terms_wording_snapshot            String
+  cancellation_policy_version       String?
   withdrawal_applicable             Boolean   @default(false)
   withdrawal_accepted               Boolean   @default(false)
   withdrawal_accepted_at            DateTime?
+  withdrawal_wording_snapshot       String?
+  withdrawal_expander_snapshot      String?
   privacy_policy_version_displayed  String?
   marketing_consent                 Boolean   @default(false)
   language                          String    @default("en")
