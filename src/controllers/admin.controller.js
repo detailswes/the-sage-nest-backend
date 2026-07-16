@@ -1779,7 +1779,18 @@ async function bumpLegalDocument(req, res) {
     return res.status(400).json({ error: "version is required" });
   }
 
-  let newFileUrl = null;
+  // A published version is a complete EN+IT pair — both PDFs are required so
+  // a version never goes live with only one language available.
+  const enFile = req.files?.document_en?.[0];
+  const itFile = req.files?.document_it?.[0];
+  if (!enFile || !itFile) {
+    return res
+      .status(400)
+      .json({ error: "Both the English and Italian PDF are required to publish a version." });
+  }
+
+  let newFileUrlEn = null;
+  let newFileUrlIt = null;
   try {
     const existing = await prisma.legalDocument.findUnique({
       where: { type_version: { type, version: version.trim() } },
@@ -1790,12 +1801,19 @@ async function bumpLegalDocument(req, res) {
         .json({ error: `Version ${version} already exists for ${type}` });
     }
 
-    if (req.file) {
-      newFileUrl = await uploadFile(req.file.buffer, req.user.id, req.file.originalname, 'legal-documents');
-    }
+    [newFileUrlEn, newFileUrlIt] = await Promise.all([
+      uploadFile(enFile.buffer, req.user.id, enFile.originalname, 'legal-documents'),
+      uploadFile(itFile.buffer, req.user.id, itFile.originalname, 'legal-documents'),
+    ]);
 
     const created = await prisma.legalDocument.create({
-      data: { type, version: version.trim(), file_url: newFileUrl, created_by: req.user.id },
+      data: {
+        type,
+        version: version.trim(),
+        file_url_en: newFileUrlEn,
+        file_url_it: newFileUrlIt,
+        created_by: req.user.id,
+      },
     });
 
     console.log(
@@ -1803,6 +1821,8 @@ async function bumpLegalDocument(req, res) {
     );
 
     // Non-blocking notice to affected users — never a forced re-acceptance.
+    // No per-user language preference is stored, so the email links to the EN PDF;
+    // the IT version is reachable from the linked document page either way.
     if (type === "PRIVACY_POLICY" || type === "TERMS_CONDITIONS") {
       const docLabel = type === "PRIVACY_POLICY" ? "Privacy Policy" : "Terms & Conditions";
       prisma.user.findMany({
@@ -1813,7 +1833,7 @@ async function bumpLegalDocument(req, res) {
         name: u.name,
         docLabel,
         effectiveDate: created.effective_from,
-        docUrl: newFileUrl,
+        docUrl: newFileUrlEn,
       })))).catch((err) => console.error('[Email] Legal document update notice failed:', err.message));
     }
 
@@ -1825,7 +1845,7 @@ async function bumpLegalDocument(req, res) {
     ]);
     return res.status(201).json(enrichDocs(allDocs, toCountMap(acceptanceCounts)));
   } catch (err) {
-    await deleteFile(newFileUrl);
+    await Promise.all([deleteFile(newFileUrlEn), deleteFile(newFileUrlIt)]);
     console.error(err);
     return res.status(500).json({ error: "Server error" });
   }
