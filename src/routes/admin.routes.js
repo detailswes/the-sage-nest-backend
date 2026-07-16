@@ -117,7 +117,7 @@ router.post('/bookings/:id/mark-transfer-resolved', markTransferResolved);
 
 // ── Legal documents ───────────────────────────────────────────────────────────
 router.get('/legal-documents',      getLegalDocuments);
-router.post('/legal-documents/bump', documentUpload.single('document'), bumpLegalDocument);
+router.post('/legal-documents/bump', documentUpload.fields([{ name: 'document_en', maxCount: 1 }, { name: 'document_it', maxCount: 1 }]), bumpLegalDocument);
 
 // ── Audit log ─────────────────────────────────────────────────────────────────
 router.get('/audit-log', getAuditLog);   // ?entityId=X&entityType=EXPERT&page=1

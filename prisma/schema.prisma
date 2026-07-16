@@ -271,7 +271,8 @@ model LegalDocument {
   type           String
   version        String
   effective_from DateTime @default(now())
-  file_url       String?
+  file_url_en    String?
+  file_url_it    String?
   created_by     Int?
 
   @@unique([type, version])

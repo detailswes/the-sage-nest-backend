@@ -1429,7 +1429,7 @@ async function disable2FA(req, res) {
 // live PDF URL (once an admin has published one) without requiring authentication.
 async function getLegalVersions(req, res) {
   try {
-    const select = { version: true, effective_from: true, file_url: true };
+    const select = { version: true, effective_from: true, file_url_en: true, file_url_it: true };
     const [pp, tc, cp] = await Promise.all([
       prisma.legalDocument.findFirst({
         where: { type: "PRIVACY_POLICY" },
