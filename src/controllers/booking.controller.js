@@ -2,6 +2,7 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
 const { logAudit } = require("../utils/auditLog");
 const { normalizeConsentLanguage } = require("../utils/language");
+const { getConsentWording } = require("../utils/legalConsentWording");
 const {
   sendBookingCancellationNotification,
   sendBookingConfirmationEmail,
@@ -183,14 +184,20 @@ async function createBooking(req, res) {
         });
     }
 
-    const currentTcDoc = await prisma.legalDocument.findFirst({
-      where: { type: "TERMS_CONDITIONS" },
-      orderBy: { effective_from: "desc" },
-    });
-    const currentPpDoc = await prisma.legalDocument.findFirst({
-      where: { type: "PRIVACY_POLICY" },
-      orderBy: { effective_from: "desc" },
-    });
+    const [currentTcDoc, currentPpDoc, currentCancellationDoc] = await Promise.all([
+      prisma.legalDocument.findFirst({
+        where: { type: "TERMS_CONDITIONS" },
+        orderBy: { effective_from: "desc" },
+      }),
+      prisma.legalDocument.findFirst({
+        where: { type: "PRIVACY_POLICY" },
+        orderBy: { effective_from: "desc" },
+      }),
+      prisma.legalDocument.findFirst({
+        where: { type: "CANCELLATION_POLICY" },
+        orderBy: { effective_from: "desc" },
+      }),
+    ]);
 
     // Withdrawal (14-day cooling-off) consent is required whenever the session
     // would take place within the statutory withdrawal period — recomputed here
@@ -243,6 +250,7 @@ async function createBooking(req, res) {
     const currency = (service.currency || "EUR").toLowerCase();
 
     const consentLanguage = normalizeConsentLanguage(language);
+    const consentWording  = getConsentWording(consentLanguage);
 
     let booking;
     try {
@@ -277,15 +285,23 @@ async function createBooking(req, res) {
         }
 
         // Full per-booking consent audit trail (spec: booking is its own contract).
+        // Wording is snapshotted verbatim (backend-owned copy, not client-submitted)
+        // so the record remains proof of what was shown even if the checkout copy
+        // changes later.
         await tx.bookingConsent.create({
           data: {
             booking_id: created.id,
             user_id: req.user.id,
+            tc_accepted: true,
             tc_version: currentTcDoc?.version ?? "unversioned",
             tc_accepted_at: now,
+            terms_wording_snapshot: consentWording.terms,
+            cancellation_policy_version: currentCancellationDoc?.version ?? null,
             withdrawal_applicable: withdrawalApplicable,
             withdrawal_accepted: withdrawalApplicable,
             withdrawal_accepted_at: withdrawalApplicable ? now : null,
+            withdrawal_wording_snapshot: withdrawalApplicable ? consentWording.withdrawal : null,
+            withdrawal_expander_snapshot: withdrawalApplicable ? consentWording.withdrawalExpander : null,
             privacy_policy_version_displayed: currentPpDoc?.version ?? null,
             marketing_consent: marketingConsent === true,
             language: consentLanguage,
@@ -923,6 +939,15 @@ async function rescheduleBooking(req, res) {
 
     const previousScheduledAt = booking.scheduled_at;
     const now = new Date();
+
+    // Re-shown at reschedule in whatever language the original consent was
+    // captured in, so the wording snapshot matches what's actually on screen.
+    const existingConsent = await prisma.bookingConsent.findUnique({
+      where: { booking_id: booking.id },
+      select: { language: true },
+    });
+    const consentWording = getConsentWording(existingConsent?.language ?? "en");
+
     await prisma.$transaction([
       prisma.booking.update({
         where: { id: booking.id },
@@ -942,6 +967,8 @@ async function rescheduleBooking(req, res) {
           withdrawal_applicable: withdrawalApplicable,
           withdrawal_accepted: withdrawalApplicable,
           withdrawal_accepted_at: withdrawalApplicable ? now : null,
+          withdrawal_wording_snapshot: withdrawalApplicable ? consentWording.withdrawal : null,
+          withdrawal_expander_snapshot: withdrawalApplicable ? consentWording.withdrawalExpander : null,
         },
       }),
     ]);
