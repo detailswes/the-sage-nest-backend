@@ -1,6 +1,6 @@
 const crypto = require("crypto");
 const ExcelJS = require("exceljs");
-const { deleteFile } = require("../utils/storage");
+const { uploadFile, deleteFile } = require("../utils/storage");
 const { decryptIban } = require("../utils/encryption");
 const { logAudit }   = require("../utils/auditLog");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
@@ -14,6 +14,7 @@ const {
   sendRefundNotificationToExpert,
   sendParentSuspendedEmail,
   sendExpertBookingCancelledDueToSuspensionEmail,
+  sendLegalDocumentUpdatedEmail,
 } = require("../utils/email");
 
 const PAGE_LIMIT = 10;
@@ -1714,45 +1715,51 @@ async function updateBookingNote(req, res) {
 
 // ─── Legal documents ──────────────────────────────────────────────────────────
 
+const LEGAL_DOC_TYPES = ["PRIVACY_POLICY", "TERMS_CONDITIONS", "CANCELLATION_POLICY"];
+
+// Cancellation Policy has no standalone acceptance ledger — it's covered by the
+// same checkbox as the current T&C at booking checkout — so its acceptance count
+// is always reported as empty rather than querying a table that doesn't track it.
+async function acceptanceCountsFor(type) {
+  if (type === "PRIVACY_POLICY") {
+    return prisma.privacyPolicyAcceptance.groupBy({ by: ["version", "language"], _count: { version: true } });
+  }
+  if (type === "TERMS_CONDITIONS") {
+    return prisma.tcAcceptance.groupBy({ by: ["version", "language"], _count: { version: true } });
+  }
+  return [];
+}
+
+function toCountMap(counts) {
+  const byVersion = {};
+  for (const c of counts) {
+    byVersion[c.version] ??= { total: 0, by_language: {} };
+    byVersion[c.version].total += c._count.version;
+    byVersion[c.version].by_language[c.language] = c._count.version;
+  }
+  return byVersion;
+}
+
+const enrichDocs = (docs, countMap) => docs.map((d) => ({
+  ...d,
+  accepted_count: countMap[d.version]?.total ?? 0,
+  accepted_count_by_language: countMap[d.version]?.by_language ?? {},
+}));
+
 async function getLegalDocuments(req, res) {
   try {
-    const [ppDocs, tcDocs, ppCounts, tcCounts] = await Promise.all([
-      prisma.legalDocument.findMany({
-        where: { type: "PRIVACY_POLICY" },
-        orderBy: { effective_from: "desc" },
-      }),
-      prisma.legalDocument.findMany({
-        where: { type: "TERMS_CONDITIONS" },
-        orderBy: { effective_from: "desc" },
-      }),
-      prisma.privacyPolicyAcceptance.groupBy({
-        by: ["version", "language"],
-        _count: { version: true },
-      }),
-      prisma.tcAcceptance.groupBy({
-        by: ["version", "language"],
-        _count: { version: true },
-      }),
+    const [ppDocs, tcDocs, cpDocs, ppCounts, tcCounts] = await Promise.all([
+      prisma.legalDocument.findMany({ where: { type: "PRIVACY_POLICY" },     orderBy: { effective_from: "desc" } }),
+      prisma.legalDocument.findMany({ where: { type: "TERMS_CONDITIONS" },   orderBy: { effective_from: "desc" } }),
+      prisma.legalDocument.findMany({ where: { type: "CANCELLATION_POLICY" }, orderBy: { effective_from: "desc" } }),
+      acceptanceCountsFor("PRIVACY_POLICY"),
+      acceptanceCountsFor("TERMS_CONDITIONS"),
     ]);
 
-    const toMap = (counts) => {
-      const byVersion = {};
-      for (const c of counts) {
-        byVersion[c.version] ??= { total: 0, by_language: {} };
-        byVersion[c.version].total += c._count.version;
-        byVersion[c.version].by_language[c.language] = c._count.version;
-      }
-      return byVersion;
-    };
-    const enrich = (docs, countMap) => docs.map((d) => ({
-      ...d,
-      accepted_count: countMap[d.version]?.total ?? 0,
-      accepted_count_by_language: countMap[d.version]?.by_language ?? {},
-    }));
-
     return res.json({
-      privacy_policy:   enrich(ppDocs, toMap(ppCounts)),
-      terms_conditions: enrich(tcDocs, toMap(tcCounts)),
+      privacy_policy:      enrichDocs(ppDocs, toCountMap(ppCounts)),
+      terms_conditions:    enrichDocs(tcDocs, toCountMap(tcCounts)),
+      cancellation_policy: enrichDocs(cpDocs, {}),
     });
   } catch (err) {
     console.error(err);
@@ -1763,15 +1770,16 @@ async function getLegalDocuments(req, res) {
 async function bumpLegalDocument(req, res) {
   const { type, version } = req.body;
 
-  if (!["PRIVACY_POLICY", "TERMS_CONDITIONS"].includes(type)) {
+  if (!LEGAL_DOC_TYPES.includes(type)) {
     return res
       .status(400)
-      .json({ error: "type must be PRIVACY_POLICY or TERMS_CONDITIONS" });
+      .json({ error: `type must be one of ${LEGAL_DOC_TYPES.join(", ")}` });
   }
   if (!version || typeof version !== "string" || !version.trim()) {
     return res.status(400).json({ error: "version is required" });
   }
 
+  let newFileUrl = null;
   try {
     const existing = await prisma.legalDocument.findUnique({
       where: { type_version: { type, version: version.trim() } },
@@ -1782,34 +1790,42 @@ async function bumpLegalDocument(req, res) {
         .json({ error: `Version ${version} already exists for ${type}` });
     }
 
-    await prisma.legalDocument.create({
-      data: { type, version: version.trim() },
+    if (req.file) {
+      newFileUrl = await uploadFile(req.file.buffer, req.user.id, req.file.originalname, 'legal-documents');
+    }
+
+    const created = await prisma.legalDocument.create({
+      data: { type, version: version.trim(), file_url: newFileUrl, created_by: req.user.id },
     });
 
     console.log(
       `[ADMIN] Legal document bumped: ${type} → v${version} by admin ${req.user?.id}`
     );
 
+    // Non-blocking notice to affected users — never a forced re-acceptance.
+    if (type === "PRIVACY_POLICY" || type === "TERMS_CONDITIONS") {
+      const docLabel = type === "PRIVACY_POLICY" ? "Privacy Policy" : "Terms & Conditions";
+      prisma.user.findMany({
+        where: { notify_platform_updates: true, is_verified: true, account_deleted: false },
+        select: { email: true, name: true },
+      }).then((users) => Promise.allSettled(users.map((u) => sendLegalDocumentUpdatedEmail({
+        to: u.email,
+        name: u.name,
+        docLabel,
+        effectiveDate: created.effective_from,
+        docUrl: newFileUrl,
+      })))).catch((err) => console.error('[Email] Legal document update notice failed:', err.message));
+    }
+
     // Return the full enriched history for this type so the frontend can
     // update its list state without a second round-trip.
     const [allDocs, acceptanceCounts] = await Promise.all([
       prisma.legalDocument.findMany({ where: { type }, orderBy: { effective_from: "desc" } }),
-      type === "PRIVACY_POLICY"
-        ? prisma.privacyPolicyAcceptance.groupBy({ by: ["version", "language"], _count: { version: true } })
-        : prisma.tcAcceptance.groupBy({ by: ["version", "language"], _count: { version: true } }),
+      acceptanceCountsFor(type),
     ]);
-    const countMap = {};
-    for (const c of acceptanceCounts) {
-      countMap[c.version] ??= { total: 0, by_language: {} };
-      countMap[c.version].total += c._count.version;
-      countMap[c.version].by_language[c.language] = c._count.version;
-    }
-    return res.status(201).json(allDocs.map((d) => ({
-      ...d,
-      accepted_count: countMap[d.version]?.total ?? 0,
-      accepted_count_by_language: countMap[d.version]?.by_language ?? {},
-    })));
+    return res.status(201).json(enrichDocs(allDocs, toCountMap(acceptanceCounts)));
   } catch (err) {
+    await deleteFile(newFileUrl);
     console.error(err);
     return res.status(500).json({ error: "Server error" });
   }

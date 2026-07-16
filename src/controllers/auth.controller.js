@@ -132,16 +132,14 @@ function validatePasswordStrength(password) {
 
 // ─── Register ───────────────────────────────────────────────────────────────
 async function register(req, res) {
-  const { email, password, role, name, phone, timezone, privacyPolicyAccepted, termsAccepted, marketingConsent, returnTo, language } = req.body;
+  const { email, password, role, name, phone, timezone, termsAccepted, marketingConsent, returnTo, language } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
   }
 
-  // GDPR hard block — server-side enforcement (client-side alone is not sufficient)
-  if (privacyPolicyAccepted !== true) {
-    return res.status(400).json({ error: "You must accept the Privacy Policy to create an account." });
-  }
+  // GDPR hard block — server-side enforcement (client-side alone is not sufficient).
+  // Privacy Policy is notice-only (no acceptance required); only T&C is a checkbox.
   if (termsAccepted !== true) {
     return res.status(400).json({ error: "You must accept the Terms & Conditions to create an account." });
   }
@@ -195,7 +193,9 @@ async function register(req, res) {
       logAudit(user.id, 'REGISTERED', 'PARENT', user.id, 'Account created');
     }
 
-    // Store Privacy Policy + T&C acceptance (GDPR Art. 6(1)(b) — contract performance)
+    // Record T&C acceptance (GDPR Art. 6(1)(b) — contract performance) and log which
+    // Privacy Policy version was displayed at signup — the PP itself is notice-only and
+    // is never "accepted", so `version`/`accepted_at` below capture display, not consent.
     const [currentPp, currentTc] = await Promise.all([
       prisma.legalDocument.findFirst({
         where: { type: "PRIVACY_POLICY" },
@@ -508,22 +508,6 @@ async function login(req, res) {
       maxAge: REFRESH_TOKEN_EXPIRES_MS,
     });
 
-    // Check if user needs to re-accept an updated Privacy Policy (all roles)
-    let ppUpdateRequired = false;
-    const [currentPp, lastAccepted] = await Promise.all([
-      prisma.legalDocument.findFirst({
-        where: { type: "PRIVACY_POLICY" },
-        orderBy: { effective_from: "desc" },
-      }),
-      prisma.privacyPolicyAcceptance.findFirst({
-        where: { user_id: user.id },
-        orderBy: { accepted_at: "desc" },
-      }),
-    ]);
-    if (currentPp && (!lastAccepted || lastAccepted.version !== currentPp.version)) {
-      ppUpdateRequired = true;
-    }
-
     if (user.role === 'PARENT') {
       logAudit(user.id, 'LOGIN', 'PARENT', user.id);
     }
@@ -531,7 +515,6 @@ async function login(req, res) {
     return res.json({
       accessToken,
       user: userPayload(user),
-      ...(ppUpdateRequired && { pp_update_required: true }),
     });
   } catch (err) {
     console.error(err);
@@ -586,26 +569,9 @@ async function refresh(req, res) {
       maxAge: REFRESH_TOKEN_EXPIRES_MS,
     });
 
-    // Check if user needs to re-accept an updated Privacy Policy (all roles)
-    let ppUpdateRequired = false;
-    const [currentPp, lastPpAccepted] = await Promise.all([
-      prisma.legalDocument.findFirst({
-        where: { type: "PRIVACY_POLICY" },
-        orderBy: { effective_from: "desc" },
-      }),
-      prisma.privacyPolicyAcceptance.findFirst({
-        where: { user_id: user.id },
-        orderBy: { accepted_at: "desc" },
-      }),
-    ]);
-    if (currentPp && (!lastPpAccepted || lastPpAccepted.version !== currentPp.version)) {
-      ppUpdateRequired = true;
-    }
-
     return res.json({
       accessToken: newAccessToken,
       user: userPayload(user),
-      ...(ppUpdateRequired && { pp_update_required: true }),
     });
   } catch (err) {
     console.error(err);
@@ -1458,49 +1424,30 @@ async function disable2FA(req, res) {
 }
 
 // ─── Public: current legal document versions ─────────────────────────────────
-// Used by the public Privacy Policy and Terms & Conditions pages to display
-// the live version number and effective date without requiring authentication.
+// Used by the signup and checkout consent blocks (and the public Privacy Policy /
+// Terms & Conditions pages) to display the live version, effective date, and the
+// live PDF URL (once an admin has published one) without requiring authentication.
 async function getLegalVersions(req, res) {
   try {
-    const [pp, tc] = await Promise.all([
+    const select = { version: true, effective_from: true, file_url: true };
+    const [pp, tc, cp] = await Promise.all([
       prisma.legalDocument.findFirst({
         where: { type: "PRIVACY_POLICY" },
         orderBy: { effective_from: "desc" },
-        select: { version: true, effective_from: true },
+        select,
       }),
       prisma.legalDocument.findFirst({
         where: { type: "TERMS_CONDITIONS" },
         orderBy: { effective_from: "desc" },
-        select: { version: true, effective_from: true },
+        select,
+      }),
+      prisma.legalDocument.findFirst({
+        where: { type: "CANCELLATION_POLICY" },
+        orderBy: { effective_from: "desc" },
+        select,
       }),
     ]);
-    return res.json({ privacy_policy: pp, terms_conditions: tc });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Server error" });
-  }
-}
-
-// ─── Accept Updated Privacy Policy ───────────────────────────────────────────
-async function acceptPrivacyPolicy(req, res) {
-  try {
-    const currentPp = await prisma.legalDocument.findFirst({
-      where: { type: "PRIVACY_POLICY" },
-      orderBy: { effective_from: "desc" },
-    });
-    if (!currentPp) {
-      return res.status(500).json({ error: "Privacy Policy document not found" });
-    }
-
-    await prisma.privacyPolicyAcceptance.create({
-      data: {
-        user_id: req.user.id,
-        version: currentPp.version,
-        language: normalizeConsentLanguage(req.body?.language),
-      },
-    });
-
-    return res.json({ accepted: true, version: currentPp.version });
+    return res.json({ privacy_policy: pp, terms_conditions: tc, cancellation_policy: cp });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -1955,7 +1902,6 @@ module.exports = {
   updateEmail,
   changePassword,
   deleteAccount,
-  acceptPrivacyPolicy,
   getLegalVersions,
   verifyOtp,
   resendOtp,

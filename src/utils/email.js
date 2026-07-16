@@ -191,6 +191,34 @@ const sendWelcomeEmail = ({ to, name, role }) => {
 };
 
 /**
+ * Non-blocking notice that a legal document (Terms & Conditions or Privacy Policy)
+ * has been updated. Informational only — no acceptance is requested by this email;
+ * the user will formally (re-)accept the next time they complete a booking.
+ * @param {{ to: string, name: string, docLabel: string, effectiveDate: Date, docUrl?: string|null }} param0
+ */
+const sendLegalDocumentUpdatedEmail = ({ to, name, docLabel, effectiveDate, docUrl }) => {
+  const dateStr = new Date(effectiveDate).toLocaleDateString('en-GB', {
+    day: 'numeric', month: 'long', year: 'numeric',
+  });
+
+  return sendEmail({
+    to,
+    subject: `We've updated our ${docLabel}`,
+    text: `Hi ${name}, we've updated our ${docLabel}, effective ${dateStr}. ${docUrl ? `View it here: ${docUrl}` : ''}`,
+    html: layout(`
+      <h1 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#1F2933;">We've updated our ${docLabel}</h1>
+      <p style="margin:0 0 20px;font-size:14px;color:#4B5563;line-height:1.6;">
+        Hi ${name}, we wanted to let you know that our ${docLabel} has been updated, effective <strong>${dateStr}</strong>.
+      </p>
+      <p style="margin:0 0 28px;font-size:13px;color:#6B7280;line-height:1.6;">
+        No action is needed right now — you'll be asked to confirm the current version the next time you complete a booking.
+      </p>
+      ${docUrl ? btn(docUrl, `View ${docLabel}`) : ''}
+    `),
+  });
+};
+
+/**
  * Notify an expert that their profile has been approved.
  * @param {{ to: string, name: string }} param0
  */
@@ -979,6 +1007,7 @@ module.exports = {
   sendMarketingEmail,
   verifyEmailConnection,
   sendWelcomeEmail,
+  sendLegalDocumentUpdatedEmail,
   sendExpertApprovedEmail,
   sendExpertRejectedEmail,
   sendPasswordResetEmail,

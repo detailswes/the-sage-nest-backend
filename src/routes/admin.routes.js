@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { authenticate, authenticateOptional, requireAdmin } = require('../middleware/auth.middleware');
+const documentUpload = require('../middleware/documentUpload.middleware');
 const {
   listExperts,
   approveExpert,
@@ -116,7 +117,7 @@ router.post('/bookings/:id/mark-transfer-resolved', markTransferResolved);
 
 // ── Legal documents ───────────────────────────────────────────────────────────
 router.get('/legal-documents',      getLegalDocuments);
-router.post('/legal-documents/bump', bumpLegalDocument);
+router.post('/legal-documents/bump', documentUpload.single('document'), bumpLegalDocument);
 
 // ── Audit log ─────────────────────────────────────────────────────────────────
 router.get('/audit-log', getAuditLog);   // ?entityId=X&entityType=EXPERT&page=1
