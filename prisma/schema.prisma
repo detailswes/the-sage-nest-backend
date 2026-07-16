@@ -47,6 +47,7 @@ model User {
   tc_acceptances              TcAcceptance[]
   slot_locks                  SlotLock[]                @relation("ParentSlotLocks")
   late_notifications          LateNotification[]        @relation("ParentLateNotifications")
+  booking_consents            BookingConsent[]
 }
 
 model RefreshToken {
@@ -260,6 +261,7 @@ model Booking {
   notifications            Notification[]
   review                   Review?
   late_notifications       LateNotification[]
+  consent                  BookingConsent?
 
   @@unique([expert_id, scheduled_at])
 }
@@ -269,8 +271,27 @@ model LegalDocument {
   type           String
   version        String
   effective_from DateTime @default(now())
+  file_url       String?
+  created_by     Int?
 
   @@unique([type, version])
+}
+
+model BookingConsent {
+  id                                Int       @id @default(autoincrement())
+  booking_id                        Int       @unique
+  user_id                           Int
+  tc_version                        String
+  tc_accepted_at                    DateTime
+  withdrawal_applicable             Boolean   @default(false)
+  withdrawal_accepted               Boolean   @default(false)
+  withdrawal_accepted_at            DateTime?
+  privacy_policy_version_displayed  String?
+  marketing_consent                 Boolean   @default(false)
+  language                          String    @default("en")
+  created_at                        DateTime  @default(now())
+  booking                           Booking   @relation(fields: [booking_id], references: [id], onDelete: Cascade)
+  user                              User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
 }
 
 model PrivacyPolicyAcceptance {

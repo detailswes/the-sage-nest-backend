@@ -78,8 +78,10 @@ async function createRefundWithFallback({
 // Body: { expertId, serviceId, scheduledAt (ISO string), format }
 // Returns: { bookingId, clientSecret }
 //
+const WITHDRAWAL_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
 async function createBooking(req, res) {
-  const { expertId, serviceId, scheduledAt, format, lockId } = req.body;
+  const { expertId, serviceId, scheduledAt, format, lockId, tcAccepted, withdrawalAccepted, marketingConsent, language } = req.body;
 
   if (!expertId || !serviceId || !scheduledAt || !format || !lockId) {
     return res
@@ -168,37 +170,39 @@ async function createBooking(req, res) {
         .json({ error: "This service is no longer available" });
     }
 
-    // ── Verify T&C accepted for the current version ─────────────────────────
+    // ── Verify booking-level consent ─────────────────────────────────────────
+    // Every booking is its own contract — a past acceptance (even of the same
+    // T&C version) never satisfies this booking. The checkbox must be freshly
+    // ticked every time.
+    if (tcAccepted !== true) {
+      return res
+        .status(400)
+        .json({
+          error:
+            "You must accept the Terms & Conditions and Cancellation Policy before proceeding.",
+        });
+    }
+
     const currentTcDoc = await prisma.legalDocument.findFirst({
       where: { type: "TERMS_CONDITIONS" },
       orderBy: { effective_from: "desc" },
     });
-    if (currentTcDoc) {
-      // Check booking-flow acceptances first (TcAcceptance), then fall back to
-      // registration-time acceptance (PrivacyPolicyAcceptance.tc_version). Parents
-      // who accepted T&C during registration never get a TcAcceptance row, so both
-      // tables must be checked — same logic as getCurrentTcVersion.
-      const [bookingAccepted, regAccepted] = await Promise.all([
-        prisma.tcAcceptance.findUnique({
-          where: {
-            user_id_version: {
-              user_id: req.user.id,
-              version: currentTcDoc.version,
-            },
-          },
-        }),
-        prisma.privacyPolicyAcceptance.findFirst({
-          where: { user_id: req.user.id, tc_version: currentTcDoc.version },
-        }),
-      ]);
-      if (!bookingAccepted && !regAccepted) {
-        return res
-          .status(400)
-          .json({
-            error:
-              "You must accept the current Terms & Conditions before proceeding.",
-          });
-      }
+    const currentPpDoc = await prisma.legalDocument.findFirst({
+      where: { type: "PRIVACY_POLICY" },
+      orderBy: { effective_from: "desc" },
+    });
+
+    // Withdrawal (14-day cooling-off) consent is required whenever the session
+    // would take place within the statutory withdrawal period — recomputed here
+    // server-side, never trusted from the client.
+    const withdrawalApplicable =
+      scheduledDate.getTime() - Date.now() <= WITHDRAWAL_WINDOW_MS;
+    if (withdrawalApplicable && withdrawalAccepted !== true) {
+      return res.status(400).json({
+        error:
+          "You must confirm the early-performance / withdrawal consent before proceeding.",
+        withdrawal_required: true,
+      });
     }
 
     // ── Verify slot lock ────────────────────────────────────────────────────
@@ -238,10 +242,12 @@ async function createBooking(req, res) {
     const platformFee = (Number(service.price) * 0.2).toFixed(2);
     const currency = (service.currency || "EUR").toLowerCase();
 
+    const consentLanguage = normalizeConsentLanguage(language);
+
     let booking;
     try {
-      [booking] = await prisma.$transaction([
-        prisma.booking.create({
+      booking = await prisma.$transaction(async (tx) => {
+        const created = await tx.booking.create({
           data: {
             expert_id: expert.id,
             parent_id: req.user.id,
@@ -255,9 +261,39 @@ async function createBooking(req, res) {
             platform_fee: platformFee,
             payment_expires_at: new Date(now.getTime() + 30 * 60 * 1000),
           },
-        }),
-        prisma.slotLock.delete({ where: { id: lock.id } }),
-      ]);
+        });
+        await tx.slotLock.delete({ where: { id: lock.id } });
+
+        // Durable per-version ledger (still used by admin acceptance counts) —
+        // kept alongside, but no longer what gates the checkbox on the frontend.
+        if (currentTcDoc) {
+          await tx.tcAcceptance.upsert({
+            where: {
+              user_id_version: { user_id: req.user.id, version: currentTcDoc.version },
+            },
+            create: { user_id: req.user.id, version: currentTcDoc.version, language: consentLanguage },
+            update: {},
+          });
+        }
+
+        // Full per-booking consent audit trail (spec: booking is its own contract).
+        await tx.bookingConsent.create({
+          data: {
+            booking_id: created.id,
+            user_id: req.user.id,
+            tc_version: currentTcDoc?.version ?? "unversioned",
+            tc_accepted_at: now,
+            withdrawal_applicable: withdrawalApplicable,
+            withdrawal_accepted: withdrawalApplicable,
+            withdrawal_accepted_at: withdrawalApplicable ? now : null,
+            privacy_policy_version_displayed: currentPpDoc?.version ?? null,
+            marketing_consent: marketingConsent === true,
+            language: consentLanguage,
+          },
+        });
+
+        return created;
+      });
     } catch (err) {
       if (err.code === "P2002") {
         return res
@@ -768,7 +804,7 @@ async function cancelBooking(req, res) {
 //
 async function rescheduleBooking(req, res) {
   const { id } = req.params;
-  const { newScheduledAt } = req.body;
+  const { newScheduledAt, withdrawalAccepted } = req.body;
 
   if (!newScheduledAt) {
     return res.status(400).json({ error: "newScheduledAt is required" });
@@ -839,6 +875,19 @@ async function rescheduleBooking(req, res) {
         });
     }
 
+    // Withdrawal (14-day cooling-off) consent, re-checked for the new session date.
+    // Measured from the ORIGINAL booking date, not the session date or "now" —
+    // the statutory withdrawal window is anchored to when the contract was formed.
+    const withdrawalApplicable =
+      newDate.getTime() - booking.created_at.getTime() <= WITHDRAWAL_WINDOW_MS;
+    if (withdrawalApplicable && withdrawalAccepted !== true) {
+      return res.status(400).json({
+        error:
+          "You must confirm the early-performance / withdrawal consent before rescheduling.",
+        withdrawal_required: true,
+      });
+    }
+
     // Check the target slot is free for this expert (any status — unique constraint
     // on expert_id + scheduled_at applies table-wide, so even CANCELLED rows block)
     const conflict = await prisma.booking.findFirst({
@@ -874,18 +923,28 @@ async function rescheduleBooking(req, res) {
 
     const previousScheduledAt = booking.scheduled_at;
     const now = new Date();
-    await prisma.booking.update({
-      where: { id: booking.id },
-      data: {
-        scheduled_at: newDate,
-        is_reschedule: true, // guards against refund logic misfiring
-        rescheduled_at: now,
-        transfer_due_at: newTransferDueAt,
-        reminder_1h_sent: false, // reset so reminders fire for the new time
-        reminder_24h_sent: false,
-        min_refund_percent: newMinRefundPercent,
-      },
-    });
+    await prisma.$transaction([
+      prisma.booking.update({
+        where: { id: booking.id },
+        data: {
+          scheduled_at: newDate,
+          is_reschedule: true, // guards against refund logic misfiring
+          rescheduled_at: now,
+          transfer_due_at: newTransferDueAt,
+          reminder_1h_sent: false, // reset so reminders fire for the new time
+          reminder_24h_sent: false,
+          min_refund_percent: newMinRefundPercent,
+        },
+      }),
+      prisma.bookingConsent.updateMany({
+        where: { booking_id: booking.id },
+        data: {
+          withdrawal_applicable: withdrawalApplicable,
+          withdrawal_accepted: withdrawalApplicable,
+          withdrawal_accepted_at: withdrawalApplicable ? now : null,
+        },
+      }),
+    ]);
 
     console.log(
       `[rescheduleBooking] booking=${booking.id} rescheduled ${booking.scheduled_at.toISOString()} → ${newDate.toISOString()}`,
@@ -1535,101 +1594,6 @@ async function abandonBooking(req, res) {
   }
 }
 
-// ─── GET /bookings/tc-version ─────────────────────────────────────────────────
-// Returns whether this user must explicitly accept T&C before booking.
-// Triggers for two cases:
-//   1. Never accepted T&C at all (neither at registration nor in a prior booking)
-//   2. T&C was updated since their last acceptance (registration or booking)
-async function getCurrentTcVersion(req, res) {
-  try {
-    const [currentTc, lastBookingAccepted, lastRegAccepted] = await Promise.all(
-      [
-        prisma.legalDocument.findFirst({
-          where: { type: "TERMS_CONDITIONS" },
-          orderBy: { effective_from: "desc" },
-        }),
-        // Per-booking acceptances (TcAcceptance)
-        prisma.tcAcceptance.findFirst({
-          where: { user_id: req.user.id },
-          orderBy: { accepted_at: "desc" },
-          select: { version: true },
-        }),
-        // Registration-time acceptance (stored in PrivacyPolicyAcceptance.tc_version)
-        prisma.privacyPolicyAcceptance.findFirst({
-          where: { user_id: req.user.id, tc_version: { not: null } },
-          orderBy: { accepted_at: "desc" },
-          select: { tc_version: true },
-        }),
-      ],
-    );
-
-    // Use the most recent T&C version the user has ever accepted, from either source
-    const lastAcceptedVersion =
-      lastBookingAccepted?.version ?? lastRegAccepted?.tc_version ?? null;
-
-    const isFirstBooking = !lastAcceptedVersion;
-    const versionUpdated = !!(
-      currentTc &&
-      lastAcceptedVersion &&
-      lastAcceptedVersion !== currentTc.version
-    );
-
-    return res.json({
-      version: currentTc?.version ?? null,
-      version_updated: currentTc ? isFirstBooking || versionUpdated : false,
-      is_first_booking: isFirstBooking,
-    });
-  } catch (err) {
-    console.error("[getCurrentTcVersion] Error:", err);
-    return res.status(500).json({ error: "Server error" });
-  }
-}
-
-// ─── POST /bookings/accept-tc ─────────────────────────────────────────────────
-// Records the parent's acceptance of the current T&C version.
-// Idempotent — safe to call multiple times for the same version.
-async function acceptTc(req, res) {
-  try {
-    const currentTc = await prisma.legalDocument.findFirst({
-      where: { type: "TERMS_CONDITIONS" },
-      orderBy: { effective_from: "desc" },
-    });
-    if (!currentTc) {
-      return res
-        .status(404)
-        .json({ error: "No Terms & Conditions document found." });
-    }
-
-    await prisma.tcAcceptance.upsert({
-      where: {
-        user_id_version: { user_id: req.user.id, version: currentTc.version },
-      },
-      // update: {} is intentional — if this version was already accepted, the
-      // originally recorded language is preserved rather than overwritten, so
-      // the acceptance record stays an immutable snapshot of what was agreed to.
-      create: {
-        user_id: req.user.id,
-        version: currentTc.version,
-        language: normalizeConsentLanguage(req.body?.language),
-      },
-      update: {},
-    });
-
-    logAudit(
-      req.user.id,
-      "TC_ACCEPTED",
-      "PARENT",
-      req.user.id,
-      `T&C v${currentTc.version} accepted`,
-    );
-
-    return res.json({ accepted: true, version: currentTc.version });
-  } catch (err) {
-    console.error("[acceptTc] Error:", err);
-    return res.status(500).json({ error: "Server error" });
-  }
-}
-
 module.exports = {
   createBooking,
   getBookingById,
@@ -1645,7 +1609,5 @@ module.exports = {
   markSessionLinkSent,
   markBookingComplete,
   saveExpertNote,
-  getCurrentTcVersion,
-  acceptTc,
   reportImLate,
 };

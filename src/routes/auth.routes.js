@@ -5,7 +5,7 @@ const {
   verifyEmail, resendVerification,
   forgotPassword, resetPassword,
   getProfile, updateProfile, updateEmail, changePassword, deleteAccount,
-  acceptPrivacyPolicy, getLegalVersions,
+  getLegalVersions,
   verifyOtp, resendOtp,
   get2FAStatus, sendSetupOtp, enable2FA, disable2FA,
   exportMyData,
@@ -36,7 +36,6 @@ router.get   ('/notification-preferences',  authenticate, getParentNotificationP
 router.patch ('/notification-preferences',  authenticate, updateParentNotificationPrefs);
 router.get   ('/legal-consents',            authenticate, getLegalConsents);
 router.patch ('/marketing-consent',         authenticate, updateMarketingConsent);
-router.post  ('/accept-pp',        authenticate, acceptPrivacyPolicy);
 
 // ── 2FA login flow — public (uses otp_token JWT, no session yet) ──────────────
 router.post('/verify-otp', verifyOtp);
