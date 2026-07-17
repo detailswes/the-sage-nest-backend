@@ -31,6 +31,7 @@ model User {
   two_factor_enabled          Boolean                   @default(false)
   city                        String?
   timezone                    String?
+  language                    String                    @default("en")
   notify_booking_confirmation Boolean                   @default(true)
   notify_expert_cancellation  Boolean                   @default(true)
   notify_platform_updates     Boolean                   @default(false)

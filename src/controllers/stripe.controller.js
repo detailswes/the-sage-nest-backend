@@ -6,6 +6,7 @@ const {
   sendNewBookingNotificationEmail,
   sendAdminPayoutAlert,
 } = require('../utils/email');
+const { getLegalDocLinks } = require('../utils/legalDocLinks');
 
 // ─── Step 1 & 2: Expert clicks connect — create Stripe onboarding link ────────
 async function createConnectLink(req, res) {
@@ -108,9 +109,10 @@ async function processStripeEvent(event) {
       const booking = await prisma.booking.findFirst({
         where: { stripe_payment_intent_id: pi.id },
         include: {
-          parent:  { select: { name: true, email: true, notify_booking_confirmation: true } },
+          parent:  { select: { name: true, email: true, language: true, timezone: true, notify_booking_confirmation: true } },
           expert:  { select: { address_street: true, address_city: true, address_postcode: true, timezone: true, notify_new_booking: true, user: { select: { name: true, email: true } } } },
           service: { select: { title: true } },
+          consent: { select: { language: true, withdrawal_applicable: true } },
         },
       });
 
@@ -148,15 +150,24 @@ async function processStripeEvent(event) {
         // Fire-and-forget: parent confirmation + expert new-booking notification
         const expertAddress = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
         if (booking.parent.notify_booking_confirmation !== false) {
-          sendBookingConfirmationEmail({
-            to:              booking.parent.email,
-            name:            booking.parent.name,
-            expertName:      booking.expert.user.name,
-            serviceTitle:    booking.service.title,
-            format:          booking.format,
-            scheduledAt:     booking.scheduled_at,
-            durationMinutes: booking.duration_minutes,
-            location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
+          const confirmationLanguage = booking.consent?.language || booking.parent.language || 'en';
+          getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
+            sendBookingConfirmationEmail({
+              to:              booking.parent.email,
+              name:            booking.parent.name,
+              expertName:      booking.expert.user.name,
+              serviceTitle:    booking.service.title,
+              format:          booking.format,
+              scheduledAt:     booking.scheduled_at,
+              durationMinutes: booking.duration_minutes,
+              location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
+              language:        confirmationLanguage,
+              amount:          booking.amount,
+              currency:        booking.currency,
+              userTimezone:    booking.parent.timezone,
+              withdrawalApplicable: booking.consent?.withdrawal_applicable,
+              ...legalLinks,
+            });
           }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));
         }
 

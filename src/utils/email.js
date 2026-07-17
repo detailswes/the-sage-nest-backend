@@ -6,6 +6,7 @@ const {
 } = require("./email_templates/passwordResetEmail");
 const {
   bookingConfirmationEmailHtml,
+  bookingConfirmationEmailSubject,
 } = require("./email_templates/bookingConfirmationEmail");
 const {
   cancellationNotificationEmailHtml,
@@ -311,12 +312,16 @@ const sendVerificationEmail = ({ to, name, userId, verificationCode, returnTo })
 };
 
 /**
- * Booking confirmation email — sent to the parent after webhook confirms payment.
+ * Booking confirmation email — sent to the parent after webhook confirms payment,
+ * and re-sent (with updated details) after a reschedule.
  * @param {{
  *   to: string, name: string, expertName: string,
  *   serviceTitle: string, format: string,
  *   scheduledAt: Date, durationMinutes: number,
- *   location?: string
+ *   location?: string, language?: 'en' | 'it',
+ *   amount?: number | string | null, currency?: string,
+ *   userTimezone?: string | null, withdrawalApplicable?: boolean,
+ *   termsUrl: string, policyUrl: string, privacyUrl: string,
  * }} param0
  */
 const sendBookingConfirmationEmail = ({
@@ -328,13 +333,23 @@ const sendBookingConfirmationEmail = ({
   scheduledAt,
   durationMinutes,
   location,
-}) =>
-  sendEmail({
+  language,
+  amount,
+  currency,
+  userTimezone,
+  withdrawalApplicable,
+  termsUrl,
+  policyUrl,
+  privacyUrl,
+}) => {
+  const lang = language === "it" ? "it" : "en";
+  return sendEmail({
     to,
-    subject: `Your booking is confirmed — ${serviceTitle} with ${expertName.split(' ')[0]}`,
-    text: `Hi ${name}, your booking for ${serviceTitle} on ${new Date(
-      scheduledAt
-    ).toLocaleDateString("en-GB")} is confirmed.`,
+    subject: bookingConfirmationEmailSubject({ language: lang, serviceTitle, expertName, scheduledAt, userTimezone }),
+    text:
+      lang === "it"
+        ? `Ciao ${name}, la tua prenotazione per ${serviceTitle} il ${new Date(scheduledAt).toLocaleDateString("it-IT")} è confermata.`
+        : `Hi ${name}, your booking for ${serviceTitle} on ${new Date(scheduledAt).toLocaleDateString("en-GB")} is confirmed.`,
     html: bookingConfirmationEmailHtml({
       name,
       expertName,
@@ -345,8 +360,17 @@ const sendBookingConfirmationEmail = ({
       location,
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
+      language: lang,
+      amount,
+      currency,
+      userTimezone,
+      withdrawalApplicable: !!withdrawalApplicable,
+      termsUrl,
+      policyUrl,
+      privacyUrl,
     }),
   });
+};
 
 /**
  * Cancellation notification email — sent to the expert when a parent cancels.

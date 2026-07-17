@@ -3,6 +3,7 @@ const prisma = require("../prisma/client");
 const { logAudit } = require("../utils/auditLog");
 const { normalizeConsentLanguage } = require("../utils/language");
 const { getConsentWording } = require("../utils/legalConsentWording");
+const { getLegalDocLinks } = require("../utils/legalDocLinks");
 const {
   sendBookingCancellationNotification,
   sendBookingConfirmationEmail,
@@ -841,7 +842,7 @@ async function rescheduleBooking(req, res) {
       where: { id: parseInt(id) },
       include: {
         parent: {
-          select: { name: true, email: true, notify_reschedule: true },
+          select: { name: true, email: true, language: true, timezone: true, notify_reschedule: true },
         },
         expert: {
           select: {
@@ -986,18 +987,27 @@ async function rescheduleBooking(req, res) {
       .filter(Boolean)
       .join(", ");
     if (booking.parent.notify_reschedule !== false) {
-      sendBookingConfirmationEmail({
-        to: booking.parent.email,
-        name: booking.parent.name,
-        expertName: booking.expert.user.name,
-        serviceTitle: booking.service.title,
-        format: booking.format,
-        scheduledAt: newDate,
-        durationMinutes: booking.duration_minutes,
-        location:
-          booking.format === "IN_PERSON"
-            ? expertAddress || undefined
-            : undefined,
+      const confirmationLanguage = existingConsent?.language || booking.parent.language || "en";
+      getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
+        sendBookingConfirmationEmail({
+          to: booking.parent.email,
+          name: booking.parent.name,
+          expertName: booking.expert.user.name,
+          serviceTitle: booking.service.title,
+          format: booking.format,
+          scheduledAt: newDate,
+          durationMinutes: booking.duration_minutes,
+          location:
+            booking.format === "IN_PERSON"
+              ? expertAddress || undefined
+              : undefined,
+          language: confirmationLanguage,
+          amount: booking.amount,
+          currency: booking.currency,
+          userTimezone: booking.parent.timezone,
+          withdrawalApplicable,
+          ...legalLinks,
+        });
       }).catch((e) =>
         console.error(
           "[Email] Reschedule parent confirmation failed:",
@@ -1245,6 +1255,8 @@ async function verifyPayment(req, res) {
             id: true,
             name: true,
             email: true,
+            language: true,
+            timezone: true,
             notify_booking_confirmation: true,
           },
         },
@@ -1258,6 +1270,7 @@ async function verifyPayment(req, res) {
           },
         },
         service: { select: { title: true } },
+        consent: { select: { language: true, withdrawal_applicable: true } },
       },
     });
 
@@ -1324,18 +1337,27 @@ async function verifyPayment(req, res) {
       .filter(Boolean)
       .join(", ");
     if (booking.parent.notify_booking_confirmation !== false) {
-      sendBookingConfirmationEmail({
-        to: booking.parent.email,
-        name: booking.parent.name,
-        expertName: booking.expert.user.name,
-        serviceTitle: booking.service.title,
-        format: booking.format,
-        scheduledAt: booking.scheduled_at,
-        durationMinutes: booking.duration_minutes,
-        location:
-          booking.format === "IN_PERSON"
-            ? expertAddressVerify || undefined
-            : undefined,
+      const confirmationLanguage = booking.consent?.language || booking.parent.language || "en";
+      getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
+        sendBookingConfirmationEmail({
+          to: booking.parent.email,
+          name: booking.parent.name,
+          expertName: booking.expert.user.name,
+          serviceTitle: booking.service.title,
+          format: booking.format,
+          scheduledAt: booking.scheduled_at,
+          durationMinutes: booking.duration_minutes,
+          location:
+            booking.format === "IN_PERSON"
+              ? expertAddressVerify || undefined
+              : undefined,
+          language: confirmationLanguage,
+          amount: booking.amount,
+          currency: booking.currency,
+          userTimezone: booking.parent.timezone,
+          withdrawalApplicable: booking.consent?.withdrawal_applicable,
+          ...legalLinks,
+        });
       }).catch((e) =>
         console.error(
           "[verifyPayment] Parent confirmation email failed:",
