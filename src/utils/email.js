@@ -37,6 +37,7 @@ const {
 } = require("./email_templates/parentSuspendedEmail");
 const {
   expertBookingCancelledSuspensionEmailHtml,
+  expertBookingCancelledSuspensionEmailSubject,
 } = require("./email_templates/expertBookingCancelledSuspensionEmail");
 const {
   imLateEmailHtml,
@@ -59,6 +60,9 @@ const SENDER_MARKETING = {
 
 // Contact email shown inside transactional email bodies (mailto links / "contact us" text)
 const CONTACT_EMAIL = process.env.EMAIL_FROM_NOTIFICATIONS;
+// "Questions? Contact us at ..." lines point at the monitored support mailbox,
+// distinct from the notifications address the email is actually sent from.
+const SUPPORT_EMAIL = process.env.EMAIL_FROM_MARKETING || CONTACT_EMAIL;
 
 // ─── Verify config (call once at server startup) ──────────────────────────────
 const verifyEmailConnection = async () => {
@@ -338,6 +342,7 @@ const sendBookingConfirmationEmail = ({
   currency,
   userTimezone,
   withdrawalApplicable,
+  bookingId,
   termsUrl,
   policyUrl,
   privacyUrl,
@@ -360,11 +365,13 @@ const sendBookingConfirmationEmail = ({
       location,
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
       language: lang,
       amount,
       currency,
       userTimezone,
       withdrawalApplicable: !!withdrawalApplicable,
+      bookingId,
       termsUrl,
       policyUrl,
       privacyUrl,
@@ -827,24 +834,37 @@ const sendParentSuspendedEmail = ({ to, parentName, cancelledBookingCount }) =>
 const sendExpertBookingCancelledDueToSuspensionEmail = ({
   to,
   expertName,
+  parentName,
   serviceTitle,
   scheduledAt,
   bookingId,
+  timezone,
+  language,
+  policyUrl,
 }) => {
-  const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
-    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
+  const lang = language === "it" ? "it" : "en";
+  const dateStr = new Date(scheduledAt).toLocaleDateString(lang === "it" ? "it-IT" : "en-GB", {
+    weekday: "long", day: "numeric", month: "long", year: "numeric",
   });
   return sendEmail({
     to,
-    subject: `Session cancelled — ${dateStr} (Booking #${bookingId})`,
-    text: `Hi ${expertName?.split(' ')[0] || 'there'}, an upcoming session (${serviceTitle}, ${dateStr}, booking #${bookingId}) has been cancelled because the parent's account is no longer active on the platform. No payout will be processed for this booking.`,
+    subject: expertBookingCancelledSuspensionEmailSubject({ language: lang, serviceTitle, parentName, scheduledAt, timezone }),
+    text:
+      lang === "it"
+        ? `Ciao ${expertName?.split(' ')[0] || 'there'}, una sessione in programma (${serviceTitle}, ${dateStr}, prenotazione ${bookingId}) è stata cancellata perché l'account del genitore non è più attivo sulla piattaforma.`
+        : `Hi ${expertName?.split(' ')[0] || 'there'}, an upcoming session (${serviceTitle}, ${dateStr}, booking #${bookingId}) has been cancelled because the parent's account is no longer active on the platform.`,
     html: expertBookingCancelledSuspensionEmailHtml({
       expertName,
+      parentName,
       serviceTitle,
       scheduledAt,
       bookingId,
+      timezone,
+      language: lang,
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
+      policyUrl,
     }),
   });
 };

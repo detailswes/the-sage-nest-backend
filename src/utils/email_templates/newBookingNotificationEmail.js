@@ -1,3 +1,5 @@
+const { formatBookingRef } = require("../bookingRef");
+
 /**
  * Notification email sent to the expert when a new booking is confirmed.
  *
@@ -9,6 +11,7 @@
  *   format: 'ONLINE' | 'IN_PERSON',
  *   scheduledAt: Date,
  *   durationMinutes: number,
+ *   bookingId: number,
  *   clientUrl: string
  * }} params
  */
@@ -30,6 +33,7 @@ const newBookingNotificationEmailHtml = ({
   scheduledAt,
   durationMinutes,
   timezone,
+  bookingId,
   clientUrl,
   contactEmail,
 }) => {
@@ -115,9 +119,15 @@ const newBookingNotificationEmailHtml = ({
                 </td>
               </tr>
               <tr>
-                <td style="padding-top:12px;border-top:1px solid #c5ceba;">
+                <td style="padding:12px 0;border-top:1px solid #c5ceba;">
                   <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Format</span><br>
                   <span style="font-size:15px;font-weight:600;color:#445446;">${format === 'ONLINE' ? 'Online' : 'In-Person'}</span>
+                </td>
+              </tr>
+              <tr>
+                <td style="padding-top:12px;border-top:1px solid #c5ceba;padding-bottom:0;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">Booking Ref</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${formatBookingRef(bookingId)}</span>
                 </td>
               </tr>
             </table>

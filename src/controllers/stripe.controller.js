@@ -166,6 +166,7 @@ async function processStripeEvent(event) {
               currency:        booking.currency,
               userTimezone:    booking.parent.timezone,
               withdrawalApplicable: booking.consent?.withdrawal_applicable,
+              bookingId:       booking.id,
               ...legalLinks,
             });
           }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));

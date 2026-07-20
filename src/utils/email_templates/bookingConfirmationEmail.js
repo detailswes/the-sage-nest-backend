@@ -1,32 +1,6 @@
 const { getConsentWording } = require("../legalConsentWording");
-
-// Common European city names, translated for the IT template so the "—
-// [City] time" phrase reads naturally regardless of which timezone the
-// parent's account is set to (not just Italian ones). Unmapped cities fall
-// back to their English/IANA form, which is still understandable in Italian.
-const CITY_IT = {
-  Copenhagen: "Copenaghen",
-  Rome: "Roma",
-  Milan: "Milano",
-  Naples: "Napoli",
-  Turin: "Torino",
-  Florence: "Firenze",
-  Venice: "Venezia",
-  London: "Londra",
-  Paris: "Parigi",
-  Madrid: "Madrid",
-  Berlin: "Berlino",
-  Vienna: "Vienna",
-  Athens: "Atene",
-  Lisbon: "Lisbona",
-  Dublin: "Dublino",
-  Amsterdam: "Amsterdam",
-  Brussels: "Bruxelles",
-  Stockholm: "Stoccolma",
-  Warsaw: "Varsavia",
-  Prague: "Praga",
-  Zurich: "Zurigo",
-};
+const { formatDateTime } = require("../emailDateTimeFormat");
+const { formatBookingRef } = require("../bookingRef");
 
 const COPY = {
   en: {
@@ -36,7 +10,7 @@ const COPY = {
     greetingLead: (name) => `Hi ${name},`,
     greetingSub: "Your booking is confirmed. Here are your session details:",
     bookingDetails: "Booking Details",
-    labels: { expert: "Expert", service: "Service", date: "Date", time: "Time", duration: "Duration", format: "Format", location: "Location", price: "Price Paid" },
+    labels: { expert: "Expert", service: "Service", date: "Date", time: "Time", duration: "Duration", format: "Format", location: "Location", price: "Price Paid", bookingRef: "Booking Ref" },
     formatLabel: { ONLINE: "Online", IN_PERSON: "In-Person" },
     onlineNotice: "For online sessions: your expert will send you the video call details no later than 24 hours before your session — or promptly after booking, if your session starts sooner.",
     paymentHeading: "Payment",
@@ -59,7 +33,6 @@ const COPY = {
     footerAddress: "Sage Nest ApS &middot; CVR 46566181 &middot; Copenhagen, Denmark",
     footerContact: (email) => `Questions? Contact us at <a href="mailto:${email}" style="color:#445446;">${email}</a>`,
     transactional: (email) => `This is a transactional message about your booking, sent from ${email}.`,
-    tzTime: (abbrev, city) => `(${abbrev} — ${city} time)`,
   },
   it: {
     subject: ({ serviceTitle, expertName, dateStr }) =>
@@ -68,7 +41,7 @@ const COPY = {
     greetingLead: (name) => `Ciao ${name},`,
     greetingSub: "la tua prenotazione è confermata. Ecco i dettagli della tua sessione:",
     bookingDetails: "Dettagli della Prenotazione",
-    labels: { expert: "Professionista", service: "Servizio", date: "Data", time: "Orario", duration: "Durata", format: "Modalità", location: "Luogo", price: "Prezzo Pagato" },
+    labels: { expert: "Professionista", service: "Servizio", date: "Data", time: "Orario", duration: "Durata", format: "Modalità", location: "Luogo", price: "Prezzo Pagato", bookingRef: "Riferimento Prenotazione" },
     formatLabel: { ONLINE: "Online", IN_PERSON: "In presenza" },
     onlineNotice: "Per le sessioni online: il tuo Professionista ti invierà i dettagli per la videochiamata entro e non oltre 24 ore prima della sessione — oppure subito dopo la prenotazione, se la tua sessione inizia prima.",
     paymentHeading: "Pagamento",
@@ -91,29 +64,8 @@ const COPY = {
     footerAddress: "Sage Nest ApS &middot; CVR 46566181 &middot; Copenaghen, Danimarca",
     footerContact: (email) => `Domande? Contattaci a <a href="mailto:${email}" style="color:#445446;">${email}</a>`,
     transactional: (email) => `Questa è una comunicazione di servizio relativa alla tua prenotazione, inviata da ${email}.`,
-    tzTime: (abbrev, city) => `(${abbrev} — ora di ${city})`,
   },
 };
-
-function cityLabel(timezone, language) {
-  const raw = timezone && timezone.includes("/") ? timezone.split("/").pop().replace(/_/g, " ") : timezone || "UTC";
-  if (language === "it" && CITY_IT[raw]) return CITY_IT[raw];
-  return raw;
-}
-
-function formatDateTime(scheduledAt, timezone, language) {
-  const tz = timezone || "UTC";
-  const locale = language === "it" ? "it-IT" : "en-GB";
-  const date = new Date(scheduledAt);
-
-  const dateStr = new Intl.DateTimeFormat(locale, { weekday: "long", day: "numeric", month: "long", year: "numeric", timeZone: tz }).format(date);
-  const timeStr = new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz }).format(date);
-  const abbrevParts = new Intl.DateTimeFormat("en-GB", { timeZoneName: "short", timeZone: tz }).formatToParts(date);
-  const abbrev = abbrevParts.find((p) => p.type === "timeZoneName")?.value || tz;
-  const city = cityLabel(tz, language);
-
-  return { dateStr, timeStr, tzLabel: COPY[language].tzTime(abbrev, city) };
-}
 
 function formatPrice(amount, currency, language) {
   if (amount == null) return null;
@@ -145,7 +97,7 @@ function withdrawalBlockHtml({ withdrawalApplicable, language, termsUrl }) {
  *   clientUrl: string, location?: string, contactEmail: string,
  *   language: 'en' | 'it', amount?: number | string | null, currency?: string,
  *   userTimezone?: string | null,
- *   withdrawalApplicable: boolean,
+ *   withdrawalApplicable: boolean, bookingId: number,
  *   termsUrl: string, policyUrl: string, privacyUrl: string,
  * }} params
  */
@@ -159,11 +111,13 @@ const bookingConfirmationEmailHtml = ({
   clientUrl,
   location,
   contactEmail,
+  supportEmail,
   language,
   amount,
   currency,
   userTimezone,
   withdrawalApplicable,
+  bookingId,
   termsUrl,
   policyUrl,
   privacyUrl,
@@ -259,11 +213,17 @@ const bookingConfirmationEmailHtml = ({
               </tr>` : ""}
               ${priceStr ? `
               <tr>
-                <td style="padding-top:12px;border-top:1px solid #c5ceba;padding-bottom:0;">
+                <td style="padding-top:12px;border-top:1px solid #c5ceba;">
                   <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.price}</span><br>
                   <span style="font-size:15px;font-weight:600;color:#445446;">${priceStr}</span>
                 </td>
               </tr>` : ""}
+              <tr>
+                <td style="padding-top:12px;border-top:1px solid #c5ceba;padding-bottom:0;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.bookingRef}</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${formatBookingRef(bookingId)}</span>
+                </td>
+              </tr>
             </table>
           </div>
 
@@ -304,7 +264,7 @@ const bookingConfirmationEmailHtml = ({
 
           <!-- Footer -->
           <p style="margin:0 0 4px;font-size:12px;color:#445446;">${t.footerAddress}</p>
-          <p style="margin:0 0 12px;font-size:12px;color:#445446;">${t.footerContact(contactEmail)}</p>
+          <p style="margin:0 0 12px;font-size:12px;color:#445446;">${t.footerContact(supportEmail || contactEmail)}</p>
           <p style="margin:0;font-size:11px;color:#9aa596;">${t.transactional(contactEmail)}</p>
 
         </td></tr>
