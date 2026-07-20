@@ -164,7 +164,7 @@ async function processStripeEvent(event) {
               language:        confirmationLanguage,
               amount:          booking.amount,
               currency:        booking.currency,
-              userTimezone:    booking.parent.timezone,
+              userTimezone:    booking.parent.timezone || booking.expert.timezone,
               withdrawalApplicable: booking.consent?.withdrawal_applicable,
               bookingId:       booking.id,
               ...legalLinks,

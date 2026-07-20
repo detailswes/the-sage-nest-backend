@@ -15,7 +15,7 @@ const COPY = {
     onlineNotice: "For online sessions: your expert will send you the video call details no later than 24 hours before your session — or promptly after booking, if your session starts sooner.",
     paymentHeading: "Payment",
     payment: (amountStr, expertName) =>
-      `Your payment of ${amountStr} has been processed securely via Stripe. Your session is provided by ${expertName}, who is responsible for the service and appears as the merchant for this transaction; Sage Nest operates the platform through which the booking and payment are made.`,
+      `Your payment of <strong>${amountStr}</strong> has been processed securely via Stripe. Your session is provided by <strong>${expertName}</strong>, who is responsible for the service and appears as the merchant for this transaction; Sage Nest operates the platform through which the booking and payment are made.`,
     withdrawalHeading: "Your Right of Withdrawal",
     cancellationHeading: "Cancellation & Rescheduling",
     cancellationIntro: "We understand that life happens and plans sometimes change. To honour the commitment made by both you and your expert — who has dedicated this time exclusively for you — the following cancellation policy applies:",
@@ -26,10 +26,10 @@ const COPY = {
     ],
     reschedule: "Need to change your time? You can reschedule your session once, free of charge, as long as you do so more than 12 hours before your session — simply use the Reschedule option in your dashboard.",
     expertCancel: "If your expert cancels for any reason, you will always receive a full refund, regardless of timing.",
-    fullPolicy: (url) => `The full policy is available here: <a href="${url}" style="color:#445446;text-decoration:underline;">Cancellation and Rescheduling Policy</a>`,
+    fullPolicy: (url) => `The full policy is available here: <a href="${url}" style="color:#445446;text-decoration:underline;font-weight:600;">Cancellation and Rescheduling Policy</a>`,
     button: "View booking in your dashboard",
     termsLine: (termsUrl, privacyUrl) =>
-      `This booking is governed by the Sage Nest <a href="${termsUrl}" style="color:#445446;">Consumer Terms &amp; Conditions</a> you accepted when you booked and the applicable <a href="${privacyUrl}" style="color:#445446;">Privacy Policy</a>. Links open the same language version you accepted.`,
+      `This booking is governed by the Sage Nest <a href="${termsUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">Consumer Terms &amp; Conditions</a> you accepted when you booked and the applicable <a href="${privacyUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">Privacy Policy</a>. Links open the same language version you accepted.`,
     footerAddress: "Sage Nest ApS &middot; CVR 46566181 &middot; Copenhagen, Denmark",
     footerContact: (email) => `Questions? Contact us at <a href="mailto:${email}" style="color:#445446;">${email}</a>`,
     transactional: (email) => `This is a transactional message about your booking, sent from ${email}.`,
@@ -46,7 +46,7 @@ const COPY = {
     onlineNotice: "Per le sessioni online: il tuo Professionista ti invierà i dettagli per la videochiamata entro e non oltre 24 ore prima della sessione — oppure subito dopo la prenotazione, se la tua sessione inizia prima.",
     paymentHeading: "Pagamento",
     payment: (amountStr, expertName) =>
-      `Il tuo pagamento di ${amountStr} è stato elaborato in modo sicuro tramite Stripe. La tua sessione è fornita da ${expertName}, che è responsabile del servizio e figura come esercente della transazione; Sage Nest gestisce la piattaforma attraverso la quale vengono effettuati la prenotazione e il pagamento.`,
+      `Il tuo pagamento di <strong>${amountStr}</strong> è stato elaborato in modo sicuro tramite Stripe. La tua sessione è fornita da <strong>${expertName}</strong>, che è responsabile del servizio e figura come esercente della transazione; Sage Nest gestisce la piattaforma attraverso la quale vengono effettuati la prenotazione e il pagamento.`,
     withdrawalHeading: "Il Tuo Diritto di Recesso",
     cancellationHeading: "Cancellazione e Modifica della Prenotazione",
     cancellationIntro: "Sappiamo che la vita è piena di imprevisti e i piani possono cambiare. Allo stesso tempo, il tuo Professionista ha riservato questo tempo esclusivamente a te: per rispettare l'impegno di entrambi, si applicano le seguenti condizioni di cancellazione:",
@@ -57,10 +57,10 @@ const COPY = {
     ],
     reschedule: "Devi cambiare orario? Puoi modificare la tua prenotazione una sola volta, gratuitamente, purché tu lo faccia più di 12 ore prima della sessione — usa semplicemente l'opzione Modifica prenotazione nella tua dashboard.",
     expertCancel: "Se il tuo Professionista cancella per qualsiasi motivo, riceverai sempre un rimborso completo, indipendentemente dal momento.",
-    fullPolicy: (url) => `Le condizioni complete sono disponibili qui: <a href="${url}" style="color:#445446;text-decoration:underline;">Condizioni di Cancellazione e Modifica della Prenotazione</a>`,
+    fullPolicy: (url) => `Le condizioni complete sono disponibili qui: <a href="${url}" style="color:#445446;text-decoration:underline;font-weight:600;">Condizioni di Cancellazione e Modifica della Prenotazione</a>`,
     button: "Visualizza la prenotazione nella tua dashboard",
     termsLine: (termsUrl, privacyUrl) =>
-      `La presente prenotazione è disciplinata dai <a href="${termsUrl}" style="color:#445446;">Termini e Condizioni Consumatori</a> di Sage Nest che hai accettato al momento della prenotazione e dalla relativa <a href="${privacyUrl}" style="color:#445446;">Informativa sulla privacy</a>. I link aprono la stessa versione linguistica che hai accettato.`,
+      `La presente prenotazione è disciplinata dai <a href="${termsUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">Termini e Condizioni Consumatori</a> di Sage Nest che hai accettato al momento della prenotazione e dalla relativa <a href="${privacyUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">Informativa sulla privacy</a>. I link aprono la stessa versione linguistica che hai accettato.`,
     footerAddress: "Sage Nest ApS &middot; CVR 46566181 &middot; Copenaghen, Danimarca",
     footerContact: (email) => `Domande? Contattaci a <a href="mailto:${email}" style="color:#445446;">${email}</a>`,
     transactional: (email) => `Questa è una comunicazione di servizio relativa alla tua prenotazione, inviata da ${email}.`,
@@ -76,7 +76,7 @@ function formatPrice(amount, currency, language) {
 function withdrawalBlockHtml({ withdrawalApplicable, language, termsUrl }) {
   const wording = getConsentWording(language);
   const termsLabel = language === "it" ? "Termini e Condizioni Consumatori" : "Consumer Terms &amp; Conditions";
-  const termsLink = `<a href="${termsUrl}" style="color:#445446;">${termsLabel}</a>`;
+  const termsLink = `<a href="${termsUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">${termsLabel}</a>`;
 
   if (withdrawalApplicable) {
     return `
@@ -260,13 +260,15 @@ const bookingConfirmationEmailHtml = ({
           </table>
 
           <!-- Terms line -->
-          <p style="margin:0 0 24px;font-size:12px;color:#5e6d5b;line-height:1.6;">${t.termsLine(termsUrl, privacyUrl)}</p>
+          <p style="margin:0;font-size:12px;color:#5e6d5b;line-height:1.6;">${t.termsLine(termsUrl, privacyUrl)}</p>
 
-          <!-- Footer -->
-          <p style="margin:0 0 4px;font-size:12px;color:#445446;">${t.footerAddress}</p>
-          <p style="margin:0 0 12px;font-size:12px;color:#445446;">${t.footerContact(supportEmail || contactEmail)}</p>
+        </td></tr>
+
+        <!-- Footer -->
+        <tr><td style="padding-top:24px;text-align:center;">
+          <p style="margin:0 0 4px;font-size:12px;color:#5e6d5b;">${t.footerAddress}</p>
+          <p style="margin:0 0 8px;font-size:12px;color:#5e6d5b;">${t.footerContact(supportEmail || contactEmail)}</p>
           <p style="margin:0;font-size:11px;color:#9aa596;">${t.transactional(contactEmail)}</p>
-
         </td></tr>
 
       </table>
