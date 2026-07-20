@@ -14,7 +14,7 @@ const parentSuspendedEmailHtml = ({ parentName, cancelledBookingCount, clientUrl
 
   const bookingLine = cancelledBookingCount > 0
     ? `<p style="margin:0 0 16px;font-size:15px;color:#5e6d5b;line-height:1.6;">
-        Any upcoming confirmed session${cancelledBookingCount !== 1 ? 's have' : ' has'} been cancelled and a full refund issued where applicable. Refunds typically appear within 5–10 business days.
+        Any upcoming confirmed session${cancelledBookingCount !== 1 ? 's have' : ' has'} been cancelled and refunded according to our standard Cancellation and Rescheduling Policy, where applicable. Refunds typically appear within 5–10 business days.
        </p>`
     : '';
 

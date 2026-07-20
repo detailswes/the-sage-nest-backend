@@ -4,7 +4,7 @@ const {
   register, login, refresh, logout,
   verifyEmail, resendVerification,
   forgotPassword, resetPassword,
-  getProfile, updateProfile, updateEmail, changePassword, deleteAccount,
+  getProfile, updateProfile, updateLanguagePreference, updateEmail, changePassword, deleteAccount,
   getLegalVersions,
   verifyOtp, resendOtp,
   get2FAStatus, sendSetupOtp, enable2FA, disable2FA,
@@ -28,6 +28,7 @@ router.post('/reset-password',      resetPasswordLimiter, resetPassword);
 // ── Profile management — all require authentication ───────────────────────────
 router.get   ('/profile',          authenticate, getProfile);
 router.patch ('/profile',          authenticate, updateProfile);
+router.patch ('/language',         authenticate, updateLanguagePreference);
 router.patch ('/profile/email',    authenticate, updateEmail);
 router.patch ('/profile/password', authenticate, changePassword);
 router.delete('/account',          authenticate, deleteAccount);

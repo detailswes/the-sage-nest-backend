@@ -3,6 +3,8 @@ const prisma = require("../prisma/client");
 const { logAudit } = require("../utils/auditLog");
 const { normalizeConsentLanguage } = require("../utils/language");
 const { getConsentWording } = require("../utils/legalConsentWording");
+const { getLegalDocLinks } = require("../utils/legalDocLinks");
+const { createRefundWithFallback } = require("../utils/stripeRefund");
 const {
   sendBookingCancellationNotification,
   sendBookingConfirmationEmail,
@@ -16,62 +18,6 @@ const {
 async function getExpertIdForUser(userId) {
   const expert = await prisma.expert.findUnique({ where: { user_id: userId } });
   return expert ? expert.id : null;
-}
-
-// Stripe error codes that mean the connected account has no usable balance.
-// When these occur with reverse_transfer:true, we fall back to funding the
-// refund from the platform balance and flag it for admin follow-up.
-const ZERO_BALANCE_CODES = new Set([
-  "insufficient_funds",
-  "transfer_reversal_too_large",
-  "account_invalid", // deauthorised / disconnected account
-  "account_closed",
-]);
-
-// ─── createRefundWithFallback ─────────────────────────────────────────────────
-// Issues a Stripe refund with an idempotency key.
-// When reverse_transfer would be needed but fails due to zero/blocked balance,
-// automatically retries without the reversal (platform absorbs the cost) and
-// writes an admin note so the funds can be recovered manually.
-//
-// Returns { refund, platformFunded }
-async function createRefundWithFallback({
-  bookingId,
-  chargeId,
-  amountPence,
-  idempotencyKey,
-  shouldReverseTransfer,
-}) {
-  const baseParams = {
-    charge: chargeId,
-    refund_application_fee: true,
-    ...(amountPence !== undefined ? { amount: amountPence } : {}),
-  };
-
-  try {
-    const refund = await stripe.refunds.create(
-      { ...baseParams, reverse_transfer: shouldReverseTransfer },
-      { idempotencyKey },
-    );
-    return { refund, platformFunded: false };
-  } catch (err) {
-    // Only fall back when the transfer reversal is the specific failure point.
-    // For any other Stripe error (card_error, API outage, etc.) re-throw so
-    // the caller can handle it appropriately.
-    if (shouldReverseTransfer && ZERO_BALANCE_CODES.has(err.code)) {
-      console.warn(
-        `[createRefundWithFallback] booking=${bookingId} reverse_transfer failed (${err.code}) — retrying without reversal (platform-funded)`,
-      );
-      // Use a distinct idempotency key so Stripe doesn't return the previous error
-      const fallbackKey = `${idempotencyKey}-platform`;
-      const refund = await stripe.refunds.create(
-        { ...baseParams, reverse_transfer: false },
-        { idempotencyKey: fallbackKey },
-      );
-      return { refund, platformFunded: true };
-    }
-    throw err;
-  }
 }
 
 // ─── POST /bookings — parent creates a booking + payment intent ───────────────
@@ -841,7 +787,7 @@ async function rescheduleBooking(req, res) {
       where: { id: parseInt(id) },
       include: {
         parent: {
-          select: { name: true, email: true, notify_reschedule: true },
+          select: { name: true, email: true, language: true, timezone: true, notify_reschedule: true },
         },
         expert: {
           select: {
@@ -986,18 +932,28 @@ async function rescheduleBooking(req, res) {
       .filter(Boolean)
       .join(", ");
     if (booking.parent.notify_reschedule !== false) {
-      sendBookingConfirmationEmail({
-        to: booking.parent.email,
-        name: booking.parent.name,
-        expertName: booking.expert.user.name,
-        serviceTitle: booking.service.title,
-        format: booking.format,
-        scheduledAt: newDate,
-        durationMinutes: booking.duration_minutes,
-        location:
-          booking.format === "IN_PERSON"
-            ? expertAddress || undefined
-            : undefined,
+      const confirmationLanguage = existingConsent?.language || booking.parent.language || "en";
+      getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
+        sendBookingConfirmationEmail({
+          to: booking.parent.email,
+          name: booking.parent.name,
+          expertName: booking.expert.user.name,
+          serviceTitle: booking.service.title,
+          format: booking.format,
+          scheduledAt: newDate,
+          durationMinutes: booking.duration_minutes,
+          location:
+            booking.format === "IN_PERSON"
+              ? expertAddress || undefined
+              : undefined,
+          language: confirmationLanguage,
+          amount: booking.amount,
+          currency: booking.currency,
+          userTimezone: booking.parent.timezone,
+          withdrawalApplicable,
+          bookingId: booking.id,
+          ...legalLinks,
+        });
       }).catch((e) =>
         console.error(
           "[Email] Reschedule parent confirmation failed:",
@@ -1245,6 +1201,8 @@ async function verifyPayment(req, res) {
             id: true,
             name: true,
             email: true,
+            language: true,
+            timezone: true,
             notify_booking_confirmation: true,
           },
         },
@@ -1258,6 +1216,7 @@ async function verifyPayment(req, res) {
           },
         },
         service: { select: { title: true } },
+        consent: { select: { language: true, withdrawal_applicable: true } },
       },
     });
 
@@ -1324,18 +1283,28 @@ async function verifyPayment(req, res) {
       .filter(Boolean)
       .join(", ");
     if (booking.parent.notify_booking_confirmation !== false) {
-      sendBookingConfirmationEmail({
-        to: booking.parent.email,
-        name: booking.parent.name,
-        expertName: booking.expert.user.name,
-        serviceTitle: booking.service.title,
-        format: booking.format,
-        scheduledAt: booking.scheduled_at,
-        durationMinutes: booking.duration_minutes,
-        location:
-          booking.format === "IN_PERSON"
-            ? expertAddressVerify || undefined
-            : undefined,
+      const confirmationLanguage = booking.consent?.language || booking.parent.language || "en";
+      getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
+        sendBookingConfirmationEmail({
+          to: booking.parent.email,
+          name: booking.parent.name,
+          expertName: booking.expert.user.name,
+          serviceTitle: booking.service.title,
+          format: booking.format,
+          scheduledAt: booking.scheduled_at,
+          durationMinutes: booking.duration_minutes,
+          location:
+            booking.format === "IN_PERSON"
+              ? expertAddressVerify || undefined
+              : undefined,
+          language: confirmationLanguage,
+          amount: booking.amount,
+          currency: booking.currency,
+          userTimezone: booking.parent.timezone,
+          withdrawalApplicable: booking.consent?.withdrawal_applicable,
+          bookingId: booking.id,
+          ...legalLinks,
+        });
       }).catch((e) =>
         console.error(
           "[verifyPayment] Parent confirmation email failed:",

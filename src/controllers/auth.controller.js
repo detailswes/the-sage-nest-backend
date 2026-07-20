@@ -7,7 +7,7 @@ const prisma = require("../prisma/client");
 const { logAudit } = require("../utils/auditLog");
 const { deleteFile } = require("../utils/storage");
 const { decryptIban } = require("../utils/encryption");
-const { normalizeConsentLanguage } = require("../utils/language");
+const { normalizeConsentLanguage, SUPPORTED_CONSENT_LANGUAGES } = require("../utils/language");
 const webflowService = require("../services/webflow.service");
 const {
   sendVerificationEmail,
@@ -108,7 +108,7 @@ async function storeRefreshToken(userId, token) {
 }
 
 function userPayload(user) {
-  return { id: user.id, name: user.name, email: user.email, role: user.role };
+  return { id: user.id, name: user.name, email: user.email, role: user.role, language: user.language };
 }
 
 // ─── European phone validator ─────────────────────────────────────────────────
@@ -178,6 +178,7 @@ async function register(req, res) {
         name,
         phone: phone || null,
         timezone: timezone?.trim() || null,
+        language: normalizeConsentLanguage(language),
         password_hash,
         role: assignedRole,
         is_verified: false,
@@ -759,7 +760,7 @@ async function getProfile(req, res) {
 
 // ─── Update Profile (name + phone) ────────────────────────────────────────────
 async function updateProfile(req, res) {
-  const { name, phone, city, timezone } = req.body;
+  const { name, phone, city, timezone, language } = req.body;
 
   if (!name || !name.trim()) {
     return res.status(400).json({ error: "Name is required." });
@@ -790,8 +791,32 @@ async function updateProfile(req, res) {
         phone:    phone?.trim() || null,
         city:     city?.trim()  || null,
         timezone: timezone?.trim() || null,
+        ...(language !== undefined ? { language: normalizeConsentLanguage(language) } : {}),
       },
-      select: { id: true, name: true, email: true, phone: true, city: true, timezone: true, role: true },
+      select: { id: true, name: true, email: true, phone: true, city: true, timezone: true, language: true, role: true },
+    });
+    return res.json(updated);
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Update Language Preference ───────────────────────────────────────────────
+// Lightweight, single-field counterpart to updateProfile — lets the navbar
+// language switcher persist a logged-in user's choice (for future emails and
+// cross-device consistency) without requiring the rest of the profile form.
+async function updateLanguagePreference(req, res) {
+  const { language } = req.body;
+  if (!SUPPORTED_CONSENT_LANGUAGES.includes(language)) {
+    return res.status(400).json({ error: "Unsupported language." });
+  }
+
+  try {
+    const updated = await prisma.user.update({
+      where: { id: req.user.id },
+      data: { language },
+      select: { id: true, language: true },
     });
     return res.json(updated);
   } catch (err) {
@@ -1899,6 +1924,7 @@ module.exports = {
   resetPassword,
   getProfile,
   updateProfile,
+  updateLanguagePreference,
   updateEmail,
   changePassword,
   deleteAccount,

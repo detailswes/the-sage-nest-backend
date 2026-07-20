@@ -6,6 +6,8 @@ const { logAudit }   = require("../utils/auditLog");
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
 const webflowService = require("../services/webflow.service");
+const { createRefundWithFallback } = require("../utils/stripeRefund");
+const { getLegalDocLinks } = require("../utils/legalDocLinks");
 const {
   sendPasswordResetEmail,
   sendVerificationEmail,
@@ -2723,7 +2725,7 @@ async function suspendParent(req, res) {
             scheduled_at: { gt: new Date() },
           },
           include: {
-            expert: { select: { user: { select: { name: true, email: true } } } },
+            expert: { select: { timezone: true, user: { select: { name: true, email: true, language: true } } } },
             service: { select: { title: true } },
           },
         },
@@ -2745,9 +2747,30 @@ async function suspendParent(req, res) {
       prisma.refreshToken.deleteMany({ where: { user_id: parentId } }),
     ]);
 
-    // Step 2: cancel each upcoming booking and refund where possible
+    // Step 2: cancel each upcoming booking and refund where possible.
+    // Payout rule (Francesca Lotta, 16 July 2026, decided): a platform-initiated
+    // cancellation is treated as a parent cancellation occurring at the moment of
+    // closure — the standard timing tiers apply (same as cancelBooking), not a
+    // hardcoded full refund. No automatic refund where the cancellation is for
+    // fraud/abuse, or where the charge already has an open dispute/chargeback —
+    // those go straight to manual review instead.
     const cancelledBookings = [];
     const cancellationNote = `Parent account suspended${reason ? ` — reason: ${reason}` : ""}`;
+    const skipAutoRefund = reason === "fraud" || reason === "abuse";
+
+    const bookingSummary = (booking, extra) => ({
+      id: booking.id,
+      expertName: booking.expert?.user?.name,
+      expertEmail: booking.expert?.user?.email,
+      expertTimezone: booking.expert?.timezone,
+      expertLanguage: booking.expert?.user?.language,
+      parentName: user.name,
+      serviceTitle: booking.service?.title,
+      scheduledAt: booking.scheduled_at,
+      refundIssued: false,
+      manualRequired: false,
+      ...extra,
+    });
 
     for (const booking of user.bookings_as_parent) {
       try {
@@ -2768,17 +2791,32 @@ async function suspendParent(req, res) {
                 "Parent suspended after payout completed. Manual refund decision required — expert may be owed compensation.",
             },
           });
-          cancelledBookings.push({
-            id: booking.id,
-            expertName: booking.expert?.user?.name,
-            expertEmail: booking.expert?.user?.email,
-            serviceTitle: booking.service?.title,
-            scheduledAt: booking.scheduled_at,
-            refundIssued: false,
-            manualRequired: true,
+          cancelledBookings.push(bookingSummary(booking, { manualRequired: true }));
+        } else if (skipAutoRefund || booking.is_disputed) {
+          // Fraud/abuse cancellation, or the charge already has an open
+          // dispute/chargeback — no automatic refund; manual review required.
+          const manualNote = skipAutoRefund
+            ? `Parent account suspended — reason: ${reason}. No automatic refund issued (fraud/abuse). Manual review required.`
+            : "Parent account suspended while a payment dispute is open on this booking. No automatic refund issued. Manual review required.";
+          await prisma.booking.update({
+            where: { id: booking.id },
+            data: {
+              status: "CANCELLED",
+              cancellation_reason: cancellationNote,
+              cancelled_at: new Date(),
+              transfer_status: "skipped",
+              internal_admin_note: manualNote,
+            },
           });
+          cancelledBookings.push(bookingSummary(booking, { manualRequired: true }));
         } else if (booking.stripe_payment_intent_id) {
-          // Funds not yet transferred — full refund
+          // Funds not yet transferred — tiered refund, same rule as a parent
+          // cancelling directly: >=24h -> 100%, >=12h -> 50%, else 0%, floored
+          // by the worst tier this booking already reached via reschedule.
+          const hoursUntilSession = (booking.scheduled_at.getTime() - Date.now()) / (1000 * 60 * 60);
+          const tierAtCancellation = hoursUntilSession >= 24 ? 100 : hoursUntilSession >= 12 ? 50 : 0;
+          const refundPercent = Math.min(tierAtCancellation, booking.min_refund_percent);
+
           let chargeId = booking.stripe_charge_id;
           if (!chargeId) {
             const pi = await stripe.paymentIntents.retrieve(
@@ -2787,21 +2825,38 @@ async function suspendParent(req, res) {
             chargeId = pi.latest_charge;
           }
 
-          let stripeRefund = null;
-          if (chargeId) {
+          if (refundPercent > 0 && chargeId) {
+            const refundAmountPence = Math.round((amount * 100 * refundPercent) / 100);
             try {
-              stripeRefund = await stripe.refunds.create({
-                charge: chargeId,
-                refund_application_fee: true,
-                reverse_transfer: true,
+              const { refund: stripeRefund, platformFunded } = await createRefundWithFallback({
+                bookingId: booking.id,
+                chargeId,
+                amountPence: refundAmountPence,
+                idempotencyKey: `booking-${booking.id}-suspend-${refundPercent}pct`,
+                shouldReverseTransfer: true,
               });
+
+              await prisma.booking.update({
+                where: { id: booking.id },
+                data: {
+                  status: "REFUNDED",
+                  cancellation_reason: cancellationNote,
+                  cancelled_at: new Date(),
+                  transfer_status: "skipped",
+                  stripe_refund_id: stripeRefund.id,
+                  refund_status: stripeRefund.status,
+                  refund_amount: refundAmountPence / 100,
+                  refunded_at: new Date(),
+                  ...(platformFunded
+                    ? {
+                        internal_admin_note: `Platform-funded refund (${refundPercent}%): expert transfer reversal failed — expert balance recovery required.`,
+                      }
+                    : {}),
+                },
+              });
+              cancelledBookings.push(bookingSummary(booking, { refundIssued: true }));
             } catch (stripeErr) {
-              const isLegacy =
-                stripeErr?.message?.includes("does not have an associated transfer") ||
-                stripeErr?.message?.includes("refund_application_fee");
-              if (isLegacy) {
-                stripeRefund = await stripe.refunds.create({ charge: chargeId });
-              } else if (stripeErr?.code === "charge_already_refunded") {
+              if (stripeErr?.code === "charge_already_refunded") {
                 // Already refunded externally — just mark REFUNDED and move on
                 await prisma.booking.update({
                   where: { id: booking.id },
@@ -2812,72 +2867,41 @@ async function suspendParent(req, res) {
                     transfer_status: "skipped",
                   },
                 });
-                cancelledBookings.push({
-                  id: booking.id,
-                  expertName: booking.expert?.user?.name,
-                  expertEmail: booking.expert?.user?.email,
-                  serviceTitle: booking.service?.title,
-                  scheduledAt: booking.scheduled_at,
-                  refundIssued: true,
-                  manualRequired: false,
-                });
-                continue;
-              } else {
-                // Stripe unexpectedly rejected refund — cancel and flag for manual
-                await prisma.booking.update({
-                  where: { id: booking.id },
-                  data: {
-                    status: "CANCELLED",
-                    cancellation_reason: cancellationNote,
-                    cancelled_at: new Date(),
-                    transfer_status: "skipped",
-                    internal_admin_note: `Refund failed during parent suspension: ${stripeErr.message}. Manual refund required.`,
-                  },
-                });
-                cancelledBookings.push({
-                  id: booking.id,
-                  expertName: booking.expert?.user?.name,
-                  expertEmail: booking.expert?.user?.email,
-                  serviceTitle: booking.service?.title,
-                  scheduledAt: booking.scheduled_at,
-                  refundIssued: false,
-                  manualRequired: true,
-                });
-                console.error(
-                  `[suspendParent] Stripe refund failed for booking ${booking.id}:`,
-                  stripeErr.message
-                );
+                cancelledBookings.push(bookingSummary(booking, { refundIssued: true }));
                 continue;
               }
+              // Stripe unexpectedly rejected refund — cancel and flag for manual
+              await prisma.booking.update({
+                where: { id: booking.id },
+                data: {
+                  status: "CANCELLED",
+                  cancellation_reason: cancellationNote,
+                  cancelled_at: new Date(),
+                  transfer_status: "skipped",
+                  internal_admin_note: `Refund failed during parent suspension: ${stripeErr.message}. Manual refund required.`,
+                },
+              });
+              cancelledBookings.push(bookingSummary(booking, { manualRequired: true }));
+              console.error(
+                `[suspendParent] Stripe refund failed for booking ${booking.id}:`,
+                stripeErr.message
+              );
+              continue;
             }
+          } else {
+            // 0% tier (cancelled <12h before session) or no charge on record —
+            // a legitimately calculated no-refund outcome, not a manual case.
+            await prisma.booking.update({
+              where: { id: booking.id },
+              data: {
+                status: "CANCELLED",
+                cancellation_reason: cancellationNote,
+                cancelled_at: new Date(),
+                transfer_status: "skipped",
+              },
+            });
+            cancelledBookings.push(bookingSummary(booking));
           }
-
-          await prisma.booking.update({
-            where: { id: booking.id },
-            data: {
-              status: "REFUNDED",
-              cancellation_reason: cancellationNote,
-              cancelled_at: new Date(),
-              transfer_status: "skipped",
-              ...(stripeRefund
-                ? {
-                    stripe_refund_id: stripeRefund.id,
-                    refund_status: stripeRefund.status,
-                    refund_amount: amount,
-                    refunded_at: new Date(),
-                  }
-                : {}),
-            },
-          });
-          cancelledBookings.push({
-            id: booking.id,
-            expertName: booking.expert?.user?.name,
-            expertEmail: booking.expert?.user?.email,
-            serviceTitle: booking.service?.title,
-            scheduledAt: booking.scheduled_at,
-            refundIssued: true,
-            manualRequired: false,
-          });
         } else {
           // No payment captured (e.g. PENDING_PAYMENT that slipped through) — just cancel
           await prisma.booking.update({
@@ -2888,15 +2912,7 @@ async function suspendParent(req, res) {
               cancelled_at: new Date(),
             },
           });
-          cancelledBookings.push({
-            id: booking.id,
-            expertName: booking.expert?.user?.name,
-            expertEmail: booking.expert?.user?.email,
-            serviceTitle: booking.service?.title,
-            scheduledAt: booking.scheduled_at,
-            refundIssued: false,
-            manualRequired: false,
-          });
+          cancelledBookings.push(bookingSummary(booking));
         }
       } catch (bookingErr) {
         console.error(
@@ -2925,12 +2941,19 @@ async function suspendParent(req, res) {
     // Step 4: email each affected expert (fire-and-forget)
     for (const b of cancelledBookings) {
       if (b.expertEmail) {
-        sendExpertBookingCancelledDueToSuspensionEmail({
-          to: b.expertEmail,
-          expertName: b.expertName,
-          serviceTitle: b.serviceTitle,
-          scheduledAt: b.scheduledAt,
-          bookingId: b.id,
+        const expertLanguage = b.expertLanguage || "en";
+        getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
+          sendExpertBookingCancelledDueToSuspensionEmail({
+            to: b.expertEmail,
+            expertName: b.expertName,
+            parentName: b.parentName,
+            serviceTitle: b.serviceTitle,
+            scheduledAt: b.scheduledAt,
+            bookingId: b.id,
+            timezone: b.expertTimezone,
+            language: expertLanguage,
+            policyUrl,
+          });
         }).catch((e) =>
           console.error(
             `[Email] Expert suspension cancellation email failed for booking ${b.id}:`,
