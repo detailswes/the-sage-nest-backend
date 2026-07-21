@@ -9,22 +9,59 @@ const {
 const { getLegalDocLinks } = require('../utils/legalDocLinks');
 
 // ─── Step 1 & 2: Expert clicks connect — create Stripe onboarding link ────────
+//
+// Uses the v2 Core Accounts API (POST /v2/core/accounts) — Stripe no longer
+// allows v1 Express account creation for new Connect platforms. The account
+// takes on two configurations: `merchant` (card_payments, matching v1's
+// card_payments capability) and `recipient` (stripe_transfers, matching v1's
+// transfers capability). Manual payout scheduling has no v2 equivalent yet,
+// so that one setting is still applied via the v1 accounts.update endpoint,
+// which remains interoperable with v2 account IDs.
 async function createConnectLink(req, res) {
   try {
-    const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
+    const expert = await prisma.expert.findUnique({
+      where: { user_id: req.user.id },
+      include: {
+        user: { select: { email: true } },
+        business_info: { select: { entity_type: true, address_country: true } },
+      },
+    });
     if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
+
+    // v2 account creation requires identity.country up front (v1 let Stripe's
+    // hosted onboarding collect it later) — pull it from Business Info, which
+    // the expert must save before connecting Stripe.
+    if (!expert.stripe_account_id && !expert.business_info) {
+      return res.status(400).json({
+        error: 'Please complete your Business Info (legal name, address, tax details) before connecting Stripe.',
+      });
+    }
 
     let accountId = expert.stripe_account_id;
 
+    const configuration = {
+      merchant: {
+        capabilities: { card_payments: { requested: true } },
+      },
+      recipient: {
+        capabilities: { stripe_balance: { stripe_transfers: { requested: true } } },
+      },
+    };
+
     if (!accountId) {
-      const account = await stripe.accounts.create({
-        type: 'express',
-        capabilities: {
-          card_payments: { requested: true },
-          transfers:     { requested: true },
+      const account = await stripe.v2.core.accounts.create({
+        contact_email: expert.user.email,
+        dashboard: 'express',
+        configuration,
+        identity: {
+          country:     expert.business_info.address_country.toLowerCase(),
+          entity_type: expert.business_info.entity_type === 'COMPANY' ? 'company' : 'individual',
         },
-        settings: {
-          payouts: { schedule: { interval: 'manual' } },
+        defaults: {
+          responsibilities: {
+            fees_collector: 'application',
+            losses_collector: 'application',
+          },
         },
       });
       accountId = account.id;
@@ -33,21 +70,27 @@ async function createConnectLink(req, res) {
         data: { stripe_account_id: accountId },
       });
     } else {
-      // Ensure existing connected accounts have manual payouts and capabilities requested.
-      await stripe.accounts.update(accountId, {
-        capabilities: {
-          card_payments: { requested: true },
-          transfers:     { requested: true },
-        },
-        settings: { payouts: { schedule: { interval: 'manual' } } },
-      }).catch((e) => console.error('[Stripe] account update failed:', e.message));
+      // Ensure existing connected accounts have capabilities requested.
+      await stripe.v2.core.accounts.update(accountId, { configuration })
+        .catch((e) => console.error('[Stripe] account update failed:', e.message));
     }
 
-    const accountLink = await stripe.accountLinks.create({
+    // Manual payout scheduling isn't part of the v2 Core Accounts schema —
+    // fall back to the v1 endpoint, which still accepts v2 account IDs.
+    await stripe.accounts.update(accountId, {
+      settings: { payouts: { schedule: { interval: 'manual' } } },
+    }).catch((e) => console.error('[Stripe] payout schedule update failed:', e.message));
+
+    const accountLink = await stripe.v2.core.accountLinks.create({
       account: accountId,
-      refresh_url: `${process.env.CLIENT_URL}/stripe/refresh`,
-      return_url: `${process.env.CLIENT_URL}/stripe/return`,
-      type: 'account_onboarding',
+      use_case: {
+        type: 'account_onboarding',
+        account_onboarding: {
+          configurations: ['merchant', 'recipient'],
+          refresh_url: `${process.env.CLIENT_URL}/stripe/refresh`,
+          return_url: `${process.env.CLIENT_URL}/stripe/return`,
+        },
+      },
     });
 
     return res.json({ url: accountLink.url });
@@ -58,6 +101,12 @@ async function createConnectLink(req, res) {
 }
 
 // ─── Step 4 & 5: Stripe returns to platform — verify onboarding completion ───
+//
+// v2 accounts have no `details_submitted` boolean like v1. Capability status
+// moves 'pending' → 'active' once Stripe finishes activating it, so 'pending'
+// (as opposed to 'active', 'restricted', or absent because nothing was
+// submitted yet) is the closest replacement for the old "details submitted,
+// still activating" signal.
 async function handleStripeReturn(req, res) {
   try {
     const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
@@ -65,13 +114,16 @@ async function handleStripeReturn(req, res) {
       return res.status(400).json({ error: 'No Stripe account found' });
     }
 
-    const account = await stripe.accounts.retrieve(expert.stripe_account_id);
-    const detailsSubmitted   = account.details_submitted === true;
-    const cardPaymentsActive = account.capabilities?.card_payments === 'active';
-    const onboardingComplete = detailsSubmitted && cardPaymentsActive;
+    const account = await stripe.v2.core.accounts.retrieve(expert.stripe_account_id, {
+      include: ['configuration.merchant', 'configuration.recipient', 'requirements'],
+    });
+    const cardPaymentsStatus = account.configuration?.merchant?.capabilities?.card_payments?.status;
+    const transfersStatus    = account.configuration?.recipient?.capabilities?.stripe_balance?.stripe_transfers?.status;
+    const cardPaymentsActive = cardPaymentsStatus === 'active';
+    const transfersActive    = transfersStatus === 'active';
+    const onboardingComplete = cardPaymentsActive && transfersActive;
+    const onboardingPending  = !onboardingComplete && (cardPaymentsStatus === 'pending' || transfersStatus === 'pending');
 
-    // Persist the flag only once both conditions are met. card_payments can lag
-    // behind details_submitted by a few seconds while Stripe activates it.
     if (onboardingComplete && !expert.stripe_onboarding_complete) {
       await prisma.expert.update({
         where: { id: expert.id },
@@ -82,8 +134,9 @@ async function handleStripeReturn(req, res) {
     return res.json({
       stripe_account_id:    expert.stripe_account_id,
       onboarding_complete:  onboardingComplete,
-      details_submitted:    detailsSubmitted,
+      onboarding_pending:   onboardingPending,
       card_payments_active: cardPaymentsActive,
+      transfers_active:     transfersActive,
     });
   } catch (err) {
     console.error(err);

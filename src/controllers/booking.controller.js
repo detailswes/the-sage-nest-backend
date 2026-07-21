@@ -87,10 +87,11 @@ async function createBooking(req, res) {
     // Verify the connected account has card_payments active — required for
     // on_behalf_of (destination charge with expert as Merchant of Record).
     try {
-      const stripeAccount = await stripe.accounts.retrieve(
+      const stripeAccount = await stripe.v2.core.accounts.retrieve(
         expert.stripe_account_id,
+        { include: ["configuration.merchant"] },
       );
-      if (stripeAccount.capabilities?.card_payments !== "active") {
+      if (stripeAccount.configuration?.merchant?.capabilities?.card_payments?.status !== "active") {
         return res.status(400).json({
           error:
             "This expert's payment account is not fully activated yet. They may need to complete their Stripe onboarding. Please try again later or choose another specialist.",

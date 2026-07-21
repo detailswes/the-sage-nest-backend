@@ -642,6 +642,9 @@ async function saveBusinessInfo(req, res) {
   if (!address_country?.trim()) {
     return res.status(400).json({ error: 'Country is required.' });
   }
+  if (!/^[a-zA-Z]{2}$/.test(address_country.trim())) {
+    return res.status(400).json({ error: 'Country must be a valid ISO country selection.' });
+  }
   if (!tin?.trim()) {
     return res.status(400).json({ error: 'Tax Identification Number (TIN) is required.' });
   }
@@ -678,7 +681,7 @@ async function saveBusinessInfo(req, res) {
         address_street:      address_street.trim(),
         address_city:        address_city.trim(),
         address_postal_code: address_postal_code.trim(),
-        address_country:     address_country.trim(),
+        address_country:     address_country.trim().toLowerCase(),
         tin:                 tin.trim(),
         vat_number:          vat_number?.trim()             || null,
         company_reg_number:  entity_type === 'COMPANY' ? company_reg_number.trim() : null,
@@ -696,7 +699,7 @@ async function saveBusinessInfo(req, res) {
         address_street:      address_street.trim(),
         address_city:        address_city.trim(),
         address_postal_code: address_postal_code.trim(),
-        address_country:     address_country.trim(),
+        address_country:     address_country.trim().toLowerCase(),
         tin:                 tin.trim(),
         vat_number:          vat_number?.trim()             || null,
         company_reg_number:  entity_type === 'COMPANY' ? company_reg_number.trim() : null,
