@@ -1187,7 +1187,7 @@ async function manualRefund(req, res) {
     const booking = await prisma.booking.findUnique({
       where: { id: parseInt(id) },
       include: {
-        expert: { select: { id: true, user: { select: { name: true, email: true } } } },
+        expert: { select: { id: true, timezone: true, user: { select: { name: true, email: true, language: true } } } },
         parent: { select: { name: true, email: true } },
         service: { select: { title: true } },
       },
@@ -1361,6 +1361,8 @@ async function manualRefund(req, res) {
         currency:     booking.currency || 'EUR',
         isPartial,
         bookingId:    booking.id,
+        timezone:     booking.expert?.timezone,
+        language:     booking.expert?.user?.language,
       });
     } catch (emailErr) {
       console.error("[ADMIN] Failed to send refund email to expert:", emailErr.message);
@@ -1539,7 +1541,7 @@ async function adminCancelBooking(req, res) {
       where: { id: parseInt(id) },
       include: {
         parent:  { select: { name: true, email: true } },
-        expert:  { select: { user: { select: { name: true, email: true } } } },
+        expert:  { select: { timezone: true, user: { select: { name: true, email: true, language: true } } } },
         service: { select: { title: true } },
       },
     });
@@ -1552,80 +1554,146 @@ async function adminCancelBooking(req, res) {
     }
 
     if (booking.status === "CONFIRMED" && booking.stripe_payment_intent_id) {
-      // Refund captured payment
-      let chargeId = booking.stripe_charge_id;
-      if (!chargeId) {
-        const pi = await stripe.paymentIntents.retrieve(booking.stripe_payment_intent_id);
-        chargeId = pi.latest_charge;
-      }
-      let stripeRefund = null;
-      if (chargeId) {
-        try {
-          stripeRefund = await stripe.refunds.create({
-            charge:                 chargeId,
-            refund_application_fee: true,
-            reverse_transfer:       booking.transfer_status !== 'completed',
-          });
-        } catch (stripeErr) {
-          const isLegacyChargeError =
-            stripeErr?.message?.includes("does not have an associated transfer") ||
-            stripeErr?.message?.includes("refund_application_fee");
-          if (isLegacyChargeError) {
-            // Pre-Connect / legacy charge: no transfer or application fee — bare refund.
-            stripeRefund = await stripe.refunds.create({ charge: chargeId });
-          } else {
-            throw stripeErr;
-          }
-        }
-      }
-      const refundedAmount = parseFloat(booking.amount);
-      await prisma.booking.update({
-        where: { id: booking.id },
-        data: {
-          status:              "REFUNDED",
-          cancellation_reason: reason.trim(),
-          cancelled_at:        new Date(),
-          transfer_status:     "skipped",
-          ...(stripeRefund ? {
-            stripe_refund_id: stripeRefund.id,
-            refund_status:    stripeRefund.status,
-            refund_amount:    refundedAmount,
-            refunded_at:      new Date(),
-          } : {}),
-        },
-      });
+      // Platform-initiated cancellation — treated as a parent cancellation
+      // occurring at the moment of closure: standard timing tiers apply
+      // (same as cancelBooking / suspendParent), not a hardcoded full refund.
+      const cancelledAt = new Date();
+      const amount = parseFloat(booking.amount);
+      const transferDone = booking.transfer_status === "completed";
+      const hoursUntilSession = (booking.scheduled_at.getTime() - cancelledAt.getTime()) / (1000 * 60 * 60);
+      const tierAtCancellation = hoursUntilSession >= 24 ? 100 : hoursUntilSession >= 12 ? 50 : 0;
+      const refundPercent = Math.min(tierAtCancellation, booking.min_refund_percent);
 
-      // Fire-and-forget email notifications
-      try {
-        await sendRefundNotificationToParent({
-          to:           booking.parent.email,
-          parentName:   booking.parent.name,
-          expertName:   booking.expert?.user?.name || "your specialist",
-          serviceTitle: booking.service?.title || "the session",
-          scheduledAt:  booking.scheduled_at,
-          refundAmount: refundedAmount,
-          currency:     booking.currency || 'EUR',
-          isPartial:    false,
-          reason:       reason.trim(),
-          bookingId:    booking.id,
+      if (transferDone) {
+        // Funds already with expert — cancel but do NOT auto-refund; flag for manual review.
+        await prisma.booking.update({
+          where: { id: booking.id },
+          data: {
+            status:              "CANCELLED",
+            cancellation_reason: reason.trim(),
+            cancelled_at:        cancelledAt,
+            internal_admin_note: "Admin cancelled after payout completed. Manual refund decision required — expert may be owed compensation.",
+          },
         });
-      } catch (emailErr) {
-        console.error("[ADMIN] Failed to send refund email to parent:", emailErr.message);
-      }
-      try {
-        await sendRefundNotificationToExpert({
-          to:           booking.expert?.user?.email,
-          expertName:   booking.expert?.user?.name || "Specialist",
-          parentName:   booking.parent.name,
-          serviceTitle: booking.service?.title || "the session",
-          scheduledAt:  booking.scheduled_at,
-          refundAmount: refundedAmount,
-          currency:     booking.currency || 'EUR',
-          isPartial:    false,
-          bookingId:    booking.id,
+      } else if (refundPercent > 0) {
+        let chargeId = booking.stripe_charge_id;
+        if (!chargeId) {
+          const pi = await stripe.paymentIntents.retrieve(booking.stripe_payment_intent_id);
+          chargeId = pi.latest_charge;
+        }
+        if (chargeId) {
+          const refundAmountPence = Math.round((amount * 100 * refundPercent) / 100);
+          try {
+            const { refund: stripeRefund, platformFunded } = await createRefundWithFallback({
+              bookingId:       booking.id,
+              chargeId,
+              amountPence:     refundAmountPence,
+              idempotencyKey:  `booking-${booking.id}-admin-cancel-${refundPercent}pct`,
+              shouldReverseTransfer: true,
+            });
+
+            const refundedAmount = refundAmountPence / 100;
+            await prisma.booking.update({
+              where: { id: booking.id },
+              data: {
+                status:              "REFUNDED",
+                cancellation_reason: reason.trim(),
+                cancelled_at:        cancelledAt,
+                transfer_status:     "skipped",
+                stripe_refund_id:    stripeRefund.id,
+                refund_status:       stripeRefund.status,
+                refund_amount:       refundedAmount,
+                refunded_at:         new Date(),
+                ...(platformFunded
+                  ? { internal_admin_note: `Platform-funded refund (${refundPercent}%): expert transfer reversal failed — expert balance recovery required.` }
+                  : {}),
+              },
+            });
+
+            const isPartial = refundPercent < 100;
+
+            // Fire-and-forget email notifications
+            try {
+              await sendRefundNotificationToParent({
+                to:           booking.parent.email,
+                parentName:   booking.parent.name,
+                expertName:   booking.expert?.user?.name || "your specialist",
+                serviceTitle: booking.service?.title || "the session",
+                scheduledAt:  booking.scheduled_at,
+                refundAmount: refundedAmount,
+                currency:     booking.currency || 'EUR',
+                isPartial,
+                reason:       reason.trim(),
+                bookingId:    booking.id,
+              });
+            } catch (emailErr) {
+              console.error("[ADMIN] Failed to send refund email to parent:", emailErr.message);
+            }
+            try {
+              await sendRefundNotificationToExpert({
+                to:           booking.expert?.user?.email,
+                expertName:   booking.expert?.user?.name || "Specialist",
+                parentName:   booking.parent.name,
+                serviceTitle: booking.service?.title || "the session",
+                scheduledAt:  booking.scheduled_at,
+                refundAmount: refundedAmount,
+                currency:     booking.currency || 'EUR',
+                isPartial,
+                bookingId:    booking.id,
+                timezone:     booking.expert?.timezone,
+                language:     booking.expert?.user?.language,
+              });
+            } catch (emailErr) {
+              console.error("[ADMIN] Failed to send refund email to expert:", emailErr.message);
+            }
+          } catch (stripeErr) {
+            if (stripeErr?.code === "charge_already_refunded") {
+              await prisma.booking.update({
+                where: { id: booking.id },
+                data: {
+                  status:              "REFUNDED",
+                  cancellation_reason: reason.trim(),
+                  cancelled_at:        cancelledAt,
+                  transfer_status:     "skipped",
+                },
+              });
+            } else {
+              await prisma.booking.update({
+                where: { id: booking.id },
+                data: {
+                  status:              "CANCELLED",
+                  cancellation_reason: reason.trim(),
+                  cancelled_at:        cancelledAt,
+                  transfer_status:     "skipped",
+                  internal_admin_note: `Refund failed during admin cancellation: ${stripeErr.message}. Manual refund required.`,
+                },
+              });
+              console.error(`[adminCancelBooking] Stripe refund failed for booking ${booking.id}:`, stripeErr.message);
+            }
+          }
+        } else {
+          // No charge on record — just cancel, no refund possible.
+          await prisma.booking.update({
+            where: { id: booking.id },
+            data: {
+              status:              "CANCELLED",
+              cancellation_reason: reason.trim(),
+              cancelled_at:        cancelledAt,
+              transfer_status:     "skipped",
+            },
+          });
+        }
+      } else {
+        // 0% tier (cancelled <12h before session) — legitimately no refund.
+        await prisma.booking.update({
+          where: { id: booking.id },
+          data: {
+            status:              "CANCELLED",
+            cancellation_reason: reason.trim(),
+            cancelled_at:        cancelledAt,
+            transfer_status:     "skipped",
+          },
         });
-      } catch (emailErr) {
-        console.error("[ADMIN] Failed to send refund email to expert:", emailErr.message);
       }
     } else {
       // PENDING_PAYMENT — cancel the PaymentIntent if it exists (no refund email needed)
