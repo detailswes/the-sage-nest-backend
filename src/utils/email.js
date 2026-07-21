@@ -25,6 +25,7 @@ const {
 } = require("./email_templates/refundParentEmail");
 const {
   refundExpertEmailHtml,
+  refundExpertEmailSubject,
 } = require("./email_templates/refundExpertEmail");
 const {
   rescheduleNotificationEmailHtml,
@@ -590,7 +591,8 @@ const sendRefundNotificationToParent = ({
  * @param {{
  *   to: string, expertName: string, parentName: string,
  *   serviceTitle: string, scheduledAt: Date,
- *   refundAmount: number, isPartial: boolean, bookingId: number
+ *   refundAmount: number, isPartial: boolean, bookingId: number,
+ *   timezone?: string | null, language?: 'en' | 'it'
  * }} param0
  */
 const sendRefundNotificationToExpert = ({
@@ -603,12 +605,20 @@ const sendRefundNotificationToExpert = ({
   currency = 'EUR',
   isPartial,
   bookingId,
+  timezone,
+  language,
 }) => {
-  const amountStr = new Intl.NumberFormat('en', { style: 'currency', currency }).format(parseFloat(refundAmount));
+  const lang = language === "it" ? "it" : "en";
+  const locale = lang === "it" ? "it-IT" : "en-GB";
+  const amountStr = new Intl.NumberFormat(locale, { style: 'currency', currency }).format(parseFloat(refundAmount));
+  const text =
+    lang === "it"
+      ? `Ciao ${expertName?.split(' ')[0] || 'there'}, un rimborso ${isPartial ? "parziale" : "completo"} di ${amountStr} è stato emesso a ${parentName} per la prenotazione #${bookingId}. ${isPartial ? "Il saldo residuo non verrà corrisposto automaticamente." : "Il compenso per questa prenotazione non verrà corrisposto."}`
+      : `Hi ${expertName?.split(' ')[0] || 'there'}, a ${isPartial ? "partial" : "full"} refund of ${amountStr} has been issued to ${parentName} for booking #${bookingId}. ${isPartial ? "The remaining balance for this booking will not be paid out automatically." : "The payout for this booking will not be processed."}`;
   return sendEmail({
     to,
-    subject: `A refund has been issued for booking #${bookingId}`,
-    text: `Hi ${expertName}, a ${isPartial ? "partial" : "full"} refund of ${amountStr} has been issued to ${parentName} for booking #${bookingId}. The payout for this booking will not be processed.`,
+    subject: refundExpertEmailSubject({ language: lang, bookingId }),
+    text,
     html: refundExpertEmailHtml({
       expertName,
       parentName,
@@ -618,7 +628,11 @@ const sendRefundNotificationToExpert = ({
       currency,
       isPartial,
       bookingId,
+      timezone,
+      language: lang,
       clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
     }),
   });
 };
