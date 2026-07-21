@@ -37,9 +37,9 @@ const {
   parentSuspendedEmailHtml,
 } = require("./email_templates/parentSuspendedEmail");
 const {
-  expertBookingCancelledSuspensionEmailHtml,
-  expertBookingCancelledSuspensionEmailSubject,
-} = require("./email_templates/expertBookingCancelledSuspensionEmail");
+  platformCancellationEmailHtml,
+  platformCancellationEmailSubject,
+} = require("./email_templates/platformCancellationEmail");
 const {
   imLateEmailHtml,
 } = require("./email_templates/imLateEmail");
@@ -845,7 +845,19 @@ const sendParentSuspendedEmail = ({ to, parentName, cancelledBookingCount }) =>
     }),
   });
 
-const sendExpertBookingCancelledDueToSuspensionEmail = ({
+/**
+ * Notify an expert that Sage Nest itself (not the parent) cancelled one of
+ * their upcoming bookings — either because the parent's account was
+ * suspended/GDPR-deleted, or because an admin cancelled the booking directly
+ * from Booking Management.
+ * @param {{
+ *   to: string, expertName: string, parentName: string, serviceTitle: string,
+ *   scheduledAt: Date, bookingId: number, timezone?: string | null,
+ *   language?: 'en' | 'it', policyUrl: string,
+ *   cancellationType?: 'account_closure' | 'admin_cancelled', adminReason?: string | null,
+ * }} param0
+ */
+const sendPlatformCancellationEmailToExpert = ({
   to,
   expertName,
   parentName,
@@ -855,19 +867,27 @@ const sendExpertBookingCancelledDueToSuspensionEmail = ({
   timezone,
   language,
   policyUrl,
+  cancellationType = "account_closure",
+  adminReason,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const dateStr = new Date(scheduledAt).toLocaleDateString(lang === "it" ? "it-IT" : "en-GB", {
     weekday: "long", day: "numeric", month: "long", year: "numeric",
   });
+  const reasonText =
+    cancellationType === "admin_cancelled"
+      ? ""
+      : lang === "it"
+        ? " perché l'account del genitore non è più attivo sulla piattaforma"
+        : " because the parent's account is no longer active on the platform";
   return sendEmail({
     to,
-    subject: expertBookingCancelledSuspensionEmailSubject({ language: lang, serviceTitle, parentName, scheduledAt, timezone }),
+    subject: platformCancellationEmailSubject({ language: lang, serviceTitle, parentName, scheduledAt, timezone }),
     text:
       lang === "it"
-        ? `Ciao ${expertName?.split(' ')[0] || 'there'}, una sessione in programma (${serviceTitle}, ${dateStr}, prenotazione ${bookingId}) è stata cancellata perché l'account del genitore non è più attivo sulla piattaforma.`
-        : `Hi ${expertName?.split(' ')[0] || 'there'}, an upcoming session (${serviceTitle}, ${dateStr}, booking #${bookingId}) has been cancelled because the parent's account is no longer active on the platform.`,
-    html: expertBookingCancelledSuspensionEmailHtml({
+        ? `Ciao ${expertName?.split(' ')[0] || 'there'}, una sessione in programma (${serviceTitle}, ${dateStr}, prenotazione ${bookingId}) è stata cancellata da Sage Nest${reasonText}.`
+        : `Hi ${expertName?.split(' ')[0] || 'there'}, an upcoming session (${serviceTitle}, ${dateStr}, booking #${bookingId}) has been cancelled by Sage Nest${reasonText}.`,
+    html: platformCancellationEmailHtml({
       expertName,
       parentName,
       serviceTitle,
@@ -879,6 +899,8 @@ const sendExpertBookingCancelledDueToSuspensionEmail = ({
       contactEmail: CONTACT_EMAIL,
       supportEmail: SUPPORT_EMAIL,
       policyUrl,
+      cancellationType,
+      adminReason,
     }),
   });
 };
@@ -1084,7 +1106,7 @@ module.exports = {
   sendPasswordChangedEmail,
   sendExpertCancelledSessionEmail,
   sendParentSuspendedEmail,
-  sendExpertBookingCancelledDueToSuspensionEmail,
+  sendPlatformCancellationEmailToExpert,
   sendAdminPayoutAlert,
   sendImLateNotification,
   sendWebflowSyncFailureAlert,
