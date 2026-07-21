@@ -20,7 +20,7 @@ const COPY = {
       admin_cancelled: "",
     },
     greeting: (expertFirstName, reasonClause) =>
-      `Hi ${expertFirstName},<br><br>We're sorry to let you know that an upcoming session has been cancelled by Sage Nest${reasonClause}. You don't need to take any action.`,
+      `Hi <strong>${expertFirstName}</strong>,<br><br>We're sorry to let you know that an upcoming session has been cancelled by Sage Nest${reasonClause}. You don't need to take any action.`,
     noteLabel: "Note:",
     cancelledSession: "Cancelled Session",
     labels: { parentName: "Parent Name", service: "Service", date: "Date", time: "Time", bookingRef: "Booking Ref" },
@@ -42,7 +42,7 @@ const COPY = {
       admin_cancelled: "",
     },
     greeting: (expertFirstName, reasonClause) =>
-      `Ciao ${expertFirstName},<br><br>ti informiamo che una sessione in programma è stata cancellata da Sage Nest${reasonClause}. Non è richiesta alcuna azione da parte tua.`,
+      `Ciao <strong>${expertFirstName}</strong>,<br><br>ti informiamo che una sessione in programma è stata cancellata da Sage Nest${reasonClause}. Non è richiesta alcuna azione da parte tua.`,
     noteLabel: "Nota:",
     cancelledSession: "Sessione Cancellata",
     labels: { parentName: "Nome del Genitore", service: "Servizio", date: "Data", time: "Orario", bookingRef: "Riferimento Prenotazione" },
@@ -130,43 +130,33 @@ const platformCancellationEmailHtml = ({
           <div style="background:#F5F7F5;border-radius:12px;padding:20px 24px;margin-bottom:24px;">
             <table width="100%" cellpadding="0" cellspacing="0">
               <tr>
-                <td style="padding-bottom:10px;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#5e6d5b;">${t.labels.parentName}</span>
-                </td>
-                <td style="padding-bottom:10px;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#445446;">${parentName}</span>
+                <td style="padding-bottom:12px;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.parentName}</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${parentName}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding:10px 0;border-top:1px solid #c5ceba;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#5e6d5b;">${t.labels.service}</span>
-                </td>
-                <td style="padding:10px 0;border-top:1px solid #c5ceba;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#445446;">${serviceTitle}</span>
+                <td style="padding:12px 0;border-top:1px solid #c5ceba;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.service}</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${serviceTitle}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding:10px 0;border-top:1px solid #c5ceba;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#5e6d5b;">${t.labels.date}</span>
-                </td>
-                <td style="padding:10px 0;border-top:1px solid #c5ceba;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#445446;">${dateStr}</span>
+                <td style="padding:12px 0;border-top:1px solid #c5ceba;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.date}</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${dateStr}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding:10px 0;border-top:1px solid #c5ceba;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#5e6d5b;">${t.labels.time}</span>
-                </td>
-                <td style="padding:10px 0;border-top:1px solid #c5ceba;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#445446;">${timeStr} ${tzLabel}</span>
+                <td style="padding:12px 0;border-top:1px solid #c5ceba;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.time}</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${timeStr} ${tzLabel}</span>
                 </td>
               </tr>
               <tr>
-                <td style="padding-top:10px;border-top:1px solid #c5ceba;width:40%;vertical-align:top;">
-                  <span style="font-size:13px;color:#5e6d5b;">${t.labels.bookingRef}</span>
-                </td>
-                <td style="padding-top:10px;border-top:1px solid #c5ceba;vertical-align:top;">
-                  <span style="font-size:13px;font-weight:600;color:#445446;">${formatBookingRef(bookingId)}</span>
+                <td style="padding-top:12px;border-top:1px solid #c5ceba;padding-bottom:0;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.bookingRef}</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${formatBookingRef(bookingId)}</span>
                 </td>
               </tr>
             </table>
