@@ -1,13 +1,27 @@
 const { formatDateTime } = require("../emailDateTimeFormat");
 const { formatBookingRef } = require("../bookingRef");
 
+function escapeHtml(str) {
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 const COPY = {
   en: {
     subject: ({ serviceTitle, parentFirstName, dateStr }) =>
       `Booking cancelled — ${serviceTitle} with ${parentFirstName} on ${dateStr}`,
     title: "Session Cancelled – Sage Nest",
-    greeting: (expertFirstName) =>
-      `Hi ${expertFirstName},<br><br>We're sorry to let you know that an upcoming session has been cancelled by Sage Nest because the parent's account is no longer active on the platform. You don't need to take any action.`,
+    reasonClause: {
+      account_closure: " because the parent's account is no longer active on the platform",
+      admin_cancelled: "",
+    },
+    greeting: (expertFirstName, reasonClause) =>
+      `Hi ${expertFirstName},<br><br>We're sorry to let you know that an upcoming session has been cancelled by Sage Nest${reasonClause}. You don't need to take any action.`,
+    noteLabel: "Note:",
     cancelledSession: "Cancelled Session",
     labels: { parentName: "Parent Name", service: "Service", date: "Date", time: "Time", bookingRef: "Booking Ref" },
     payoutHeading: "Payout for this session",
@@ -23,8 +37,13 @@ const COPY = {
     subject: ({ serviceTitle, parentFirstName, dateStr }) =>
       `Prenotazione cancellata — ${serviceTitle} con ${parentFirstName} il ${dateStr}`,
     title: "Sessione Cancellata – Sage Nest",
-    greeting: (expertFirstName) =>
-      `Ciao ${expertFirstName},<br><br>ti informiamo che una sessione in programma è stata cancellata da Sage Nest, in quanto l'account del genitore non è più attivo sulla piattaforma. Non è richiesta alcuna azione da parte tua.`,
+    reasonClause: {
+      account_closure: " in quanto l'account del genitore non è più attivo sulla piattaforma",
+      admin_cancelled: "",
+    },
+    greeting: (expertFirstName, reasonClause) =>
+      `Ciao ${expertFirstName},<br><br>ti informiamo che una sessione in programma è stata cancellata da Sage Nest${reasonClause}. Non è richiesta alcuna azione da parte tua.`,
+    noteLabel: "Nota:",
     cancelledSession: "Sessione Cancellata",
     labels: { parentName: "Nome del Genitore", service: "Servizio", date: "Data", time: "Orario", bookingRef: "Riferimento Prenotazione" },
     payoutHeading: "Compenso per questa sessione",
@@ -39,18 +58,21 @@ const COPY = {
 };
 
 /**
- * Email sent to an expert when one of their upcoming sessions is cancelled
- * by Sage Nest because the parent's account is no longer active (suspended
- * or GDPR-deleted).
+ * Email sent to an expert when one of their upcoming sessions is cancelled by
+ * Sage Nest itself rather than by the parent directly — either because the
+ * parent's account is no longer active (suspended or GDPR-deleted), or
+ * because an admin cancelled the booking directly from Booking Management.
  *
  * @param {{
  *   expertName: string, parentName: string, serviceTitle: string,
  *   scheduledAt: Date, bookingId: number, timezone?: string | null,
  *   language?: 'en' | 'it', clientUrl: string,
  *   contactEmail: string, supportEmail: string, policyUrl: string,
+ *   cancellationType?: 'account_closure' | 'admin_cancelled',
+ *   adminReason?: string | null,
  * }} params
  */
-const expertBookingCancelledSuspensionEmailHtml = ({
+const platformCancellationEmailHtml = ({
   expertName,
   parentName,
   serviceTitle,
@@ -62,14 +84,16 @@ const expertBookingCancelledSuspensionEmailHtml = ({
   contactEmail,
   supportEmail,
   policyUrl,
+  cancellationType = "account_closure",
+  adminReason,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const t = COPY[lang];
   const expertFirstName = expertName?.split(" ")[0] || "there";
-  const parentFirstName = parentName?.split(" ")[0] || "";
   const logoUrl = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
 
   const { dateStr, timeStr, tzLabel } = formatDateTime(scheduledAt, timezone, lang);
+  const reasonClause = t.reasonClause[cancellationType] ?? t.reasonClause.admin_cancelled;
 
   return `
 <!DOCTYPE html>
@@ -93,8 +117,13 @@ const expertBookingCancelledSuspensionEmailHtml = ({
         <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #c5ceba;padding:40px 36px;">
 
           <p style="margin:0 0 28px;font-size:15px;color:#445446;line-height:1.6;">
-            ${t.greeting(expertFirstName)}
+            ${t.greeting(expertFirstName, reasonClause)}
           </p>
+
+          ${cancellationType === "admin_cancelled" && adminReason ? `
+          <div style="background:#F5F7F5;border-radius:8px;padding:16px;margin-bottom:24px;">
+            <p style="margin:0;font-size:13px;color:#5e6d5b;line-height:1.5;"><strong>${t.noteLabel}</strong> ${escapeHtml(adminReason)}</p>
+          </div>` : ""}
 
           <!-- Cancelled session -->
           <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.cancelledSession}</p>
@@ -174,11 +203,11 @@ const expertBookingCancelledSuspensionEmailHtml = ({
 </html>`;
 };
 
-const expertBookingCancelledSuspensionEmailSubject = ({ language, serviceTitle, parentName, scheduledAt, timezone }) => {
+const platformCancellationEmailSubject = ({ language, serviceTitle, parentName, scheduledAt, timezone }) => {
   const lang = language === "it" ? "it" : "en";
   const parentFirstName = parentName?.split(" ")[0] || "";
   const { dateStr } = formatDateTime(scheduledAt, timezone, lang);
   return COPY[lang].subject({ serviceTitle, parentFirstName, dateStr });
 };
 
-module.exports = { expertBookingCancelledSuspensionEmailHtml, expertBookingCancelledSuspensionEmailSubject };
+module.exports = { platformCancellationEmailHtml, platformCancellationEmailSubject };

@@ -15,7 +15,7 @@ const {
   sendRefundNotificationToParent,
   sendRefundNotificationToExpert,
   sendParentSuspendedEmail,
-  sendExpertBookingCancelledDueToSuspensionEmail,
+  sendPlatformCancellationEmailToExpert,
   sendLegalDocumentUpdatedEmail,
 } = require("../utils/email");
 
@@ -1629,23 +1629,6 @@ async function adminCancelBooking(req, res) {
             } catch (emailErr) {
               console.error("[ADMIN] Failed to send refund email to parent:", emailErr.message);
             }
-            try {
-              await sendRefundNotificationToExpert({
-                to:           booking.expert?.user?.email,
-                expertName:   booking.expert?.user?.name || "Specialist",
-                parentName:   booking.parent.name,
-                serviceTitle: booking.service?.title || "the session",
-                scheduledAt:  booking.scheduled_at,
-                refundAmount: refundedAmount,
-                currency:     booking.currency || 'EUR',
-                isPartial,
-                bookingId:    booking.id,
-                timezone:     booking.expert?.timezone,
-                language:     booking.expert?.user?.language,
-              });
-            } catch (emailErr) {
-              console.error("[ADMIN] Failed to send refund email to expert:", emailErr.message);
-            }
           } catch (stripeErr) {
             if (stripeErr?.code === "charge_already_refunded") {
               await prisma.booking.update({
@@ -1694,6 +1677,29 @@ async function adminCancelBooking(req, res) {
             transfer_status:     "skipped",
           },
         });
+      }
+
+      // Notify the expert that Sage Nest cancelled this booking — sent
+      // regardless of refund outcome, same as the parent-suspension flow.
+      if (booking.expert?.user?.email) {
+        const expertLanguage = booking.expert?.user?.language || "en";
+        getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
+          sendPlatformCancellationEmailToExpert({
+            to:           booking.expert.user.email,
+            expertName:   booking.expert.user.name,
+            parentName:   booking.parent.name,
+            serviceTitle: booking.service?.title || "the session",
+            scheduledAt:  booking.scheduled_at,
+            bookingId:    booking.id,
+            timezone:     booking.expert?.timezone,
+            language:     expertLanguage,
+            policyUrl,
+            cancellationType: "admin_cancelled",
+            adminReason:  reason.trim(),
+          });
+        }).catch((e) =>
+          console.error("[ADMIN] Failed to send cancellation email to expert:", e.message)
+        );
       }
     } else {
       // PENDING_PAYMENT — cancel the PaymentIntent if it exists (no refund email needed)
@@ -3011,7 +3017,7 @@ async function suspendParent(req, res) {
       if (b.expertEmail) {
         const expertLanguage = b.expertLanguage || "en";
         getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
-          sendExpertBookingCancelledDueToSuspensionEmail({
+          sendPlatformCancellationEmailToExpert({
             to: b.expertEmail,
             expertName: b.expertName,
             parentName: b.parentName,
@@ -3021,6 +3027,7 @@ async function suspendParent(req, res) {
             timezone: b.expertTimezone,
             language: expertLanguage,
             policyUrl,
+            cancellationType: "account_closure",
           });
         }).catch((e) =>
           console.error(
