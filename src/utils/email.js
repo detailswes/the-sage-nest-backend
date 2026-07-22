@@ -32,7 +32,12 @@ const {
 } = require("./email_templates/rescheduleNotificationEmail");
 const {
   expertCancelledSessionEmailHtml,
+  expertCancelledSessionEmailSubject,
 } = require("./email_templates/expertCancelledSessionEmail");
+const {
+  expertCancellationConfirmationEmailHtml,
+  expertCancellationConfirmationEmailSubject,
+} = require("./email_templates/expertCancellationConfirmationEmail");
 const {
   parentSuspendedEmailHtml,
 } = require("./email_templates/parentSuspendedEmail");
@@ -794,10 +799,13 @@ const sendPasswordChangedEmail = ({ to, name }) =>
 
 /**
  * Expert-cancelled session email — sent to the parent when an expert cancels.
- * A full refund is always issued in this scenario.
+ * A full refund is always issued in this scenario. Only call this once the
+ * refund has actually succeeded — never assert a refund the system hasn't
+ * completed yet.
  * @param {{
  *   to: string, parentName: string, expertName: string,
- *   serviceTitle: string, scheduledAt: Date, amount: number
+ *   serviceTitle: string, scheduledAt: Date, amount: number, bookingId: number,
+ *   timezone?: string | null, language?: 'en' | 'it'
  * }} param0
  */
 const sendExpertCancelledSessionEmail = ({
@@ -808,15 +816,21 @@ const sendExpertCancelledSessionEmail = ({
   scheduledAt,
   amount,
   currency = 'EUR',
+  bookingId,
+  timezone,
+  language,
 }) => {
-  const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
-    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
-  });
-  const amountStr = new Intl.NumberFormat('en', { style: 'currency', currency }).format(Number(amount));
+  const lang = language === "it" ? "it" : "en";
+  const locale = lang === "it" ? "it-IT" : "en-GB";
+  const amountStr = new Intl.NumberFormat(locale, { style: 'currency', currency }).format(Number(amount));
+  const text =
+    lang === "it"
+      ? `Ciao ${parentName.split(' ')[0]}, ci dispiace informarti che ${expertName.split(' ')[0]} ha dovuto cancellare la tua prossima sessione. Ti abbiamo rimborsato l'intero importo di ${amountStr}.`
+      : `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. A full refund of ${amountStr} has been issued to your original payment method.`;
   return sendEmail({
     to,
-    subject: `Your session on ${dateStr} has been cancelled — full refund issued`,
-    text: `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. A full refund of ${amountStr} has been issued to your original payment method.`,
+    subject: expertCancelledSessionEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone }),
+    text,
     html: expertCancelledSessionEmailHtml({
       parentName,
       expertName,
@@ -824,8 +838,56 @@ const sendExpertCancelledSessionEmail = ({
       scheduledAt,
       amount,
       currency,
+      bookingId,
+      timezone,
+      language: lang,
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
+    }),
+  });
+};
+
+/**
+ * Confirmation sent to an expert after they cancel one of their own sessions
+ * — their durable record that the parent was notified and refunded in full,
+ * and no payout will be made. Only call once the parent's refund has
+ * actually succeeded — shares its trigger point with sendExpertCancelledSessionEmail.
+ * @param {{
+ *   to: string, expertName: string, parentName: string, serviceTitle: string,
+ *   scheduledAt: Date, bookingId: number, timezone?: string | null,
+ *   language?: 'en' | 'it'
+ * }} param0
+ */
+const sendExpertCancellationConfirmationEmail = ({
+  to,
+  expertName,
+  parentName,
+  serviceTitle,
+  scheduledAt,
+  bookingId,
+  timezone,
+  language,
+}) => {
+  const lang = language === "it" ? "it" : "en";
+  return sendEmail({
+    to,
+    subject: expertCancellationConfirmationEmailSubject({ language: lang, serviceTitle, parentName, scheduledAt, timezone }),
+    text:
+      lang === "it"
+        ? `Ciao ${expertName?.split(' ')[0] || 'there'}, ti confermiamo la cancellazione della sessione (${serviceTitle}, prenotazione #${bookingId}) con ${parentName}. Il genitore è stato rimborsato integralmente; non verrà corrisposto alcun compenso per questa prenotazione.`
+        : `Hi ${expertName?.split(' ')[0] || 'there'}, this confirms that you have cancelled the session (${serviceTitle}, booking #${bookingId}) with ${parentName}. The parent has been refunded in full; no payout will be made for this booking.`,
+    html: expertCancellationConfirmationEmailHtml({
+      expertName,
+      parentName,
+      serviceTitle,
+      scheduledAt,
+      bookingId,
+      timezone,
+      language: lang,
+      clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
     }),
   });
 };
@@ -1105,6 +1167,7 @@ module.exports = {
   sendOtpEmail,
   sendPasswordChangedEmail,
   sendExpertCancelledSessionEmail,
+  sendExpertCancellationConfirmationEmail,
   sendParentSuspendedEmail,
   sendPlatformCancellationEmailToExpert,
   sendAdminPayoutAlert,

@@ -1,33 +1,20 @@
 const { formatDateTime } = require("../emailDateTimeFormat");
 const { formatBookingRef } = require("../bookingRef");
 
-function escapeHtml(str) {
-  return String(str)
-    .replace(/&/g, "&amp;")
-    .replace(/</g, "&lt;")
-    .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;")
-    .replace(/'/g, "&#39;");
-}
-
 const COPY = {
   en: {
     subject: ({ serviceTitle, parentFirstName, dateStr }) =>
-      `Booking cancelled — ${serviceTitle} with ${parentFirstName} on ${dateStr}`,
-    title: "Session Cancelled – Sage Nest",
-    reasonClause: {
-      account_closure: " because the parent's account is no longer active on the platform",
-      admin_cancelled: "",
-    },
-    greeting: (expertFirstName, reasonClause) =>
-      `Hi <strong>${expertFirstName}</strong>,<br><br>We're sorry to let you know that an upcoming session has been cancelled by Sage Nest${reasonClause}. You don't need to take any action.`,
-    noteLabel: "Note:",
+      `Cancellation confirmed — ${serviceTitle} with ${parentFirstName} on ${dateStr}`,
+    title: "Cancellation Confirmed – Sage Nest",
+    greeting: (expertFirstName) =>
+      `Hi ${expertFirstName},<br><br>This confirms that you have cancelled the following session.`,
     cancelledSession: "Cancelled Session",
     labels: { parentName: "Parent Name", service: "Service", date: "Date", time: "Time", bookingRef: "Booking Ref" },
-    payoutHeading: "Payout for this session",
-    payout: (policyUrl) =>
-      `Your payout for this booking follows the same rules as a parent cancellation, based on when the cancellation occurred — see the <a href="${policyUrl}" style="color:#92400E;text-decoration:underline;">Cancellation and Rescheduling Policy</a>. If you have any questions, contact us and we'll review it with you.`,
-    closing: (email) => `We're sorry for the disruption to your schedule. If you have any questions, write to us at <a href="mailto:${email}" style="color:#445446;">${email}</a>.`,
+    consequenceHeading: "What happens next",
+    consequence: "The parent has been notified and has received a full refund. No payout will be made for this booking.",
+    reminder: "We know cancelling is sometimes unavoidable. Where possible, offering to reschedule instead helps parents keep the support they need — each booking can be rescheduled once. Repeated cancellations may be reviewed under your Expert Agreement (clause 9.3).",
+    button: "Go to your dashboard",
+    closing: (email) => `If this cancellation was made in error, or you have any questions, write to us at <a href="mailto:${email}" style="color:#445446;">${email}</a>.`,
     signoff: "The Sage Nest Team",
     footerAddress: "Sage Nest ApS &middot; CVR 46566181 &middot; Copenhagen, Denmark",
     footerContact: (email) => `Questions? Contact us at <a href="mailto:${email}" style="color:#445446;">${email}</a>`,
@@ -35,21 +22,17 @@ const COPY = {
   },
   it: {
     subject: ({ serviceTitle, parentFirstName, dateStr }) =>
-      `Prenotazione cancellata — ${serviceTitle} con ${parentFirstName} il ${dateStr}`,
-    title: "Sessione Cancellata – Sage Nest",
-    reasonClause: {
-      account_closure: " in quanto l'account del genitore non è più attivo sulla piattaforma",
-      admin_cancelled: "",
-    },
-    greeting: (expertFirstName, reasonClause) =>
-      `Ciao <strong>${expertFirstName}</strong>,<br><br>ti informiamo che una sessione in programma è stata cancellata da Sage Nest${reasonClause}. Non è richiesta alcuna azione da parte tua.`,
-    noteLabel: "Nota:",
+      `Cancellazione confermata — ${serviceTitle} con ${parentFirstName} il ${dateStr}`,
+    title: "Cancellazione Confermata – Sage Nest",
+    greeting: (expertFirstName) =>
+      `Ciao ${expertFirstName},<br><br>ti confermiamo la cancellazione della seguente sessione.`,
     cancelledSession: "Sessione Cancellata",
     labels: { parentName: "Nome del Genitore", service: "Servizio", date: "Data", time: "Orario", bookingRef: "Riferimento Prenotazione" },
-    payoutHeading: "Compenso per questa sessione",
-    payout: (policyUrl) =>
-      `Il compenso per questa prenotazione segue le regole previste per le cancellazioni da parte del genitore, in base al momento in cui la cancellazione è avvenuta — vedi le <a href="${policyUrl}" style="color:#92400E;text-decoration:underline;">Condizioni di Cancellazione e Modifica della Prenotazione</a>. Per qualsiasi domanda, contattaci: la verificheremo insieme.`,
-    closing: (email) => `Ci scusiamo per l'eventuale disagio arrecato ai tuoi impegni. Per qualsiasi domanda, scrivici a <a href="mailto:${email}" style="color:#445446;">${email}</a>.`,
+    consequenceHeading: "Cosa succede ora",
+    consequence: "Il genitore è stato informato e ha ricevuto un rimborso integrale. Per questa prenotazione non verrà corrisposto alcun compenso.",
+    reminder: "Sappiamo che a volte cancellare è inevitabile. Quando possibile, proporre una modifica della prenotazione aiuta i genitori a mantenere il supporto di cui hanno bisogno — ogni prenotazione può essere modificata una sola volta. Cancellazioni ripetute possono essere esaminate ai sensi del tuo Contratto per Esperti (articolo 9.3).",
+    button: "Vai alla tua dashboard",
+    closing: (email) => `Se questa cancellazione è avvenuta per errore, o per qualsiasi domanda, scrivici a <a href="mailto:${email}" style="color:#445446;">${email}</a>.`,
     signoff: "Il team di Sage Nest",
     footerAddress: "Sage Nest ApS &middot; CVR 46566181 &middot; Copenaghen, Danimarca",
     footerContact: (email) => `Domande? Contattaci a <a href="mailto:${email}" style="color:#445446;">${email}</a>`,
@@ -58,21 +41,20 @@ const COPY = {
 };
 
 /**
- * Email sent to an expert when one of their upcoming sessions is cancelled by
- * Sage Nest itself rather than by the parent directly — either because the
- * parent's account is no longer active (suspended or GDPR-deleted), or
- * because an admin cancelled the booking directly from Booking Management.
+ * Confirmation email sent to an expert after they cancel one of their own
+ * sessions — their durable record that the parent was notified and refunded
+ * in full, and that no payout will be made. Only call this once the parent's
+ * full refund has actually succeeded (same gate as the parent-facing notice
+ * — the two share one trigger point).
  *
  * @param {{
  *   expertName: string, parentName: string, serviceTitle: string,
  *   scheduledAt: Date, bookingId: number, timezone?: string | null,
  *   language?: 'en' | 'it', clientUrl: string,
- *   contactEmail: string, supportEmail: string, policyUrl: string,
- *   cancellationType?: 'account_closure' | 'admin_cancelled',
- *   adminReason?: string | null,
+ *   contactEmail: string, supportEmail: string,
  * }} params
  */
-const platformCancellationEmailHtml = ({
+const expertCancellationConfirmationEmailHtml = ({
   expertName,
   parentName,
   serviceTitle,
@@ -83,17 +65,14 @@ const platformCancellationEmailHtml = ({
   clientUrl,
   contactEmail,
   supportEmail,
-  policyUrl,
-  cancellationType = "account_closure",
-  adminReason,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const t = COPY[lang];
   const expertFirstName = expertName?.split(" ")[0] || "there";
   const logoUrl = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
+  const dashboardUrl = `${clientUrl}/dashboard/expert/appointments`;
 
   const { dateStr, timeStr, tzLabel } = formatDateTime(scheduledAt, timezone, lang);
-  const reasonClause = t.reasonClause[cancellationType] ?? t.reasonClause.admin_cancelled;
 
   return `
 <!DOCTYPE html>
@@ -117,13 +96,8 @@ const platformCancellationEmailHtml = ({
         <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #c5ceba;padding:40px 36px;">
 
           <p style="margin:0 0 28px;font-size:15px;color:#445446;line-height:1.6;">
-            ${t.greeting(expertFirstName, reasonClause)}
+            ${t.greeting(expertFirstName)}
           </p>
-
-          ${cancellationType === "admin_cancelled" && adminReason ? `
-          <div style="background:#F5F7F5;border-radius:8px;padding:16px;margin-bottom:24px;">
-            <p style="margin:0;font-size:13px;color:#5e6d5b;line-height:1.5;"><strong>${t.noteLabel}</strong> ${escapeHtml(adminReason)}</p>
-          </div>` : ""}
 
           <!-- Cancelled session -->
           <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.cancelledSession}</p>
@@ -162,13 +136,21 @@ const platformCancellationEmailHtml = ({
             </table>
           </div>
 
-          <!-- Payout note -->
-          <div style="background:#FFF7ED;border:1px solid #FCD34D;border-radius:8px;padding:16px;margin-bottom:28px;">
-            <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#92400E;">${t.payoutHeading}</p>
-            <p style="margin:0;font-size:13px;color:#92400E;line-height:1.6;">
-              ${t.payout(policyUrl)}
-            </p>
+          <!-- Consequence box -->
+          <div style="background:#FFF7ED;border:1px solid #FCD34D;border-radius:8px;padding:16px;margin-bottom:24px;">
+            <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#92400E;">${t.consequenceHeading}</p>
+            <p style="margin:0;font-size:13px;color:#92400E;line-height:1.6;">${t.consequence}</p>
           </div>
+
+          <!-- Reschedule reminder -->
+          <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.reminder}</p>
+
+          <!-- Button -->
+          <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+            <tr><td align="center">
+              <a href="${dashboardUrl}" style="display:inline-block;background:#445446;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:14px 28px;border-radius:10px;">${t.button}</a>
+            </td></tr>
+          </table>
 
           <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">
             ${t.closing(supportEmail)}
@@ -193,11 +175,11 @@ const platformCancellationEmailHtml = ({
 </html>`;
 };
 
-const platformCancellationEmailSubject = ({ language, serviceTitle, parentName, scheduledAt, timezone }) => {
+const expertCancellationConfirmationEmailSubject = ({ language, serviceTitle, parentName, scheduledAt, timezone }) => {
   const lang = language === "it" ? "it" : "en";
   const parentFirstName = parentName?.split(" ")[0] || "";
   const { dateStr } = formatDateTime(scheduledAt, timezone, lang);
   return COPY[lang].subject({ serviceTitle, parentFirstName, dateStr });
 };
 
-module.exports = { platformCancellationEmailHtml, platformCancellationEmailSubject };
+module.exports = { expertCancellationConfirmationEmailHtml, expertCancellationConfirmationEmailSubject };
