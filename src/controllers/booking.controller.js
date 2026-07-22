@@ -11,6 +11,7 @@ const {
   sendNewBookingNotificationEmail,
   sendRescheduleNotificationEmail,
   sendExpertCancelledSessionEmail,
+  sendExpertCancellationConfirmationEmail,
   sendImLateNotification,
 } = require("../utils/email");
 
@@ -1383,15 +1384,17 @@ async function expertCancelBooking(req, res) {
       where: { id: parseInt(id) },
       include: {
         parent: {
-          select: { name: true, email: true, notify_expert_cancellation: true },
+          select: { name: true, email: true, notify_expert_cancellation: true, timezone: true, language: true },
         },
         expert: {
           select: {
             user_id: true,
-            user: { select: { name: true, email: true } },
+            timezone: true,
+            user: { select: { name: true, email: true, language: true } },
           },
         },
         service: { select: { title: true } },
+        consent: { select: { language: true } },
       },
     });
 
@@ -1516,11 +1519,15 @@ async function expertCancelBooking(req, res) {
       );
     }
 
-    // Email the parent — fire-and-forget
+    // Email the parent — fire-and-forget. Only sent once the refund has
+    // actually succeeded (finding 3, Expert Cancellation Notice review):
+    // never claim "a full refund has been issued" before it has.
     if (
       booking.status === "CONFIRMED" &&
-      booking.parent.notify_expert_cancellation !== false
+      booking.parent.notify_expert_cancellation !== false &&
+      stripeRefund
     ) {
+      const parentLanguage = booking.consent?.language || booking.parent.language || "en";
       sendExpertCancelledSessionEmail({
         to: booking.parent.email,
         parentName: booking.parent.name,
@@ -1529,8 +1536,29 @@ async function expertCancelBooking(req, res) {
         scheduledAt: booking.scheduled_at,
         amount: refundedAmount,
         currency: booking.currency || "EUR",
+        bookingId: booking.id,
+        timezone: booking.parent.timezone || booking.expert.timezone,
+        language: parentLanguage,
       }).catch((e) =>
         console.error("[Email] Expert cancel parent email failed:", e.message),
+      );
+    }
+
+    // Confirm to the expert what their cancellation caused — same trigger
+    // point as the parent email above (only after the refund has succeeded),
+    // independent of the parent's own notification preference.
+    if (booking.status === "CONFIRMED" && stripeRefund) {
+      sendExpertCancellationConfirmationEmail({
+        to: booking.expert.user.email,
+        expertName: booking.expert.user.name,
+        parentName: booking.parent.name,
+        serviceTitle: booking.service.title,
+        scheduledAt: booking.scheduled_at,
+        bookingId: booking.id,
+        timezone: booking.expert.timezone,
+        language: booking.expert.user.language,
+      }).catch((e) =>
+        console.error("[Email] Expert cancellation confirmation email failed:", e.message),
       );
     }
 
