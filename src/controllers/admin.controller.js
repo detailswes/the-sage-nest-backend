@@ -518,98 +518,6 @@ async function requestChanges(req, res) {
   }
 }
 
-// ─── Publish / unpublish ──────────────────────────────────────────────────────
-//
-// Force Unpublish sets is_published = false on an APPROVED expert.
-// Effect: expert is hidden from parent search/browse (listExperts filters on
-//   is_published = true). Status stays APPROVED. Sessions are not invalidated.
-//   The expert retains full login access and their dashboard is unaffected.
-//   Existing and future bookings are not touched — sessions proceed normally.
-//
-// NOTE: createBooking does not check is_published, so a parent with a direct
-//   link can still book an unpublished expert. If blocking all new bookings is
-//   required, add an is_published guard to createBooking.
-//
-// Reinstatement: republishExpert (sets is_published = true). Requires
-//   status = APPROVED; if the expert was subsequently suspended, reactivate first.
-//
-// vs Suspend: Suspend changes status → SUSPENDED and invalidates all sessions.
-//   Use Suspend to prevent login. Use Unpublish only to remove from search.
-
-async function unpublishExpert(req, res) {
-  const { id } = req.params;
-  try {
-    const expert = await prisma.expert.findUnique({
-      where: { id: parseInt(id) },
-    });
-    if (!expert) return res.status(404).json({ error: "Expert not found" });
-
-    if (expert.status !== "APPROVED") {
-      return res.status(400).json({
-        error:
-          "Only approved experts can be force-unpublished. Use Suspend for non-approved accounts.",
-      });
-    }
-    if (!expert.is_published) {
-      return res.status(400).json({ error: "Expert is already unlisted." });
-    }
-
-    const updated = await prisma.expert.update({
-      where: { id: parseInt(id) },
-      data: { is_published: false },
-    });
-
-    await logAudit(req.user.id, "UNPUBLISH", "EXPERT", parseInt(id));
-    webflowService.archiveExpert(parseInt(id))
-      .catch(err => console.error("[Webflow] Archive after unpublish failed:", err.message));
-
-    return res.json({
-      message: "Expert unlisted from parent search",
-      expert: updated,
-    });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Server error" });
-  }
-}
-
-async function republishExpert(req, res) {
-  const { id } = req.params;
-  try {
-    const expert = await prisma.expert.findUnique({
-      where: { id: parseInt(id) },
-    });
-    if (!expert) return res.status(404).json({ error: "Expert not found" });
-
-    if (expert.status !== "APPROVED") {
-      return res.status(400).json({
-        error: "Only approved experts can be republished.",
-      });
-    }
-    if (expert.is_published) {
-      return res.status(400).json({ error: "Expert is already published." });
-    }
-
-    const updated = await prisma.expert.update({
-      where: { id: parseInt(id) },
-      data: { is_published: true },
-    });
-
-    await logAudit(req.user.id, "REPUBLISH", "EXPERT", parseInt(id));
-    webflowService.syncExpert(parseInt(id))
-      .then(() => webflowService.syncExpertServices(parseInt(id)))
-      .catch(err => console.error("[Webflow] Sync after republish failed:", err.message));
-
-    return res.json({
-      message: "Expert restored to parent search",
-      expert: updated,
-    });
-  } catch (err) {
-    console.error(err);
-    return res.status(500).json({ error: "Server error" });
-  }
-}
-
 // ─── Support tools ────────────────────────────────────────────────────────────
 
 async function sendPasswordReset(req, res) {
@@ -1517,6 +1425,11 @@ async function getBookingDetail(req, res) {
             sms_error:     true,
           },
         },
+        // Audit trail: which Privacy Policy version was displayed/linked to the
+        // parent at the moment of this booking (notice-only, not "accepted").
+        consent: {
+          select: { privacy_policy_version_displayed: true },
+        },
       },
     });
     if (!booking) return res.status(404).json({ error: "Booking not found" });
@@ -2238,7 +2151,7 @@ async function getParentDetail(req, res) {
   const { id } = req.params;
   try {
     const parentId = parseInt(id);
-    const [parent, currentPp, currentTc, ppAcceptances, tcAcceptances, tcAtReg] = await Promise.all([
+    const [parent, currentTc, tcAcceptances, tcAtReg, marketingConsent] = await Promise.all([
       prisma.user.findUnique({
         where: { id: parentId },
         select: {
@@ -2247,13 +2160,7 @@ async function getParentDetail(req, res) {
           _count: { select: { bookings_as_parent: true } },
         },
       }),
-      prisma.legalDocument.findFirst({ where: { type: 'PRIVACY_POLICY' },   orderBy: { effective_from: 'desc' } }),
       prisma.legalDocument.findFirst({ where: { type: 'TERMS_CONDITIONS' }, orderBy: { effective_from: 'desc' } }),
-      prisma.privacyPolicyAcceptance.findMany({
-        where: { user_id: parentId },
-        orderBy: { accepted_at: 'desc' },
-        select: { version: true, accepted_at: true, marketing_consent: true, marketing_accepted_at: true },
-      }),
       prisma.tcAcceptance.findMany({
         where: { user_id: parentId },
         orderBy: { accepted_at: 'desc' },
@@ -2265,25 +2172,29 @@ async function getParentDetail(req, res) {
         orderBy: { accepted_at: 'desc' },
         select: { tc_version: true, accepted_at: true },
       }),
+      // Marketing consent — decoupled from legal-document acceptances (own table)
+      prisma.marketingConsent.findUnique({ where: { user_id: parentId } }),
     ]);
 
     if (!parent || parent.role !== 'PARENT') {
       return res.status(404).json({ error: 'Parent not found' });
     }
 
-    const latestPpVersion  = ppAcceptances[0]?.version ?? null;
     const latestTcVersion  = tcAcceptances[0]?.version ?? tcAtReg?.tc_version ?? null;
 
     return res.json({
       ...parent,
       legal_consents: {
-        current_pp_version: currentPp?.version ?? null,
         current_tc_version: currentTc?.version ?? null,
-        pp_compliant: !!(currentPp && latestPpVersion === currentPp.version),
         tc_compliant: !!(currentTc && latestTcVersion === currentTc.version),
-        pp_acceptances: ppAcceptances,
         tc_acceptances: tcAcceptances,
         tc_at_registration: tcAtReg ?? null,
+        marketing_consent: {
+          consent: marketingConsent?.consent ?? false,
+          accepted_at: marketingConsent?.accepted_at ?? null,
+          withdrawn_at: marketingConsent?.withdrawn_at ?? null,
+          source: marketingConsent?.source ?? null,
+        },
       },
     });
   } catch (err) {
@@ -2301,10 +2212,7 @@ async function getParentComplianceList(req, res) {
   const search = req.query.search?.trim() || '';
 
   try {
-    const [currentPp, currentTc] = await Promise.all([
-      prisma.legalDocument.findFirst({ where: { type: 'PRIVACY_POLICY' },   orderBy: { effective_from: 'desc' } }),
-      prisma.legalDocument.findFirst({ where: { type: 'TERMS_CONDITIONS' }, orderBy: { effective_from: 'desc' } }),
-    ]);
+    const currentTc = await prisma.legalDocument.findFirst({ where: { type: 'TERMS_CONDITIONS' }, orderBy: { effective_from: 'desc' } });
 
     const whereUser = { role: 'PARENT' };
     if (search) {
@@ -2319,11 +2227,6 @@ async function getParentComplianceList(req, res) {
       orderBy: { created_at: 'desc' },
       select: {
         id: true, name: true, email: true, created_at: true, parent_status: true,
-        pp_acceptances: {
-          orderBy: { accepted_at: 'desc' },
-          take: 1,
-          select: { version: true, accepted_at: true },
-        },
         tc_acceptances: {
           orderBy: { accepted_at: 'desc' },
           take: 1,
@@ -2347,26 +2250,21 @@ async function getParentComplianceList(req, res) {
     }
 
     const enriched = allParents.map((p) => {
-      const latestPp = p.pp_acceptances[0] ?? null;
       const latestTcBooking = p.tc_acceptances[0] ?? null;
       const latestTcReg = regTcMap[p.id] ?? null;
 
       const latestTcVersion = latestTcBooking?.version ?? latestTcReg?.tc_version ?? null;
       const latestTcAt      = latestTcBooking?.accepted_at ?? latestTcReg?.accepted_at ?? null;
 
-      const ppCompliant = !!(currentPp && latestPp?.version === currentPp.version);
       const tcCompliant = !!(currentTc && latestTcVersion === currentTc.version);
 
       return {
         id: p.id, name: p.name, email: p.email,
         created_at: p.created_at, parent_status: p.parent_status,
-        pp_version:    latestPp?.version    ?? null,
-        pp_accepted_at: latestPp?.accepted_at ?? null,
-        pp_compliant:  ppCompliant,
         tc_version:    latestTcVersion,
         tc_accepted_at: latestTcAt,
         tc_compliant:  tcCompliant,
-        compliant: ppCompliant && tcCompliant,
+        compliant: tcCompliant,
       };
     });
 
@@ -2382,7 +2280,6 @@ async function getParentComplianceList(req, res) {
       total,
       page,
       pages: Math.ceil(total / limit),
-      current_pp_version: currentPp?.version ?? null,
       current_tc_version: currentTc?.version ?? null,
     });
   } catch (err) {
@@ -3802,8 +3699,6 @@ module.exports = {
   suspendExpert,
   reactivateExpert,
   requestChanges,
-  unpublishExpert,
-  republishExpert,
   exportTaxData,
   exportExperts,
   getExpertYearlySummary,

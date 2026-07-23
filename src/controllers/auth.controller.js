@@ -18,6 +18,7 @@ const {
   sendPasswordChangedEmail,
 } = require("../utils/email");
 const { addOrUpdateBrevoContact } = require("../utils/brevo");
+const { upsertMarketingConsent, syncMarketingConsentToBrevo } = require("../utils/marketingConsent");
 
 const OTP_EXPIRY_MS   = 300 * 1000;       // 5 minutes
 const OTP_RESEND_COOLDOWN_MS = 60 * 1000; // 60 seconds between resends
@@ -56,13 +57,6 @@ const ACCESS_TOKEN_EXPIRES = "15m";
 const REFRESH_TOKEN_EXPIRES_MS = 30 * 24 * 60 * 60 * 1000; // 30 days (sliding via rotation)
 const MAX_LOGIN_ATTEMPTS = 5;
 const LOCKOUT_DURATION_MS = 15 * 60 * 1000; // 15 minutes
-
-// Canonical marketing opt-in statement — stored verbatim alongside consent so
-// the exact text shown to the user is demonstrable under GDPR Art. 7(1) and
-// the Danish Markedsføringslov. Increment version when the statement changes.
-const MARKETING_CONSENT_VERSION = "v1";
-const MARKETING_CONSENT_STATEMENT =
-  "I'd like to receive tips, expert advice, and updates from Sage Nest by email. You can unsubscribe at any time.";
 
 // Argon2id — OWASP recommended settings (64 MB memory cost)
 const ARGON2_OPTIONS = {
@@ -210,16 +204,17 @@ async function register(req, res) {
     const consentTimestamp = new Date();
     await prisma.privacyPolicyAcceptance.create({
       data: {
-        user_id:               user.id,
-        version:               currentPp?.version ?? "1.0",
-        language:              normalizeConsentLanguage(language),
-        accepted_at:           consentTimestamp,
-        tc_version:            currentTc?.version ?? "1.0",
-        tc_accepted_at:        consentTimestamp,
-        marketing_consent:      marketingConsent === true,
-        marketing_accepted_at:  marketingConsent === true ? consentTimestamp : null,
-        marketing_consent_text: marketingConsent === true ? `${MARKETING_CONSENT_VERSION}: ${MARKETING_CONSENT_STATEMENT}` : null,
+        user_id:        user.id,
+        version:        currentPp?.version ?? "1.0",
+        language:       normalizeConsentLanguage(language),
+        accepted_at:    consentTimestamp,
+        tc_version:     currentTc?.version ?? "1.0",
+        tc_accepted_at: consentTimestamp,
       },
+    });
+    await upsertMarketingConsent(prisma, user.id, {
+      consent: marketingConsent === true,
+      source:  "REGISTRATION",
     });
 
     sendVerificationEmail({
@@ -325,14 +320,13 @@ async function verifyEmail(req, res) {
 
     // Sync verified parent to Brevo for marketing campaign management (fire-and-forget)
     if (user.role === 'PARENT') {
-      prisma.privacyPolicyAcceptance.findFirst({
+      prisma.marketingConsent.findUnique({
         where: { user_id: user.id },
-        orderBy: { accepted_at: 'desc' },
-        select: { marketing_consent: true },
-      }).then((ppa) => addOrUpdateBrevoContact({
+        select: { consent: true },
+      }).then((mc) => addOrUpdateBrevoContact({
         email: user.email,
         name: user.name,
-        marketingConsent: ppa?.marketing_consent ?? false,
+        marketingConsent: mc?.consent ?? false,
       })).catch((err) => console.error('[Brevo] Failed to sync verified parent:', err.message));
     }
 
@@ -1482,7 +1476,7 @@ async function getLegalVersions(req, res) {
 // ─── Legal consents history ───────────────────────────────────────────────────
 async function getLegalConsents(req, res) {
   try {
-    const [ppAcceptances, tcAcceptances] = await Promise.all([
+    const [ppAcceptances, tcAcceptances, marketing] = await Promise.all([
       prisma.privacyPolicyAcceptance.findMany({
         where: { user_id: req.user.id },
         orderBy: { accepted_at: "desc" },
@@ -1491,10 +1485,6 @@ async function getLegalConsents(req, res) {
           version: true,
           language: true,
           accepted_at: true,
-          marketing_consent: true,
-          marketing_accepted_at: true,
-          marketing_consent_text: true,
-          marketing_withdrawn_at: true,
           tc_version: true,
           tc_accepted_at: true,
         },
@@ -1504,16 +1494,10 @@ async function getLegalConsents(req, res) {
         orderBy: { accepted_at: "desc" },
         select: { id: true, version: true, language: true, accepted_at: true },
       }),
+      prisma.marketingConsent.findUnique({ where: { user_id: req.user.id } }),
     ]);
 
-    const latest = ppAcceptances[0] ?? null;
-
     return res.json({
-      privacy_policy: ppAcceptances.map((a) => ({
-        version: a.version,
-        language: a.language,
-        accepted_at: a.accepted_at,
-      })),
       terms_registration: ppAcceptances
         .filter((a) => a.tc_version)
         .map((a) => ({ version: a.tc_version, language: a.language, accepted_at: a.tc_accepted_at })),
@@ -1522,10 +1506,10 @@ async function getLegalConsents(req, res) {
         language: a.language,
         accepted_at: a.accepted_at,
       })),
-      marketing_consent: latest?.marketing_consent ?? false,
-      marketing_accepted_at: latest?.marketing_accepted_at ?? null,
-      marketing_consent_text: latest?.marketing_consent_text ?? null,
-      marketing_withdrawn_at: latest?.marketing_withdrawn_at ?? null,
+      marketing_consent: marketing?.consent ?? false,
+      marketing_accepted_at: marketing?.accepted_at ?? null,
+      marketing_consent_text: marketing?.consent_text ?? null,
+      marketing_withdrawn_at: marketing?.withdrawn_at ?? null,
     });
   } catch (err) {
     console.error(err);
@@ -1541,37 +1525,19 @@ async function updateMarketingConsent(req, res) {
   }
 
   try {
-    const latest = await prisma.privacyPolicyAcceptance.findFirst({
-      where: { user_id: req.user.id },
-      orderBy: { accepted_at: "desc" },
+    // Upsert — a missing record (e.g. a legacy account predating consent
+    // tracking) is created on the fly rather than blocking the toggle.
+    const updated = await upsertMarketingConsent(prisma, req.user.id, {
+      consent,
+      source: "SETTINGS",
     });
+    syncMarketingConsentToBrevo(req.user.id, consent);
 
-    if (!latest) {
-      return res.status(404).json({ error: "No consent record found" });
-    }
-
-    const now = new Date();
-    const updated = await prisma.privacyPolicyAcceptance.update({
-      where: { id: latest.id },
-      data: {
-        marketing_consent:      consent,
-        // Grant: record when + what statement was accepted. Never null on withdrawal
-        // so the original opt-in timestamp is preserved for the audit trail.
-        marketing_accepted_at:  consent ? now : latest.marketing_accepted_at,
-        marketing_consent_text: consent
-          ? `${MARKETING_CONSENT_VERSION}: ${MARKETING_CONSENT_STATEMENT}`
-          : latest.marketing_consent_text,
-        // Withdrawal: record when consent was withdrawn. Cleared if re-granting.
-        marketing_withdrawn_at: consent ? null : now,
-      },
-      select: {
-        marketing_consent: true,
-        marketing_accepted_at: true,
-        marketing_withdrawn_at: true,
-      },
+    return res.json({
+      marketing_consent: updated.consent,
+      marketing_accepted_at: updated.accepted_at,
+      marketing_withdrawn_at: updated.withdrawn_at,
     });
-
-    return res.json(updated);
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -1664,12 +1630,13 @@ async function exportMyData(req, res) {
             version: true,
             language: true,
             accepted_at: true,
-            marketing_consent: true,
-            marketing_accepted_at: true,
             tc_version: true,
             tc_accepted_at: true,
           },
           orderBy: { accepted_at: "desc" },
+        },
+        marketing_consent: {
+          select: { consent: true, accepted_at: true, withdrawn_at: true },
         },
       },
     });
@@ -1696,12 +1663,15 @@ async function exportMyData(req, res) {
         version: a.version,
         language: a.language,
         accepted_at: a.accepted_at,
-        marketing_consent: a.marketing_consent,
-        marketing_accepted_at: a.marketing_accepted_at,
       })),
       terms_and_conditions: user.pp_acceptances
         .filter((a) => a.tc_version)
         .map((a) => ({ version: a.tc_version, language: a.language, accepted_at: a.tc_accepted_at })),
+      marketing_consent: {
+        consent: user.marketing_consent?.consent ?? false,
+        accepted_at: user.marketing_consent?.accepted_at ?? null,
+        withdrawn_at: user.marketing_consent?.withdrawn_at ?? null,
+      },
     };
 
     const filename = `sage-nest-data-export-${new Date().toISOString().split("T")[0]}.json`;

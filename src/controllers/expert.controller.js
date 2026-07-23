@@ -724,7 +724,7 @@ async function listExperts(_req, res) {
       where: {
         status:                     'APPROVED',
         stripe_onboarding_complete: true,   // only show experts ready to accept payments
-        is_published:               true,   // admin force-unpublish hides from parent search
+        is_published:               true,   // hidden while suspended / GDPR-wiped
       },
       select: {
         id:             true,

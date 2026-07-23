@@ -49,6 +49,7 @@ model User {
   slot_locks                  SlotLock[]                @relation("ParentSlotLocks")
   late_notifications          LateNotification[]        @relation("ParentLateNotifications")
   booking_consents            BookingConsent[]
+  marketing_consent           MarketingConsent?
 }
 
 model RefreshToken {
@@ -307,13 +308,28 @@ model PrivacyPolicyAcceptance {
   version                  String
   language                 String    @default("en")
   accepted_at              DateTime  @default(now())
-  marketing_consent        Boolean   @default(false)
-  marketing_accepted_at    DateTime?
-  marketing_consent_text   String?
-  marketing_withdrawn_at   DateTime?
   tc_version               String?
   tc_accepted_at           DateTime?
   user                     User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
+}
+
+// Decoupled from PrivacyPolicyAcceptance: marketing consent is not a legal
+// document acceptance, it's a standalone optional preference collected at
+// registration, at booking, and from account settings — and read by the
+// Brevo sync for campaign targeting. One row per user; consent/withdrawal
+// toggles it in place, mirroring the original embedded-field semantics
+// (the original grant timestamp is preserved through a withdrawal so the
+// first-ever opt-in date survives repeated opt-in/opt-out cycles).
+model MarketingConsent {
+  id           Int       @id @default(autoincrement())
+  user_id      Int       @unique
+  consent      Boolean   @default(false)
+  consent_text String?
+  accepted_at  DateTime?
+  withdrawn_at DateTime?
+  source       String    @default("REGISTRATION")
+  updated_at   DateTime  @updatedAt
+  user         User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
 }
 
 model TcAcceptance {

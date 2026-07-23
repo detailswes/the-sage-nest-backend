@@ -15,8 +15,6 @@ const {
   suspendExpert,
   reactivateExpert,
   requestChanges,
-  unpublishExpert,
-  republishExpert,
   exportTaxData,
   exportExperts,
   getExpertYearlySummary,
@@ -79,8 +77,6 @@ router.post('/experts/:id/reactivate', reactivateExpert);
 
 // ── Moderation actions ────────────────────────────────────────────────────────
 router.post('/experts/:id/request-changes', requestChanges);   // send revision note + set CHANGES_REQUESTED
-router.post('/experts/:id/unpublish',        unpublishExpert);  // hide from parent search (APPROVED only)
-router.post('/experts/:id/republish',        republishExpert);  // restore to parent search
 
 // ── Profile draft review ──────────────────────────────────────────────────────
 router.post('/experts/:id/draft/approve', approveProfileDraft);
