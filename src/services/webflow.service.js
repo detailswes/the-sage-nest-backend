@@ -420,10 +420,25 @@ async function upsertWebflowItem(collectionId, existingItemId, slug, fieldData) 
   }
 
   if (itemId) {
-    await webflowRequest('PATCH', `/collections/${collectionId}/items/${itemId}`, {
-      fieldData, isArchived: false, isDraft: false,
-    });
-  } else {
+    try {
+      await webflowRequest('PATCH', `/collections/${collectionId}/items/${itemId}`, {
+        fieldData, isArchived: false, isDraft: false,
+      });
+    } catch (err) {
+      // Stored item ID no longer exists on Webflow's side (deleted out-of-band) — without
+      // this, a stale ID would 404 forever on every retry/cron sweep since it never falls
+      // back to re-resolving by slug. Re-resolve once, then fall through to create if gone.
+      if (err.status !== 404) throw err;
+      itemId = await findItemBySlug(collectionId, slug);
+      if (itemId) {
+        await webflowRequest('PATCH', `/collections/${collectionId}/items/${itemId}`, {
+          fieldData, isArchived: false, isDraft: false,
+        });
+      }
+    }
+  }
+
+  if (!itemId) {
     const created = await webflowRequest('POST', `/collections/${collectionId}/items`, {
       fieldData, isArchived: false, isDraft: false,
     });

@@ -1228,7 +1228,7 @@ async function verifyPayment(req, res) {
             address_postcode: true,
             timezone: true,
             notify_new_booking: true,
-            user: { select: { name: true, email: true } },
+            user: { select: { name: true, email: true, language: true } },
           },
         },
         service: { select: { title: true } },
@@ -1330,16 +1330,27 @@ async function verifyPayment(req, res) {
     }
 
     if (booking.expert.notify_new_booking !== false) {
-      sendNewBookingNotificationEmail({
-        to: booking.expert.user.email,
-        expertName: booking.expert.user.name,
-        parentName: booking.parent.name,
-        parentEmail: booking.parent.email,
-        serviceTitle: booking.service.title,
-        format: booking.format,
-        scheduledAt: booking.scheduled_at,
-        durationMinutes: booking.duration_minutes,
-        bookingId: booking.id,
+      const expertLanguage = booking.expert.user.language || "en";
+      getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
+        sendNewBookingNotificationEmail({
+          to: booking.expert.user.email,
+          expertName: booking.expert.user.name,
+          parentName: booking.parent.name,
+          parentEmail: booking.parent.email,
+          serviceTitle: booking.service.title,
+          format: booking.format,
+          scheduledAt: booking.scheduled_at,
+          durationMinutes: booking.duration_minutes,
+          location:
+            booking.format === "IN_PERSON"
+              ? expertAddressVerify || undefined
+              : undefined,
+          amount: booking.amount,
+          currency: booking.currency,
+          timezone: booking.expert.timezone,
+          language: expertLanguage,
+          policyUrl,
+        });
       }).catch((e) =>
         console.error(
           "[verifyPayment] Expert notification email failed:",

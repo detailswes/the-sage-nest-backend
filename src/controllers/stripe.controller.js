@@ -163,7 +163,7 @@ async function processStripeEvent(event) {
         where: { stripe_payment_intent_id: pi.id },
         include: {
           parent:  { select: { name: true, email: true, language: true, timezone: true, notify_booking_confirmation: true } },
-          expert:  { select: { address_street: true, address_city: true, address_postcode: true, timezone: true, notify_new_booking: true, user: { select: { name: true, email: true } } } },
+          expert:  { select: { address_street: true, address_city: true, address_postcode: true, timezone: true, notify_new_booking: true, user: { select: { name: true, email: true, language: true } } } },
           service: { select: { title: true } },
           consent: { select: { language: true, withdrawal_applicable: true } },
         },
@@ -226,17 +226,24 @@ async function processStripeEvent(event) {
         }
 
         if (booking.expert.notify_new_booking !== false) {
-          sendNewBookingNotificationEmail({
-            to:              booking.expert.user.email,
-            expertName:      booking.expert.user.name,
-            parentName:      booking.parent.name,
-            parentEmail:     booking.parent.email,
-            serviceTitle:    booking.service.title,
-            format:          booking.format,
-            scheduledAt:     booking.scheduled_at,
-            durationMinutes: booking.duration_minutes,
-            bookingId:       booking.id,
-            timezone:        booking.expert.timezone,
+          const expertLanguage = booking.expert.user.language || 'en';
+          getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
+            sendNewBookingNotificationEmail({
+              to:              booking.expert.user.email,
+              expertName:      booking.expert.user.name,
+              parentName:      booking.parent.name,
+              parentEmail:     booking.parent.email,
+              serviceTitle:    booking.service.title,
+              format:          booking.format,
+              scheduledAt:     booking.scheduled_at,
+              durationMinutes: booking.duration_minutes,
+              location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
+              amount:          booking.amount,
+              currency:        booking.currency,
+              timezone:        booking.expert.timezone,
+              language:        expertLanguage,
+              policyUrl,
+            });
           }).catch((e) => console.error('[Email] Expert notification email failed:', e.message));
         }
       } else {

@@ -13,6 +13,7 @@ const {
 } = require("./email_templates/cancellationNotificationEmail");
 const {
   newBookingNotificationEmailHtml,
+  newBookingNotificationEmailSubject,
 } = require("./email_templates/newBookingNotificationEmail");
 const {
   bookingReminderEmailHtml,
@@ -433,10 +434,12 @@ const sendBookingCancellationNotification = ({
 
 /**
  * New booking notification — sent to the expert when a booking is confirmed.
+ * Follows the expert's own profile language, independent of the parent's locale.
  * @param {{
  *   to: string, expertName: string, parentName: string, parentEmail: string,
- *   serviceTitle: string, format: string,
- *   scheduledAt: Date, durationMinutes: number, bookingId: number
+ *   serviceTitle: string, format: string, scheduledAt: Date, durationMinutes: number,
+ *   location?: string, amount?: number | string | null, currency?: string,
+ *   timezone?: string | null, language?: 'en' | 'it', policyUrl: string,
  * }} param0
  */
 const sendNewBookingNotificationEmail = ({
@@ -448,15 +451,22 @@ const sendNewBookingNotificationEmail = ({
   format,
   scheduledAt,
   durationMinutes,
-  bookingId,
+  location,
+  amount,
+  currency,
   timezone,
-}) =>
-  sendEmail({
+  language,
+  policyUrl,
+}) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${expertName?.split(' ')[0] || 'there'}, hai una nuova prenotazione: ${parentName} (${parentEmail}) ha prenotato ${serviceTitle} il ${new Date(scheduledAt).toLocaleDateString("it-IT")}.`
+      : `Hi ${expertName?.split(' ')[0] || 'there'}, you have a new booking: ${parentName} (${parentEmail}) has booked ${serviceTitle} on ${new Date(scheduledAt).toLocaleDateString("en-GB")}.`;
+  return sendEmail({
     to,
-    subject: `New booking from ${parentName}`,
-    text: `Hi ${expertName}, ${parentName} (${parentEmail}) has booked ${serviceTitle} on ${new Date(
-      scheduledAt
-    ).toLocaleDateString("en-GB")}.`,
+    subject: newBookingNotificationEmailSubject({ language: lang, serviceTitle, parentName, scheduledAt, timezone }),
+    text,
     html: newBookingNotificationEmailHtml({
       expertName,
       parentName,
@@ -465,12 +475,18 @@ const sendNewBookingNotificationEmail = ({
       format,
       scheduledAt,
       durationMinutes,
-      bookingId,
+      location,
+      amount,
+      currency,
       timezone,
+      language: lang,
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
+      policyUrl,
     }),
   });
+};
 
 /**
  * Session reminder — sent 24h and 1h before session to both parent and expert.
