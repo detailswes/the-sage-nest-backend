@@ -4,6 +4,7 @@ const { logAudit } = require("../utils/auditLog");
 const { normalizeConsentLanguage } = require("../utils/language");
 const { getConsentWording } = require("../utils/legalConsentWording");
 const { getLegalDocLinks } = require("../utils/legalDocLinks");
+const { upsertMarketingConsent, syncMarketingConsentToBrevo } = require("../utils/marketingConsent");
 const { createRefundWithFallback } = require("../utils/stripeRefund");
 const {
   sendBookingCancellationNotification,
@@ -256,6 +257,13 @@ async function createBooking(req, res) {
           },
         });
 
+        // Grant-only: an unchecked box here should never silently withdraw a
+        // preference the parent granted elsewhere (registration/settings) —
+        // withdrawal is a deliberate action, only done via the settings toggle.
+        if (marketingConsent === true) {
+          await upsertMarketingConsent(tx, req.user.id, { consent: true, source: "BOOKING" });
+        }
+
         return created;
       });
     } catch (err) {
@@ -268,6 +276,10 @@ async function createBooking(req, res) {
           });
       }
       throw err;
+    }
+
+    if (marketingConsent === true) {
+      syncMarketingConsentToBrevo(req.user.id, true);
     }
 
     // ── Create Stripe PaymentIntent (Destination Charge) ───────────────────

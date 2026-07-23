@@ -548,7 +548,7 @@ async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverr
   }
 }
 
-// ─── Archive (hide without deleting) — used for suspend / unpublish ───────────
+// ─── Archive (hide without deleting) — used for suspend ───────────────────────
 
 async function archiveExpert(expertId) {
   if (!EXPERTS_COLLECTION_ID) return;
