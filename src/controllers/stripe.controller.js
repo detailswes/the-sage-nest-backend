@@ -240,6 +240,7 @@ async function processStripeEvent(event) {
               location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
               amount:          booking.amount,
               currency:        booking.currency,
+              bookingId:       booking.id,
               timezone:        booking.expert.timezone,
               language:        expertLanguage,
               policyUrl,

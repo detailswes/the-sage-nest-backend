@@ -1,8 +1,10 @@
 const {
   verificationEmailHtml,
+  verificationEmailSubject,
 } = require("./email_templates/verificationEmail");
 const {
   passwordResetEmailHtml,
+  passwordResetEmailSubject,
 } = require("./email_templates/passwordResetEmail");
 const {
   bookingConfirmationEmailHtml,
@@ -10,6 +12,7 @@ const {
 } = require("./email_templates/bookingConfirmationEmail");
 const {
   cancellationNotificationEmailHtml,
+  cancellationNotificationEmailSubject,
 } = require("./email_templates/cancellationNotificationEmail");
 const {
   newBookingNotificationEmailHtml,
@@ -17,12 +20,15 @@ const {
 } = require("./email_templates/newBookingNotificationEmail");
 const {
   bookingReminderEmailHtml,
+  bookingReminderEmailSubject,
 } = require("./email_templates/bookingReminderEmail");
 const {
   changesRequestedEmailHtml,
+  changesRequestedEmailSubject,
 } = require("./email_templates/changesRequestedEmail");
 const {
   refundParentEmailHtml,
+  refundParentEmailSubject,
 } = require("./email_templates/refundParentEmail");
 const {
   refundExpertEmailHtml,
@@ -30,6 +36,7 @@ const {
 } = require("./email_templates/refundExpertEmail");
 const {
   rescheduleNotificationEmailHtml,
+  rescheduleNotificationEmailSubject,
 } = require("./email_templates/rescheduleNotificationEmail");
 const {
   expertCancelledSessionEmailHtml,
@@ -41,6 +48,7 @@ const {
 } = require("./email_templates/expertCancellationConfirmationEmail");
 const {
   parentSuspendedEmailHtml,
+  parentSuspendedEmailSubject,
 } = require("./email_templates/parentSuspendedEmail");
 const {
   platformCancellationEmailHtml,
@@ -48,7 +56,36 @@ const {
 } = require("./email_templates/platformCancellationEmail");
 const {
   imLateEmailHtml,
+  imLateEmailSubject,
 } = require("./email_templates/imLateEmail");
+const {
+  welcomeEmailHtml,
+  welcomeEmailSubject,
+} = require("./email_templates/welcomeEmail");
+const {
+  legalDocumentUpdatedEmailHtml,
+  legalDocumentUpdatedEmailSubject,
+} = require("./email_templates/legalDocumentUpdatedEmail");
+const {
+  expertApprovedEmailHtml,
+  expertApprovedEmailSubject,
+} = require("./email_templates/expertApprovedEmail");
+const {
+  expertRejectedEmailHtml,
+  expertRejectedEmailSubject,
+} = require("./email_templates/expertRejectedEmail");
+const {
+  accountLockedEmailHtml,
+  accountLockedEmailSubject,
+} = require("./email_templates/accountLockedEmail");
+const {
+  otpEmailHtml,
+  otpEmailSubject,
+} = require("./email_templates/otpEmail");
+const {
+  passwordChangedEmailHtml,
+  passwordChangedEmailSubject,
+} = require("./email_templates/passwordChangedEmail");
 
 const BREVO_API_URL     = 'https://api.brevo.com/v3/smtp/email';
 const BREVO_SMS_API_URL = 'https://api.brevo.com/v3/transactionalSMS/send';
@@ -156,9 +193,9 @@ const layout = (bodyContent) => `
           <!-- Footer -->
           <tr>
             <td align="center" style="padding-top:24px;">
-              <p style="margin:0;font-size:12px;color:#9CA3AF;">
-                © ${new Date().getFullYear()} Sage Nest. All rights reserved.
-              </p>
+              <p style="margin:0 0 4px;font-size:12px;color:#5e6d5b;">Sage Nest ApS &middot; CVR 46566181 &middot; Copenhagen, Denmark</p>
+              <p style="margin:0 0 8px;font-size:12px;color:#5e6d5b;">Questions? Contact us at <a href="mailto:${SUPPORT_EMAIL}" style="color:#445446;">${SUPPORT_EMAIL}</a></p>
+              <p style="margin:0;font-size:11px;color:#9aa596;">This is a transactional message about your account, sent from ${CONTACT_EMAIL}.</p>
             </td>
           </tr>
 
@@ -177,28 +214,19 @@ const btn = (href, label) =>
 
 /**
  * Welcome email after successful registration.
- * @param {{ to: string, name: string, role: 'EXPERT'|'PARENT' }} param0
+ * @param {{ to: string, name: string, role: 'EXPERT'|'PARENT', language?: 'en' | 'it' }} param0
  */
-const sendWelcomeEmail = ({ to, name, role }) => {
-  const roleNote =
-    role === "EXPERT"
-      ? "Complete your profile and connect your Stripe account to start receiving bookings."
-      : "Browse experts and book your first session whenever you're ready.";
-
+const sendWelcomeEmail = ({ to, name, role, language }) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${name}, benvenuto/a su Sage Nest!`
+      : `Hi ${name}, welcome to Sage Nest!`;
   return sendEmail({
     to,
-    subject: "Welcome to Sage Nest!",
-    text: `Hi ${name}, welcome to Sage Nest! ${roleNote}`,
-    html: layout(`
-      <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">Welcome, ${name}!</h1>
-      <p style="margin:0 0 20px;font-size:15px;color:#4B5563;line-height:1.6;">
-        You're now part of Sage Nest — a community connecting families with trusted child-care experts.
-      </p>
-      <p style="margin:0 0 28px;font-size:14px;color:#6B7280;line-height:1.6;">
-        ${roleNote}
-      </p>
-      ${btn(`${process.env.CLIENT_URL}/dashboard`, "Go to Dashboard")}
-    `),
+    subject: welcomeEmailSubject({ language: lang }),
+    text,
+    html: welcomeEmailHtml({ name, role, language: lang, clientUrl: process.env.CLIENT_URL, contactEmail: CONTACT_EMAIL, supportEmail: SUPPORT_EMAIL }),
   });
 };
 
@@ -206,96 +234,83 @@ const sendWelcomeEmail = ({ to, name, role }) => {
  * Non-blocking notice that a legal document (Terms & Conditions or Privacy Policy)
  * has been updated. Informational only — no acceptance is requested by this email;
  * the user will formally (re-)accept the next time they complete a booking.
- * @param {{ to: string, name: string, docLabel: string, effectiveDate: Date, docUrl?: string|null }} param0
+ * @param {{
+ *   to: string, name: string, docType: 'PRIVACY_POLICY' | 'TERMS_CONDITIONS',
+ *   effectiveDate: Date, docUrl?: string|null, language?: 'en' | 'it',
+ * }} param0
  */
-const sendLegalDocumentUpdatedEmail = ({ to, name, docLabel, effectiveDate, docUrl }) => {
-  const dateStr = new Date(effectiveDate).toLocaleDateString('en-GB', {
+const sendLegalDocumentUpdatedEmail = ({ to, name, docType, effectiveDate, docUrl, language }) => {
+  const lang = language === "it" ? "it" : "en";
+  const dateStr = new Date(effectiveDate).toLocaleDateString(lang === "it" ? "it-IT" : "en-GB", {
     day: 'numeric', month: 'long', year: 'numeric',
   });
+  const text =
+    lang === "it"
+      ? `Ciao ${name}, abbiamo aggiornato un documento legale, con effetto dal ${dateStr}. ${docUrl ? `Consultalo qui: ${docUrl}` : ''}`
+      : `Hi ${name}, we've updated a legal document, effective ${dateStr}. ${docUrl ? `View it here: ${docUrl}` : ''}`;
 
   return sendEmail({
     to,
-    subject: `We've updated our ${docLabel}`,
-    text: `Hi ${name}, we've updated our ${docLabel}, effective ${dateStr}. ${docUrl ? `View it here: ${docUrl}` : ''}`,
-    html: layout(`
-      <h1 style="margin:0 0 8px;font-size:20px;font-weight:700;color:#1F2933;">We've updated our ${docLabel}</h1>
-      <p style="margin:0 0 20px;font-size:14px;color:#4B5563;line-height:1.6;">
-        Hi ${name}, we wanted to let you know that our ${docLabel} has been updated, effective <strong>${dateStr}</strong>.
-      </p>
-      <p style="margin:0 0 28px;font-size:13px;color:#6B7280;line-height:1.6;">
-        No action is needed right now — you'll be asked to confirm the current version the next time you complete a booking.
-      </p>
-      ${docUrl ? btn(docUrl, `View ${docLabel}`) : ''}
-    `),
+    subject: legalDocumentUpdatedEmailSubject({ language: lang, docType }),
+    text,
+    html: legalDocumentUpdatedEmailHtml({ name, docType, effectiveDate, docUrl, language: lang, clientUrl: process.env.CLIENT_URL, contactEmail: CONTACT_EMAIL, supportEmail: SUPPORT_EMAIL }),
   });
 };
 
 /**
  * Notify an expert that their profile has been approved.
- * @param {{ to: string, name: string }} param0
+ * @param {{ to: string, name: string, language?: 'en' | 'it' }} param0
  */
-const sendExpertApprovedEmail = ({ to, name }) =>
-  sendEmail({
+const sendExpertApprovedEmail = ({ to, name, language }) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${name}, ottime notizie — il tuo profilo professionista è stato approvato. Ora puoi ricevere prenotazioni.`
+      : `Hi ${name}, great news — your expert profile has been approved. You can now receive bookings.`;
+  return sendEmail({
     to,
-    subject: "Your Sage Nest expert profile has been approved!",
-    text: `Hi ${name}, great news — your expert profile has been approved. You can now receive bookings.`,
-    html: layout(`
-      <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">You're approved!</h1>
-      <p style="margin:0 0 20px;font-size:15px;color:#4B5563;line-height:1.6;">
-        Hi ${name}, your expert profile on Sage Nest has been reviewed and <strong>approved</strong>.
-        Parents can now discover and book your services.
-      </p>
-      <p style="margin:0 0 28px;font-size:14px;color:#6B7280;line-height:1.6;">
-        Make sure your availability is up to date so parents can find the right time to book with you.
-      </p>
-      ${btn(`${process.env.CLIENT_URL}/dashboard`, "View My Profile")}
-    `),
+    subject: expertApprovedEmailSubject({ language: lang }),
+    text,
+    html: expertApprovedEmailHtml({ name, language: lang, clientUrl: process.env.CLIENT_URL, contactEmail: CONTACT_EMAIL, supportEmail: SUPPORT_EMAIL }),
   });
+};
 
 /**
  * Notify an expert that their profile has been rejected.
- * @param {{ to: string, name: string, reason?: string }} param0
+ * @param {{ to: string, name: string, reason?: string, language?: 'en' | 'it' }} param0
  */
-const sendExpertRejectedEmail = ({ to, name, reason }) =>
-  sendEmail({
+const sendExpertRejectedEmail = ({ to, name, reason, language }) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${name}, purtroppo il tuo profilo professionista non è stato approvato al momento.${reason ? ` Motivo: ${reason}` : ""}`
+      : `Hi ${name}, unfortunately your expert profile was not approved at this time.${reason ? ` Reason: ${reason}` : ""}`;
+  return sendEmail({
     to,
-    subject: "Update on your Sage Nest expert application",
-    text: `Hi ${name}, unfortunately your expert profile was not approved at this time.${
-      reason ? ` Reason: ${reason}` : ""
-    }`,
-    html: layout(`
-      <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">Application update</h1>
-      <p style="margin:0 0 20px;font-size:15px;color:#4B5563;line-height:1.6;">
-        Hi ${name}, after reviewing your application we're unable to approve your expert profile at this time.
-      </p>
-      ${
-        reason
-          ? `
-      <div style="background:#FEF3C7;border:1px solid #FCD34D;border-radius:8px;padding:16px;margin-bottom:24px;">
-        <p style="margin:0;font-size:13px;color:#92400E;line-height:1.5;"><strong>Reason:</strong> ${reason}</p>
-      </div>`
-          : ""
-      }
-      <p style="margin:0 0 28px;font-size:14px;color:#6B7280;line-height:1.6;">
-        You're welcome to update your profile and reapply. If you have questions, please reach out to our support team.
-      </p>
-      ${btn(`${process.env.CLIENT_URL}/dashboard`, "Update My Profile")}
-    `),
+    subject: expertRejectedEmailSubject({ language: lang }),
+    text,
+    html: expertRejectedEmailHtml({ name, reason, language: lang, clientUrl: process.env.CLIENT_URL, contactEmail: CONTACT_EMAIL, supportEmail: SUPPORT_EMAIL }),
   });
+};
 
 /**
  * Password reset email.
  * Template lives in email_templates/passwordResetEmail.js
  * @param {{ to: string, name: string, resetToken: string }} param0
  */
-const sendPasswordResetEmail = ({ to, name, resetToken }) => {
+const sendPasswordResetEmail = ({ to, name, resetToken, language }) => {
   const resetUrl = `${process.env.CLIENT_URL}/reset-password?token=${resetToken}`;
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${name}, reimposta la tua password qui (scade tra 1 ora): ${resetUrl}`
+      : `Hi ${name}, reset your password here (expires in 1 hour): ${resetUrl}`;
 
   return sendEmail({
     to,
-    subject: "Reset your Sage Nest password",
-    text: `Hi ${name}, reset your password here (expires in 1 hour): ${resetUrl}`,
-    html: passwordResetEmailHtml({ name, resetUrl, clientUrl: process.env.CLIENT_URL }),
+    subject: passwordResetEmailSubject({ language: lang }),
+    text,
+    html: passwordResetEmailHtml({ name, resetUrl, language: lang, clientUrl: process.env.CLIENT_URL, contactEmail: CONTACT_EMAIL, supportEmail: SUPPORT_EMAIL }),
   });
 };
 
@@ -304,7 +319,7 @@ const sendPasswordResetEmail = ({ to, name, resetToken }) => {
  * Template lives in email_templates/verificationEmail.js
  * @param {{ to: string, name: string, userId: number, verificationCode: string }} param0
  */
-const sendVerificationEmail = ({ to, name, userId, verificationCode, returnTo }) => {
+const sendVerificationEmail = ({ to, name, userId, verificationCode, returnTo, language }) => {
   let verificationUrl =
     `${process.env.CLIENT_URL}/verify-email` +
     `?auth_user=true&userId=${userId}&verificationCode=${verificationCode}`;
@@ -314,11 +329,17 @@ const sendVerificationEmail = ({ to, name, userId, verificationCode, returnTo })
     verificationUrl += `&returnTo=${encodeURIComponent(returnTo)}`;
   }
 
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${name}, verifica la tua email: ${verificationUrl}`
+      : `Hi ${name}, please verify your email: ${verificationUrl}`;
+
   return sendEmail({
     to,
-    subject: "Verify your Sage Nest email address",
-    text: `Hi ${name}, please verify your email: ${verificationUrl}`,
-    html: verificationEmailHtml({ name, verificationUrl, clientUrl: process.env.CLIENT_URL }),
+    subject: verificationEmailSubject({ language: lang }),
+    text,
+    html: verificationEmailHtml({ name, verificationUrl, language: lang, clientUrl: process.env.CLIENT_URL, contactEmail: CONTACT_EMAIL, supportEmail: SUPPORT_EMAIL }),
   });
 };
 
@@ -406,15 +427,19 @@ const sendBookingCancellationNotification = ({
   refundPercent,
   amount,
   currency = 'EUR',
+  bookingId,
   timezone,
+  language,
 }) => {
-  const dateStr = new Date(scheduledAt).toLocaleDateString('en-GB', {
-    weekday: 'long', day: 'numeric', month: 'long', year: 'numeric',
-  });
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${expertName}, ${parentName} ha cancellato la prenotazione per ${serviceTitle}. Lo slot è stato liberato.`
+      : `Hi ${expertName}, ${parentName} has cancelled their booking for ${serviceTitle}. The slot has been freed.`;
   return sendEmail({
     to,
-    subject: `Booking cancelled — ${serviceTitle} on ${dateStr}`,
-    text: `Hi ${expertName}, ${parentName} has cancelled their booking for ${serviceTitle}. The slot has been freed.`,
+    subject: cancellationNotificationEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone }),
+    text,
     html: cancellationNotificationEmailHtml({
       expertName,
       parentName,
@@ -425,9 +450,12 @@ const sendBookingCancellationNotification = ({
       refundPercent,
       amount,
       currency,
+      bookingId,
       timezone,
+      language: lang,
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
     }),
   });
 };
@@ -454,6 +482,7 @@ const sendNewBookingNotificationEmail = ({
   location,
   amount,
   currency,
+  bookingId,
   timezone,
   language,
   policyUrl,
@@ -478,6 +507,7 @@ const sendNewBookingNotificationEmail = ({
       location,
       amount,
       currency,
+      bookingId,
       timezone,
       language: lang,
       clientUrl: process.env.CLIENT_URL,
@@ -509,19 +539,23 @@ const sendBookingReminderEmail = ({
   reminderType,
   bookingId,
   timezone,
+  language,
 }) => {
-  const timeLabel = reminderType === "24h" ? "tomorrow" : "in 1 hour";
+  const lang = language === "it" ? "it" : "en";
+  const timeLabelEn = reminderType === "24h" ? "tomorrow" : "in 1 hour";
+  const timeLabelIt = reminderType === "24h" ? "domani" : "tra 1 ora";
   const tz = timezone || "UTC";
-  const timeStr = new Date(scheduledAt).toLocaleTimeString("en-GB", {
+  const timeStr = new Date(scheduledAt).toLocaleTimeString(lang === "it" ? "it-IT" : "en-GB", {
     hour: "2-digit", minute: "2-digit", timeZone: tz,
   });
+  const text =
+    lang === "it"
+      ? `Ciao ${recipientName}, la tua sessione per ${serviceTitle} è ${timeLabelIt} alle ${timeStr} (${tz}).`
+      : `Hi ${recipientName}, your session for ${serviceTitle} is ${timeLabelEn} at ${timeStr} (${tz}).`;
   return sendEmail({
     to,
-    subject:
-      role === "parent"
-        ? `Reminder: your session is ${timeLabel}`
-        : `Reminder: upcoming session with ${otherPartyName} — ${timeLabel}`,
-    text: `Hi ${recipientName}, your session for ${serviceTitle} is ${timeLabel} at ${timeStr} (${tz}).`,
+    subject: bookingReminderEmailSubject({ language: lang, role, otherPartyName, reminderType }),
+    text,
     html: bookingReminderEmailHtml({
       recipientName,
       role,
@@ -533,36 +567,35 @@ const sendBookingReminderEmail = ({
       reminderType,
       bookingId,
       timezone,
+      language: lang,
       clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
     }),
   });
 };
 
 /**
  * Account locked notification — sent after 5 consecutive failed login attempts.
- * @param {{ to: string, name: string, unlockAt: Date }} param0
+ * @param {{ to: string, name: string, unlockAt: Date, language?: 'en' | 'it' }} param0
  */
-const sendAccountLockedEmail = ({ to, name, unlockAt }) => {
-  const unlockTime = unlockAt.toLocaleString("en-GB", {
+const sendAccountLockedEmail = ({ to, name, unlockAt, language }) => {
+  const lang = language === "it" ? "it" : "en";
+  const unlockTime = new Date(unlockAt).toLocaleString(lang === "it" ? "it-IT" : "en-GB", {
     day: "numeric",
     month: "short",
     hour: "2-digit",
     minute: "2-digit",
   });
+  const text =
+    lang === "it"
+      ? `Ciao ${name}, il tuo account è stato bloccato per 15 minuti a causa di troppi tentativi di accesso falliti. Si sbloccherà alle ${unlockTime}.`
+      : `Hi ${name}, your account has been locked for 15 minutes due to too many failed login attempts. It will unlock at ${unlockTime}.`;
   return sendEmail({
     to,
-    subject: "Your Sage Nest account has been temporarily locked",
-    text: `Hi ${name}, your account has been locked for 15 minutes due to too many failed login attempts. It will unlock at ${unlockTime}.`,
-    html: layout(`
-      <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">Account temporarily locked</h1>
-      <p style="margin:0 0 20px;font-size:15px;color:#4B5563;line-height:1.6;">
-        Hi ${name}, we detected 5 consecutive failed login attempts on your account and have temporarily locked it for <strong>15 minutes</strong>.
-      </p>
-      <p style="margin:0 0 28px;font-size:14px;color:#6B7280;line-height:1.6;">
-        Your account will automatically unlock at <strong>${unlockTime}</strong>. If this wasn't you, we recommend resetting your password immediately.
-      </p>
-      ${btn(`${process.env.CLIENT_URL}/forgot-password`, "Reset My Password")}
-    `),
+    subject: accountLockedEmailSubject({ language: lang }),
+    text,
+    html: accountLockedEmailHtml({ name, unlockAt, language: lang, clientUrl: process.env.CLIENT_URL, contactEmail: CONTACT_EMAIL, supportEmail: SUPPORT_EMAIL }),
   });
 };
 
@@ -586,12 +619,20 @@ const sendRefundNotificationToParent = ({
   isPartial,
   reason,
   bookingId,
+  timezone,
+  language,
 }) => {
-  const amountStr = new Intl.NumberFormat('en', { style: 'currency', currency }).format(parseFloat(refundAmount));
+  const lang = language === "it" ? "it" : "en";
+  const locale = lang === "it" ? "it-IT" : "en-GB";
+  const amountStr = new Intl.NumberFormat(locale, { style: 'currency', currency }).format(parseFloat(refundAmount));
+  const text =
+    lang === "it"
+      ? `Ciao ${parentName}, un rimborso ${isPartial ? "parziale" : "completo"} di ${amountStr} è stato emesso per la tua prenotazione #${bookingId} con ${expertName}. L'importo sarà visibile entro 5–10 giorni lavorativi.`
+      : `Hi ${parentName}, a ${isPartial ? "partial" : "full"} refund of ${amountStr} has been issued for your booking #${bookingId} with ${expertName}. Funds will appear within 3–5 business days.`;
   return sendEmail({
     to,
-    subject: `Your refund of ${amountStr} has been processed`,
-    text: `Hi ${parentName}, a ${isPartial ? "partial" : "full"} refund of ${amountStr} has been issued for your booking #${bookingId} with ${expertName}. Funds will appear within 3–5 business days.`,
+    subject: refundParentEmailSubject({ language: lang, bookingId }),
+    text,
     html: refundParentEmailHtml({
       parentName,
       expertName,
@@ -602,7 +643,11 @@ const sendRefundNotificationToParent = ({
       isPartial,
       reason,
       bookingId,
+      timezone,
+      language: lang,
       clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
     }),
   });
 };
@@ -678,11 +723,18 @@ const sendRescheduleNotificationEmail = ({
   newScheduledAt,
   durationMinutes,
   bookingId,
-}) =>
-  sendEmail({
+  timezone,
+  language,
+}) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${expertName}, ${parentName} ha riprogrammato la prenotazione per ${serviceTitle}. Il nuovo orario è ${new Date(newScheduledAt).toLocaleString("it-IT", { timeZone: timezone || "UTC" })}.`
+      : `Hi ${expertName}, ${parentName} has rescheduled their booking for ${serviceTitle}. The new time is ${new Date(newScheduledAt).toLocaleString("en-GB", { timeZone: timezone || "UTC" })}.`;
+  return sendEmail({
     to,
-    subject: `Booking rescheduled — ${parentName}`,
-    text: `Hi ${expertName}, ${parentName} has rescheduled their booking for ${serviceTitle}. The new time is ${new Date(newScheduledAt).toLocaleString("en-GB", { timeZone: "UTC" })} UTC.`,
+    subject: rescheduleNotificationEmailSubject({ language: lang, parentName }),
+    text,
     html: rescheduleNotificationEmailHtml({
       expertName,
       parentName,
@@ -693,26 +745,40 @@ const sendRescheduleNotificationEmail = ({
       newScheduledAt,
       durationMinutes,
       bookingId,
+      timezone,
+      language: lang,
       clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
     }),
   });
+};
 
 /**
  * Admin-triggered: notify a specialist that changes are required before approval.
  * @param {{ to: string, name: string, note: string }} param0
  */
-const sendChangesRequestedEmail = ({ to, name, note }) =>
-  sendEmail({
+const sendChangesRequestedEmail = ({ to, name, note, language }) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${name}, il nostro team ha esaminato il tuo profilo e ha richiesto alcune modifiche. Feedback: ${note}`
+      : `Hi ${name}, our team has reviewed your profile and has requested some changes. Feedback: ${note}`;
+  return sendEmail({
     to,
-    subject: "Action required: please update your Sage Nest profile",
-    text: `Hi ${name}, our team has reviewed your profile and has requested some changes. Feedback: ${note}`,
+    subject: changesRequestedEmailSubject({ language: lang }),
+    text,
     html: changesRequestedEmailHtml({
       name,
       note,
       dashboardUrl: `${process.env.CLIENT_URL}/dashboard/expert/profile`,
       clientUrl: process.env.CLIENT_URL,
+      language: lang,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
     }),
   });
+};
 
 /**
  * Email address change — re-verification after parent updates their email.
@@ -724,94 +790,68 @@ const sendEmailChangeVerification = ({
   name,
   userId,
   verificationCode,
+  language,
 }) => {
   const verificationUrl =
     `${process.env.CLIENT_URL}/verify-email` +
     `?auth_user=true&userId=${userId}&verificationCode=${verificationCode}`;
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${name}, verifica il tuo nuovo indirizzo email: ${verificationUrl} (scade tra 24 ore)`
+      : `Hi ${name}, please verify your new email address: ${verificationUrl} (expires in 24 hours)`;
 
   return sendEmail({
     to,
-    subject: "Verify your new Sage Nest email address",
-    text: `Hi ${name}, please verify your new email address: ${verificationUrl} (expires in 24 hours)`,
+    subject: verificationEmailSubject({ language: lang, variant: "emailChange" }),
+    text,
     html: verificationEmailHtml({
       name,
       verificationUrl,
+      variant: "emailChange",
+      language: lang,
       clientUrl: process.env.CLIENT_URL,
-      headingOverride: "Verify your new email address",
-      bodyOverride:
-        "You recently changed your email address on Sage Nest. Click the button below to verify your new address and restore access to your account.",
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
     }),
   });
 };
 
-const OTP_COPY = {
-  login: {
-    subject: "Your Sage Nest sign-in code",
-    heading: "Sign-in verification code",
-    body: "Enter this code to complete your sign-in.",
-  },
-  enable_2fa: {
-    subject: "Confirm enabling two-factor authentication",
-    heading: "Enable two-factor authentication",
-    body: "Enter this code to turn on two-factor authentication for your account.",
-  },
-  disable_2fa: {
-    subject: "Confirm disabling two-factor authentication",
-    heading: "Disable two-factor authentication",
-    body: "Enter this code to turn off two-factor authentication for your account.",
-  },
-};
-
 /**
  * OTP email — subject and body copy vary by purpose.
- * @param {{ to: string, name: string, code: string, purpose: 'login'|'enable_2fa'|'disable_2fa' }} param0
+ * @param {{ to: string, name: string, code: string, purpose: 'login'|'enable_2fa'|'disable_2fa', language?: 'en' | 'it' }} param0
  */
-const sendOtpEmail = ({ to, name, code, purpose = "login" }) => {
-  const copy = OTP_COPY[purpose] ?? OTP_COPY.login;
+const sendOtpEmail = ({ to, name, code, purpose = "login", language }) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${name}, inserisci questo codice.\n\nIl tuo codice: ${code}\n\nValido per 5 minuti. Utilizzabile una sola volta. Non condividere questo codice.`
+      : `Hi ${name}, enter this code.\n\nYour code: ${code}\n\nValid for 5 minutes. Single use only. Do not share this code.`;
   return sendEmail({
     to,
-    subject: copy.subject,
-    text: `Hi ${name}, ${copy.body}\n\nYour code: ${code}\n\nValid for 5 minutes. Single use only. Do not share this code.`,
-    html: layout(`
-      <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">${copy.heading}</h1>
-      <p style="margin:0 0 24px;font-size:15px;color:#4B5563;line-height:1.6;">
-        Hi ${name}, ${copy.body}
-      </p>
-      <div style="text-align:center;margin:0 0 24px;">
-        <div style="display:inline-block;background:#F5F7F5;border:1px solid #E4E7E4;border-radius:12px;padding:20px 40px;">
-          <span style="font-size:36px;font-weight:700;color:#445446;letter-spacing:10px;font-family:monospace;">${code}</span>
-        </div>
-      </div>
-      <p style="margin:0 0 8px;font-size:13px;color:#9CA3AF;text-align:center;">
-        Valid for <strong>5 minutes</strong> &nbsp;·&nbsp; Single use only
-      </p>
-      <p style="margin:0;font-size:13px;color:#9CA3AF;text-align:center;">
-        If you didn't request this code, you can safely ignore this email.
-      </p>
-    `),
+    subject: otpEmailSubject({ language: lang, purpose }),
+    text,
+    html: otpEmailHtml({ name, code, purpose, language: lang, clientUrl: process.env.CLIENT_URL, contactEmail: CONTACT_EMAIL, supportEmail: SUPPORT_EMAIL }),
   });
 };
 
 /**
- * Notification sent to expert after a successful password change.
- * @param {{ to: string, name: string }} param0
+ * Notification sent to a user after a successful password change.
+ * @param {{ to: string, name: string, language?: 'en' | 'it' }} param0
  */
-const sendPasswordChangedEmail = ({ to, name }) =>
-  sendEmail({
+const sendPasswordChangedEmail = ({ to, name, language }) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${name}, la tua password è stata appena modificata. Se non sei stato tu, reimpostala immediatamente.`
+      : `Hi ${name}, your password was just changed. If this wasn't you, reset your password immediately.`;
+  return sendEmail({
     to,
-    subject: "Your Sage Nest password has been changed",
-    text: `Hi ${name}, your password was just changed. If this wasn't you, reset your password immediately.`,
-    html: layout(`
-      <h1 style="margin:0 0 8px;font-size:22px;font-weight:700;color:#1F2933;">Password changed</h1>
-      <p style="margin:0 0 20px;font-size:15px;color:#4B5563;line-height:1.6;">
-        Hi ${name}, your Sage Nest password was just successfully changed.
-      </p>
-      <p style="margin:0 0 28px;font-size:14px;color:#6B7280;line-height:1.6;">
-        If you made this change, no further action is needed. If you did not change your password, reset it immediately using the button below.
-      </p>
-      ${btn(`${process.env.CLIENT_URL}/forgot-password`, "Reset My Password")}
-    `),
+    subject: passwordChangedEmailSubject({ language: lang }),
+    text,
+    html: passwordChangedEmailHtml({ name, language: lang, clientUrl: process.env.CLIENT_URL, contactEmail: CONTACT_EMAIL, supportEmail: SUPPORT_EMAIL }),
   });
+};
 
 /**
  * Expert-cancelled session email — sent to the parent when an expert cancels.
@@ -910,18 +950,26 @@ const sendExpertCancellationConfirmationEmail = ({
 
 // ─── Parent suspension emails ─────────────────────────────────────────────────
 
-const sendParentSuspendedEmail = ({ to, parentName, cancelledBookingCount }) =>
-  sendEmail({
+const sendParentSuspendedEmail = ({ to, parentName, cancelledBookingCount, language }) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${parentName?.split(' ')[0] || 'there'}, il tuo account Sage Nest è stato sospeso. ${cancelledBookingCount > 0 ? `${cancelledBookingCount} sessione/i in programma sono state cancellate e rimborsate ove applicabile.` : ''} Se ritieni si tratti di un errore, contattaci a ${SUPPORT_EMAIL}.`
+      : `Hi ${parentName?.split(' ')[0] || 'there'}, your Sage Nest account has been suspended. ${cancelledBookingCount > 0 ? `${cancelledBookingCount} upcoming session${cancelledBookingCount !== 1 ? 's have' : ' has'} been cancelled and a full refund issued where applicable.` : ''} If you believe this is an error, contact us at ${SUPPORT_EMAIL}.`;
+  return sendEmail({
     to,
-    subject: 'Your Sage Nest account has been suspended',
-    text: `Hi ${parentName?.split(' ')[0] || 'there'}, your Sage Nest account has been suspended. ${cancelledBookingCount > 0 ? `${cancelledBookingCount} upcoming session${cancelledBookingCount !== 1 ? 's have' : ' has'} been cancelled and a full refund issued where applicable.` : ''} If you believe this is an error, contact us at ${CONTACT_EMAIL}.`,
+    subject: parentSuspendedEmailSubject({ language: lang }),
+    text,
     html: parentSuspendedEmailHtml({
       parentName,
       cancelledBookingCount,
+      language: lang,
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
     }),
   });
+};
 
 /**
  * Notify an expert that Sage Nest itself (not the parent) cancelled one of
@@ -1107,9 +1155,12 @@ const sendImLateNotification = async ({
   scheduledAt,
   delayMinutes,
   note,
+  language,
 }) => {
+  const lang         = language === "it" ? "it" : "en";
   const clientUrl    = process.env.CLIENT_URL    || '';
   const contactEmail = process.env.EMAIL_FROM_NOTIFICATIONS || '';
+  const supportEmail = SUPPORT_EMAIL;
 
   let emailStatus = 'failed';
   let emailError  = null;
@@ -1120,7 +1171,7 @@ const sendImLateNotification = async ({
   try {
     await sendEmail({
       to:      expertEmail,
-      subject: `[Sage Nest] ${parentName} is running ~${delayMinutes} min late`,
+      subject: imLateEmailSubject({ language: lang, parentName, delayMinutes }),
       html:    imLateEmailHtml({
         expertName,
         parentName,
@@ -1129,10 +1180,15 @@ const sendImLateNotification = async ({
         timezone: expertTimezone,
         delayMinutes,
         note,
+        language: lang,
         clientUrl,
         contactEmail,
+        supportEmail,
       }),
-      text: `Hi ${expertName}, your client ${parentName} is running approximately ${delayMinutes} minute(s) late for your session (${serviceTitle}).${note ? ` Their message: "${note}"` : ''} Please hold tight.`,
+      text:
+        lang === "it"
+          ? `Ciao ${expertName}, il tuo cliente ${parentName} è in ritardo di circa ${delayMinutes} minuto/i per la sessione (${serviceTitle}).${note ? ` Il suo messaggio: "${note}"` : ''} Attendi con calma.`
+          : `Hi ${expertName}, your client ${parentName} is running approximately ${delayMinutes} minute(s) late for your session (${serviceTitle}).${note ? ` Their message: "${note}"` : ''} Please hold tight.`,
     });
     emailStatus = 'sent';
   } catch (err) {

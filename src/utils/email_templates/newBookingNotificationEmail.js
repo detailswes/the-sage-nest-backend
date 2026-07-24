@@ -1,4 +1,5 @@
 const { formatDateTime } = require("../emailDateTimeFormat");
+const { formatBookingRef } = require("../bookingRef");
 
 const COPY = {
   en: {
@@ -18,6 +19,7 @@ const COPY = {
       format: "Format",
       location: "Location",
       price: "Session Price",
+      bookingRef: "Booking Ref",
     },
     formatLabel: { ONLINE: "Online", IN_PERSON: "In-person" },
     actionRequired: (parentFirstName, parentEmail) =>
@@ -57,6 +59,7 @@ const COPY = {
       format: "Modalità",
       location: "Luogo",
       price: "Prezzo della Sessione",
+      bookingRef: "Riferimento Prenotazione",
     },
     formatLabel: { ONLINE: "Online", IN_PERSON: "In presenza" },
     actionRequired: (parentFirstName, parentEmail) =>
@@ -96,7 +99,7 @@ function formatPrice(amount, currency, language) {
  *   expertName: string, parentName: string, parentEmail: string,
  *   serviceTitle: string, format: 'ONLINE' | 'IN_PERSON', scheduledAt: Date,
  *   durationMinutes: number, location?: string, amount?: number | string | null,
- *   currency?: string, timezone?: string | null, language?: 'en' | 'it',
+ *   currency?: string, bookingId: number, timezone?: string | null, language?: 'en' | 'it',
  *   clientUrl: string, contactEmail: string, supportEmail: string, policyUrl: string,
  * }} params
  */
@@ -111,6 +114,7 @@ const newBookingNotificationEmailHtml = ({
   location,
   amount,
   currency,
+  bookingId,
   timezone,
   language,
   clientUrl,
@@ -212,11 +216,17 @@ const newBookingNotificationEmailHtml = ({
               </tr>` : ""}
               ${priceStr ? `
               <tr>
-                <td style="padding-top:12px;border-top:1px solid #c5ceba;padding-bottom:0;">
+                <td style="padding:12px 0;border-top:1px solid #c5ceba;">
                   <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.price}</span><br>
                   <span style="font-size:15px;font-weight:600;color:#445446;">${priceStr}</span>
                 </td>
               </tr>` : ""}
+              <tr>
+                <td style="padding-top:12px;border-top:1px solid #c5ceba;padding-bottom:0;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.bookingRef}</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${formatBookingRef(bookingId)}</span>
+                </td>
+              </tr>
             </table>
           </div>
 

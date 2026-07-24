@@ -26,8 +26,8 @@ async function runReminders() {
       ],
     },
     include: {
-      parent:  { select: { name: true, email: true, notify_session_reminder: true } },
-      expert:  { include: { user: { select: { name: true, email: true } } } },
+      parent:  { select: { name: true, email: true, language: true, timezone: true, notify_session_reminder: true } },
+      expert:  { include: { user: { select: { name: true, email: true, language: true } } } },
       service: { select: { title: true } },
     },
   });
@@ -63,7 +63,6 @@ async function runReminders() {
           durationMinutes: booking.duration_minutes,
           reminderType:    '24h',
           bookingId:       booking.id,
-          timezone:        booking.expert?.timezone,
         };
 
         if (parentEmail && booking.parent.notify_session_reminder !== false) {
@@ -73,6 +72,8 @@ async function runReminders() {
             recipientName:  parentName,
             role:           'parent',
             otherPartyName: expertName,
+            language:       booking.parent.language,
+            timezone:       booking.parent.timezone || booking.expert?.timezone,
           }).catch((e) => console.error(`[Reminders] 24h parent email failed (booking ${booking.id}):`, e.message));
         }
 
@@ -83,6 +84,8 @@ async function runReminders() {
             recipientName:  expertName,
             role:           'expert',
             otherPartyName: parentName,
+            language:       booking.expert?.user?.language,
+            timezone:       booking.expert?.timezone,
           }).catch((e) => console.error(`[Reminders] 24h expert email failed (booking ${booking.id}):`, e.message));
         }
 
@@ -105,7 +108,6 @@ async function runReminders() {
           durationMinutes: booking.duration_minutes,
           reminderType:    '1h',
           bookingId:       booking.id,
-          timezone:        booking.expert?.timezone,
         };
 
         if (parentEmail && booking.parent.notify_session_reminder !== false) {
@@ -115,6 +117,8 @@ async function runReminders() {
             recipientName:  parentName,
             role:           'parent',
             otherPartyName: expertName,
+            language:       booking.parent.language,
+            timezone:       booking.parent.timezone || booking.expert?.timezone,
           }).catch((e) => console.error(`[Reminders] 1h parent email failed (booking ${booking.id}):`, e.message));
         }
 
@@ -125,6 +129,8 @@ async function runReminders() {
             recipientName:  expertName,
             role:           'expert',
             otherPartyName: parentName,
+            language:       booking.expert?.user?.language,
+            timezone:       booking.expert?.timezone,
           }).catch((e) => console.error(`[Reminders] 1h expert email failed (booking ${booking.id}):`, e.message));
         }
 
