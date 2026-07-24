@@ -79,6 +79,7 @@ model Expert {
   profile_image              String?
   expertise                  String?
   stripe_account_id          String?
+  currency                   String?
   status                     ExpertStatus        @default(PENDING)
   address_city               String?
   address_postcode           String?
@@ -537,6 +538,7 @@ enum NotificationType {
   BOOKING_REMINDER
   EXPERT_APPROVED
   EXPERT_REJECTED
+  CURRENCY_CHANGED
 }
 
 enum DraftStatus {

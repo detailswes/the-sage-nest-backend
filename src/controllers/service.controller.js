@@ -1,32 +1,35 @@
 const prisma = require('../prisma/client');
 const webflowService = require('../services/webflow.service');
+const { PRICE_LIMITS } = require('../constants/currency');
+const { logAudit } = require('../utils/auditLog');
 
 const VALID_FORMATS    = ['ONLINE', 'IN_PERSON'];
 const VALID_CLUSTERS   = ['FOR_PARENTS', 'FOR_BABY', 'FOR_FAMILY', 'PACKAGE', 'GIFT', 'EVENT'];
-const VALID_CURRENCIES = ['EUR', 'GBP', 'DKK', 'SEK', 'NOK', 'CHF'];
-
-const PRICE_LIMITS = {
-  EUR: { min: 5,   max: 2000  },
-  GBP: { min: 5,   max: 2000  },
-  DKK: { min: 50,  max: 10000 },
-  SEK: { min: 50,  max: 20000 },
-  NOK: { min: 50,  max: 20000 },
-  CHF: { min: 5,   max: 2000  },
-};
 
 async function getExpertIdForUser(userId) {
   const expert = await prisma.expert.findUnique({ where: { user_id: userId } });
   return expert ? expert.id : null;
 }
 
+// Logged whenever a request tries to write a currency other than the
+// expert's confirmed account currency — covers both explicit picks and stale
+// records slipping through an edit. Kept in the audit trail so a pattern of
+// attempts (e.g. a stale client) is visible to admins.
+function logCurrencyRejection(actorUserId, serviceId, attempted, expected) {
+  console.error(
+    `[Currency] Rejected — service=${serviceId ?? '(new)'} attempted=${attempted} expected=${expected}`
+  );
+  if (serviceId) {
+    logAudit(actorUserId, 'SERVICE_CURRENCY_REJECTED', 'SERVICE', serviceId,
+      `Attempted currency ${attempted} does not match confirmed account currency ${expected}.`);
+  }
+}
+
 async function createService(req, res) {
-  const { title, description, duration_minutes, price, currency = 'EUR', format, cluster } = req.body;
+  const { title, description, duration_minutes, price, format, cluster } = req.body;
 
   if (!title || !description || !duration_minutes || !price || !format || !cluster) {
     return res.status(400).json({ error: 'title, description, duration_minutes, price, format, and cluster are required.' });
-  }
-  if (!VALID_CURRENCIES.includes(currency)) {
-    return res.status(400).json({ error: `Invalid currency. Must be one of: ${VALID_CURRENCIES.join(', ')}.` });
   }
   if (title.trim().length > 80) {
     return res.status(400).json({ error: 'Service title must be 80 characters or fewer.' });
@@ -38,11 +41,6 @@ async function createService(req, res) {
   if (isNaN(dur) || dur < 15 || dur > 480) {
     return res.status(400).json({ error: 'Duration must be between 15 and 480 minutes.' });
   }
-  const priceVal = parseFloat(price);
-  const limits   = PRICE_LIMITS[currency] || PRICE_LIMITS.EUR;
-  if (isNaN(priceVal) || priceVal < limits.min || priceVal > limits.max) {
-    return res.status(400).json({ error: `Price for ${currency} must be between ${limits.min} and ${limits.max}.` });
-  }
   if (!VALID_FORMATS.includes(format)) {
     return res.status(400).json({ error: 'Invalid format. Must be ONLINE or IN_PERSON.' });
   }
@@ -51,8 +49,26 @@ async function createService(req, res) {
   }
 
   try {
-    const expert_id = await getExpertIdForUser(req.user.id);
-    if (!expert_id) return res.status(404).json({ error: 'Expert profile not found' });
+    const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
+    if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
+    const expert_id = expert.id;
+
+    // Currency is never taken from the request — it's anchored to the
+    // expert's confirmed Stripe account currency (see expertCurrency.service.js).
+    // Until Stripe has reported one, there's no currency to price against
+    // that isn't a guess, so service creation is blocked entirely.
+    if (!expert.currency) {
+      return res.status(400).json({
+        error: 'Please finish connecting your Stripe account before adding services — we need your confirmed payout currency first.',
+      });
+    }
+    const currency = expert.currency;
+
+    const priceVal = parseFloat(price);
+    const limits   = PRICE_LIMITS[currency] || PRICE_LIMITS.EUR;
+    if (isNaN(priceVal) || priceVal < limits.min || priceVal > limits.max) {
+      return res.status(400).json({ error: `Price for ${currency} must be between ${limits.min} and ${limits.max}.` });
+    }
 
     // Place new service at the end of the expert's current list
     const maxOrderResult = await prisma.service.aggregate({
@@ -67,7 +83,7 @@ async function createService(req, res) {
         title: title.trim(),
         description: description?.trim() || null,
         duration_minutes: parseInt(duration_minutes),
-        price: parseFloat(price),
+        price: priceVal,
         currency,
         format: format || null,
         cluster: cluster || null,
@@ -114,9 +130,6 @@ async function updateService(req, res) {
       return res.status(400).json({ error: 'Duration must be between 15 and 480 minutes.' });
     }
   }
-  if (currency !== undefined && !VALID_CURRENCIES.includes(currency)) {
-    return res.status(400).json({ error: `Invalid currency. Must be one of: ${VALID_CURRENCIES.join(', ')}.` });
-  }
   if (format !== undefined && format !== null && format !== '' && !VALID_FORMATS.includes(format)) {
     return res.status(400).json({ error: 'Invalid format. Must be ONLINE or IN_PERSON.' });
   }
@@ -125,21 +138,55 @@ async function updateService(req, res) {
   }
 
   try {
-    const expert_id = await getExpertIdForUser(req.user.id);
-    if (!expert_id) return res.status(404).json({ error: 'Expert profile not found' });
+    const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
+    if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
+    const expert_id = expert.id;
 
     const service = await prisma.service.findUnique({ where: { id: parseInt(id) } });
     if (!service || service.expert_id !== expert_id) {
       return res.status(404).json({ error: 'Service not found' });
     }
 
+    // Currency is locked to the expert's confirmed account currency. The only
+    // change ever accepted is realigning a stale service onto that currency
+    // (e.g. after a Stripe currency change unpublished it) — anything else,
+    // including picking some other currency outright, is rejected and logged.
+    const isRealignment = currency !== undefined && currency !== service.currency;
+    if (currency !== undefined && currency !== expert.currency) {
+      logCurrencyRejection(req.user.id, service.id, currency, expert.currency);
+      return res.status(400).json({
+        error: `Currency must match your confirmed account currency (${expert.currency ?? 'not yet confirmed'}) and cannot be set to anything else.`,
+      });
+    }
+    // Realigning currency without also resubmitting the price would leave the
+    // old numeric amount under a new currency label (e.g. a 500 NOK price
+    // becoming a 500 EUR price) — require both together, always.
+    if (isRealignment && price === undefined) {
+      return res.status(400).json({
+        error: 'Please also set the price when changing a service\'s currency — the amount is never carried over automatically.',
+      });
+    }
+
+    const effectiveCurrency = currency !== undefined ? currency : service.currency;
+
     if (price !== undefined) {
-      const effectiveCurrency = currency ?? service.currency ?? 'EUR';
       const limits   = PRICE_LIMITS[effectiveCurrency] || PRICE_LIMITS.EUR;
       const priceVal = parseFloat(price);
       if (isNaN(priceVal) || priceVal < limits.min || priceVal > limits.max) {
         return res.status(400).json({ error: `Price for ${effectiveCurrency} must be between ${limits.min} and ${limits.max}.` });
       }
+    }
+
+    // A service can only go live once its currency matches the expert's
+    // confirmed account currency — covers both "never confirmed yet" and
+    // "unpublished after a Stripe currency change, not yet reconfirmed".
+    if (is_active === true && (!expert.currency || effectiveCurrency !== expert.currency)) {
+      logCurrencyRejection(req.user.id, service.id, effectiveCurrency, expert.currency);
+      return res.status(400).json({
+        error: expert.currency
+          ? `This service is priced in ${effectiveCurrency}, but your account currency is ${expert.currency}. Update its currency and price before publishing.`
+          : 'Your Stripe payout currency isn\'t confirmed yet — finish connecting Stripe before publishing services.',
+      });
     }
 
     const updated = await prisma.service.update({

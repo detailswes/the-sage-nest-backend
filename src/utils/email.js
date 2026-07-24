@@ -1031,6 +1031,35 @@ const sendPlatformCancellationEmailToExpert = ({
   });
 };
 
+// ─── Expert alert — Stripe account currency changed ──────────────────────────
+// Sent when an expert's Stripe connected-account default_currency changes after
+// they already had a confirmed currency on file (see expertCurrency.service.js).
+// Existing services are unpublished rather than silently re-priced, so this
+// email tells the expert what happened and that they need to review + resave
+// each affected service before it can go live again.
+const sendExpertCurrencyChangedEmail = ({ to, name, language, oldCurrency, newCurrency, affectedCount }) => {
+  const lang = language === "it" ? "it" : "en";
+  const dashboardUrl = `${process.env.CLIENT_URL}/dashboard/expert/services`;
+  const subject = lang === "it"
+    ? "La valuta del tuo account Stripe è cambiata"
+    : "Your Stripe account currency has changed";
+  const text = lang === "it"
+    ? `Ciao ${name}, la valuta del tuo account Stripe è cambiata da ${oldCurrency} a ${newCurrency}. Per evitare di modificare i prezzi senza il tuo consenso, ${affectedCount} servizio/i attivo/i ${affectedCount === 1 ? 'è stato' : 'sono stati'} disattivato/i. Rivedi il prezzo di ciascun servizio in ${newCurrency} e salvalo per riattivarlo: ${dashboardUrl}`
+    : `Hi ${name}, your Stripe account's currency changed from ${oldCurrency} to ${newCurrency}. To avoid changing any prices without your input, ${affectedCount} active service${affectedCount === 1 ? '' : 's'} ${affectedCount === 1 ? 'has' : 'have'} been unpublished. Please review each service's price in ${newCurrency} and save it to republish: ${dashboardUrl}`;
+
+  return sendEmail({
+    to,
+    subject,
+    text,
+    html: layout(`
+      <p style="margin:0 0 4px;font-size:11px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:#D97706;">${lang === "it" ? "Azione richiesta" : "Action needed"}</p>
+      <h1 style="margin:0 0 16px;font-size:20px;font-weight:700;color:#1F2933;">${subject}</h1>
+      <p style="margin:0 0 20px;font-size:14px;color:#4B5563;line-height:1.6;">${text}</p>
+      <a href="${dashboardUrl}" style="display:inline-block;padding:12px 24px;background:#445446;color:#ffffff;text-decoration:none;border-radius:8px;font-size:14px;font-weight:600;">${lang === "it" ? "Vai ai tuoi servizi" : "Go to your services"}</a>
+    `),
+  });
+};
+
 // ─── Internal ops alert — payout / balance issues ────────────────────────────
 // Sent to ADMIN_ALERT_EMAIL (or falls back to EMAIL_FROM_NOTIFICATIONS) whenever
 // an expert's connected account has a payout failure or negative balance.
@@ -1246,4 +1275,5 @@ module.exports = {
   sendImLateNotification,
   sendWebflowSyncFailureAlert,
   sendWebflowQueueThresholdAlert,
+  sendExpertCurrencyChangedEmail,
 };
