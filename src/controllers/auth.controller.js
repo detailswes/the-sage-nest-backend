@@ -223,6 +223,7 @@ async function register(req, res) {
       userId: user.id,
       verificationCode,
       returnTo: typeof returnTo === 'string' && returnTo.startsWith('/') ? returnTo : undefined,
+      language: user.language,
     }).catch((err) =>
       console.error("Failed to send verification email:", err.message)
     );
@@ -415,6 +416,7 @@ async function login(req, res) {
           to: user.email,
           name: user.name,
           unlockAt: lockedUntil,
+          language: user.language,
         }).catch((err) =>
           console.error("Failed to send account locked email:", err.message)
         );
@@ -482,7 +484,7 @@ async function login(req, res) {
         data: { otp_hash, otp_expires_at, otp_attempts: 0 },
       });
 
-      sendOtpEmail({ to: user.email, name: user.name, code, purpose: "login" }).catch((err) =>
+      sendOtpEmail({ to: user.email, name: user.name, code, purpose: "login", language: user.language }).catch((err) =>
         console.error("[2FA] Failed to send OTP email:", err.message)
       );
 
@@ -635,6 +637,7 @@ async function resendVerification(req, res) {
       userId: user.id,
       verificationCode,
       returnTo: typeof returnTo === 'string' && returnTo.startsWith('/') ? returnTo : undefined,
+      language: user.language,
     }).catch((err) =>
       console.error("Failed to resend verification email:", err.message)
     );
@@ -681,6 +684,7 @@ async function forgotPassword(req, res) {
       to: user.email,
       name: user.name,
       resetToken,
+      language: user.language,
     }).catch((err) =>
       console.error("Failed to send password reset email:", err.message)
     );
@@ -874,6 +878,7 @@ async function updateEmail(req, res) {
       name: user.name,
       userId: user.id,
       verificationCode,
+      language: user.language,
     }).catch((err) => console.error("Failed to send email change verification:", err.message));
 
     return res.json({ email_change_sent: true });
@@ -919,7 +924,7 @@ async function changePassword(req, res) {
       await prisma.refreshToken.deleteMany({ where: { user_id: req.user.id } });
     }
 
-    sendPasswordChangedEmail({ to: user.email, name: user.name }).catch((err) =>
+    sendPasswordChangedEmail({ to: user.email, name: user.name, language: user.language }).catch((err) =>
       console.error("[Email] Password changed notification failed:", err.message)
     );
 
@@ -1321,7 +1326,7 @@ async function resendOtp(req, res) {
       data: { otp_hash, otp_expires_at, otp_attempts: 0 },
     });
 
-    sendOtpEmail({ to: user.email, name: user.name, code, purpose: "login" }).catch((err) =>
+    sendOtpEmail({ to: user.email, name: user.name, code, purpose: "login", language: user.language }).catch((err) =>
       console.error("[2FA] Failed to resend OTP email:", err.message)
     );
 
@@ -1373,7 +1378,7 @@ async function sendSetupOtp(req, res) {
       data: { otp_hash, otp_expires_at, otp_attempts: 0 },
     });
 
-    sendOtpEmail({ to: user.email, name: user.name, code, purpose: emailPurpose }).catch((err) =>
+    sendOtpEmail({ to: user.email, name: user.name, code, purpose: emailPurpose, language: user.language }).catch((err) =>
       console.error("[2FA] Failed to send setup OTP email:", err.message)
     );
 

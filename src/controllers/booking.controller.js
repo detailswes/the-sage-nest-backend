@@ -458,7 +458,7 @@ async function reportImLate(req, res) {
         expert: {
           select: {
             timezone: true,
-            user: { select: { email: true, phone: true, name: true } },
+            user: { select: { email: true, phone: true, name: true, language: true } },
           },
         },
         service: { select: { title: true } },
@@ -507,6 +507,7 @@ async function reportImLate(req, res) {
         scheduledAt: booking.scheduled_at,
         delayMinutes: delay_minutes,
         note: note?.trim() || null,
+        language: booking.expert.user.language,
       });
 
     await prisma.lateNotification.create({
@@ -572,7 +573,7 @@ async function cancelBooking(req, res) {
       where: { id: parseInt(id) },
       include: {
         parent: { select: { name: true, email: true } },
-        expert: { include: { user: { select: { name: true, email: true } } } },
+        expert: { include: { user: { select: { name: true, email: true, language: true } } } },
         service: { select: { title: true } },
       },
     });
@@ -750,7 +751,9 @@ async function cancelBooking(req, res) {
       refundPercent,
       amount: booking.amount,
       currency: booking.currency || "EUR",
+      bookingId: booking.id,
       timezone: booking.expert.timezone,
+      language: booking.expert.user.language,
     }).catch((e) =>
       console.error("[Email] Cancellation notification failed:", e.message),
     );
@@ -809,7 +812,7 @@ async function rescheduleBooking(req, res) {
             address_city: true,
             address_postcode: true,
             timezone: true,
-            user: { select: { name: true, email: true } },
+            user: { select: { name: true, email: true, language: true } },
           },
         },
         service: { select: { title: true, duration_minutes: true } },
@@ -989,6 +992,8 @@ async function rescheduleBooking(req, res) {
       newScheduledAt: newDate,
       durationMinutes: booking.duration_minutes,
       bookingId: booking.id,
+      timezone: booking.expert.timezone,
+      language: booking.expert.user.language,
     }).catch((e) =>
       console.error(
         "[Email] Reschedule expert notification failed:",
@@ -1347,6 +1352,7 @@ async function verifyPayment(req, res) {
               : undefined,
           amount: booking.amount,
           currency: booking.currency,
+          bookingId: booking.id,
           timezone: booking.expert.timezone,
           language: expertLanguage,
           policyUrl,

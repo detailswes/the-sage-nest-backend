@@ -496,6 +496,7 @@ async function requestChanges(req, res) {
       to: expert.user.email,
       name: expert.user.name,
       note: trimmedNote,
+      language: expert.user.language,
     }).catch((err) =>
       console.error(
         "[ADMIN] Failed to send changes-requested email:",
@@ -544,6 +545,7 @@ async function sendPasswordReset(req, res) {
       to: expert.user.email,
       name: expert.user.name,
       resetToken,
+      language: expert.user.language,
     }).catch((err) =>
       console.error("Failed to send password reset email:", err.message)
     );
@@ -588,6 +590,7 @@ async function resendVerification(req, res) {
       name: expert.user.name,
       userId: expert.user_id,
       verificationCode,
+      language: expert.user.language,
     }).catch((err) =>
       console.error("Failed to resend verification email:", err.message)
     );
@@ -650,7 +653,7 @@ async function sendParentPasswordReset(req, res) {
       data: { reset_token: resetToken, reset_token_expires_at: resetTokenExpiresAt },
     });
 
-    sendPasswordResetEmail({ to: user.email, name: user.name, resetToken })
+    sendPasswordResetEmail({ to: user.email, name: user.name, resetToken, language: user.language })
       .catch((err) => console.error("Failed to send parent password reset email:", err.message));
 
     await logAudit(req.user.id, "SEND_PASSWORD_RESET", "PARENT", parseInt(id));
@@ -680,7 +683,7 @@ async function resendParentVerification(req, res) {
       data: { verification_code: verificationCode, verification_expires_at: verificationExpiresAt },
     });
 
-    sendVerificationEmail({ to: user.email, name: user.name, userId: user.id, verificationCode })
+    sendVerificationEmail({ to: user.email, name: user.name, userId: user.id, verificationCode, language: user.language })
       .catch((err) => console.error("Failed to resend parent verification email:", err.message));
 
     await logAudit(req.user.id, "RESEND_VERIFICATION", "PARENT", parseInt(id));
@@ -1096,7 +1099,7 @@ async function manualRefund(req, res) {
       where: { id: parseInt(id) },
       include: {
         expert: { select: { id: true, timezone: true, user: { select: { name: true, email: true, language: true } } } },
-        parent: { select: { name: true, email: true } },
+        parent: { select: { name: true, email: true, language: true, timezone: true } },
         service: { select: { title: true } },
       },
     });
@@ -1253,6 +1256,8 @@ async function manualRefund(req, res) {
         isPartial,
         reason:        [reason?.trim(), override_reason?.trim()].filter(Boolean).join(' — ') || undefined,
         bookingId:     booking.id,
+        timezone:      booking.parent?.timezone || booking.expert?.timezone,
+        language:      booking.parent?.language,
       });
     } catch (emailErr) {
       console.error("[ADMIN] Failed to send refund email to parent:", emailErr.message);
@@ -1453,7 +1458,7 @@ async function adminCancelBooking(req, res) {
     const booking = await prisma.booking.findUnique({
       where: { id: parseInt(id) },
       include: {
-        parent:  { select: { name: true, email: true } },
+        parent:  { select: { name: true, email: true, language: true, timezone: true } },
         expert:  { select: { timezone: true, user: { select: { name: true, email: true, language: true } } } },
         service: { select: { title: true } },
       },
@@ -1538,6 +1543,8 @@ async function adminCancelBooking(req, res) {
                 isPartial,
                 reason:       reason.trim(),
                 bookingId:    booking.id,
+                timezone:     booking.parent?.timezone || booking.expert?.timezone,
+                language:     booking.parent?.language,
               });
             } catch (emailErr) {
               console.error("[ADMIN] Failed to send refund email to parent:", emailErr.message);
@@ -1810,19 +1817,18 @@ async function bumpLegalDocument(req, res) {
     );
 
     // Non-blocking notice to affected users — never a forced re-acceptance.
-    // No per-user language preference is stored, so the email links to the EN PDF;
-    // the IT version is reachable from the linked document page either way.
+    // Sent in each user's own profile language, linking to the matching PDF.
     if (type === "PRIVACY_POLICY" || type === "TERMS_CONDITIONS") {
-      const docLabel = type === "PRIVACY_POLICY" ? "Privacy Policy" : "Terms & Conditions";
       prisma.user.findMany({
         where: { notify_platform_updates: true, is_verified: true, account_deleted: false },
-        select: { email: true, name: true },
+        select: { email: true, name: true, language: true },
       }).then((users) => Promise.allSettled(users.map((u) => sendLegalDocumentUpdatedEmail({
         to: u.email,
         name: u.name,
-        docLabel,
+        docType: type,
         effectiveDate: created.effective_from,
-        docUrl: newFileUrlEn,
+        docUrl: u.language === "it" ? newFileUrlIt : newFileUrlEn,
+        language: u.language,
       })))).catch((err) => console.error('[Email] Legal document update notice failed:', err.message));
     }
 
@@ -2940,6 +2946,7 @@ async function suspendParent(req, res) {
       to: user.email,
       parentName: user.name,
       cancelledBookingCount: cancelledBookings.length,
+      language: user.language,
     }).catch((e) =>
       console.error("[Email] Parent suspension email failed:", e.message)
     );
