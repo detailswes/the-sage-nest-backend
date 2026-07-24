@@ -7,6 +7,7 @@ const {
   sendAdminPayoutAlert,
 } = require('../utils/email');
 const { getLegalDocLinks } = require('../utils/legalDocLinks');
+const { syncExpertCurrencyOnReturn, syncExpertCurrencyFromWebhook } = require('../services/expertCurrency.service');
 
 // ─── Step 1 & 2: Expert clicks connect — create Stripe onboarding link ────────
 //
@@ -130,6 +131,11 @@ async function handleStripeReturn(req, res) {
         data: { stripe_onboarding_complete: true },
       });
     }
+
+    // Initial currency confirmation — read Stripe's own default_currency
+    // rather than inferring it from the expert's address. Kept in sync
+    // afterwards by the account.updated webhook.
+    await syncExpertCurrencyOnReturn(expert);
 
     return res.json({
       stripe_account_id:    expert.stripe_account_id,
@@ -467,6 +473,11 @@ async function processStripeEvent(event) {
         where: { stripe_account_id: account.id },
         data:  { stripe_onboarding_complete: account.details_submitted === true && cardPaymentsActive },
       });
+
+      // Durable currency sync — catches a settlement-currency change any time
+      // after initial onboarding (e.g. the expert edits their bank details to
+      // a different country), not just at connect-return time.
+      await syncExpertCurrencyFromWebhook(account);
 
       // Alert admin if the account has been disabled or has past-due requirements
       // that could block future payouts (e.g. after a chargeback that goes unresolved).

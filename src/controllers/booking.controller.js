@@ -119,6 +119,23 @@ async function createBooking(req, res) {
         .status(400)
         .json({ error: "This service is no longer available" });
     }
+    // Defense-in-depth, checked a second time right before the PaymentIntent
+    // is created below: service currency must match the expert's confirmed
+    // Stripe account currency (service.controller.js is the first check, at
+    // create/edit time). Guards against a stale or manually altered record
+    // slipping through — charging a Connect account in a currency it doesn't
+    // settle in either fails at Stripe or triggers silent FX conversion on
+    // payout.
+    if (service.currency !== expert.currency) {
+      console.error(
+        `[createBooking] Currency mismatch — service=${service.id} attempted=${service.currency} expected=${expert.currency ?? "(unconfirmed)"} expert=${expert.id}`
+      );
+      logAudit(req.user.id, "BOOKING_CURRENCY_REJECTED", "SERVICE", service.id,
+        `Booking blocked — service currency ${service.currency} does not match expert's confirmed account currency ${expert.currency ?? "(unconfirmed)"}.`);
+      return res.status(400).json({
+        error: "This service's currency doesn't match the expert's account currency. Please contact support.",
+      });
+    }
 
     // ── Verify booking-level consent ─────────────────────────────────────────
     // Every booking is its own contract — a past acceptance (even of the same

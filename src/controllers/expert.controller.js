@@ -710,6 +710,7 @@ async function saveBusinessInfo(req, res) {
         business_address:    business_address?.trim()       || null,
       },
     });
+
     return res.json({ ...info, iban: decryptIban(info.iban) });
   } catch (err) {
     console.error(err);
