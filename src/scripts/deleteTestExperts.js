@@ -10,6 +10,13 @@
  * Expert-owned relation in prisma/schema.prisma — deleting the User row is
  * enough; Postgres cascades the rest.
  *
+ * Also cleans up Webflow: if the expert (or any of their services) was
+ * synced, webflowService.deleteExpertFromWebflow runs FIRST, while the
+ * Postgres rows still exist — it looks up the expert's synced services by
+ * querying Postgres, so it has to happen before the cascade delete removes
+ * them. Never call this after the Postgres delete; the Webflow items would
+ * be orphaned with nothing left in the app to identify or clean them up.
+ *
  * Always reports what would be deleted first. Nothing is written unless
  * --confirm is passed explicitly.
  *
@@ -25,6 +32,7 @@ const path = require('path');
 require('dotenv').config({ path: path.join(__dirname, '../../.env') });
 
 const prisma = require('../prisma/client');
+const webflowService = require('../services/webflow.service');
 
 const CONFIRM = process.argv.includes('--confirm');
 const idArg = process.argv[2];
@@ -63,8 +71,22 @@ async function main() {
     console.log(`  qualifications: ${expert._count.qualifications}, certifications: ${expert._count.certifications}`);
     console.log(`  availability rows: ${expert._count.availability}, blockouts: ${expert._count.blockouts}, saved-by: ${expert._count.saved_by}`);
     console.log(`  stripe_account_id: ${expert.stripe_account_id || '(none)'}`);
+    console.log(`  webflow_item_id: ${expert.webflow_item_id || '(not synced)'}`);
 
     if (CONFIRM) {
+      if (expert.webflow_item_id) {
+        console.log('  → cleaning up Webflow (expert + any synced services) first…');
+        try {
+          await webflowService.deleteExpertFromWebflow(expert.id, expert.webflow_item_id);
+          console.log('  → Webflow cleanup done');
+        } catch (e) {
+          // deleteExpertFromWebflow already catches its own errors and never
+          // throws (GDPR deletion must succeed regardless of Webflow state),
+          // so this is just an extra safety net.
+          console.log(`  → Webflow cleanup failed, continuing anyway: ${e.message}`);
+        }
+      }
+
       await prisma.user.delete({ where: { id: expert.user.id } });
       console.log(`  → deleted (user ${expert.user.id} + cascade)\n`);
     } else {
