@@ -694,6 +694,28 @@ async function deleteServiceFromWebflow(serviceId, webflowItemId) {
   }
 }
 
+// Dead-letter retry dispatch: a failure row's payload.action tells us what operation to
+// replay. "delete" failures target entities that are gone from Postgres by design (GDPR
+// erasure deletes the row before the fire-and-forget Webflow call even runs), so retrying
+// must replay from the stored webflowItemId rather than re-fetching — syncExpert/syncService
+// would just find no row and silently no-op. "archive" failures (suspend) must replay the
+// archive too, not a plain sync — a plain sync would re-publish (un-hide) a suspended expert.
+async function retryDeadLetter(failure) {
+  const { entity_type: entityType, entity_id: entityId, payload } = failure;
+
+  if (payload?.action === 'delete') {
+    return entityType === 'expert'
+      ? deleteExpertFromWebflow(entityId, payload.webflowItemId)
+      : deleteServiceFromWebflow(entityId, payload.webflowItemId);
+  }
+
+  if (payload?.action === 'archive' && entityType === 'expert') {
+    return archiveExpert(entityId);
+  }
+
+  return entityType === 'expert' ? syncExpert(entityId) : syncService(entityId);
+}
+
 module.exports = {
   syncExpert,
   syncExpertServices,
@@ -701,4 +723,5 @@ module.exports = {
   archiveExpert,
   deleteExpertFromWebflow,
   deleteServiceFromWebflow,
+  retryDeadLetter,
 };

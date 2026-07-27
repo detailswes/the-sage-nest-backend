@@ -3650,10 +3650,9 @@ async function retryWebflowSyncFailure(req, res) {
     const failure = await prisma.webflowSyncFailure.findUnique({ where: { id: parseInt(id) } });
     if (!failure) return res.status(404).json({ error: "Sync failure not found" });
 
-    const syncFn = failure.entity_type === "expert" ? webflowService.syncExpert : webflowService.syncService;
     let synced = true;
     try {
-      await syncFn(failure.entity_id);
+      await webflowService.retryDeadLetter(failure);
     } catch (err) {
       synced = false;
     }
@@ -3670,17 +3669,16 @@ async function retryAllWebflowSyncFailures(req, res) {
   try {
     const pending = await prisma.webflowSyncFailure.findMany({
       where:  { status: "PENDING_RETRY" },
-      select: { id: true, entity_type: true, entity_id: true },
+      select: { id: true, entity_type: true, entity_id: true, payload: true },
     });
 
     let ok = 0, failed = 0;
     for (let i = 0; i < pending.length; i += 3) {
       const batch = pending.slice(i, i + 3);
       await Promise.all(
-        batch.map(f => {
-          const syncFn = f.entity_type === "expert" ? webflowService.syncExpert : webflowService.syncService;
-          return syncFn(f.entity_id).then(() => { ok++; }).catch(() => { failed++; });
-        }),
+        batch.map(f =>
+          webflowService.retryDeadLetter(f).then(() => { ok++; }).catch(() => { failed++; }),
+        ),
       );
     }
 

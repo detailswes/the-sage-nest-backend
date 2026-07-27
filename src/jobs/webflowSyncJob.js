@@ -1,6 +1,6 @@
 const cron   = require('node-cron');
 const prisma  = require('../prisma/client');
-const { syncExpert, syncService } = require('../services/webflow.service');
+const { retryDeadLetter } = require('../services/webflow.service');
 const { sendWebflowQueueThresholdAlert } = require('../utils/email');
 
 const QUEUE_THRESHOLD = Number(process.env.WEBFLOW_FAILURE_QUEUE_THRESHOLD) || 10;
@@ -11,17 +11,17 @@ let lastThresholdAlertAt = 0;
 async function runWebflowSync() {
   if (!process.env.WEBFLOW_API_TOKEN) return;
 
-  // Sweep the dead-letter queue: each row gets syncExpert/syncService run again,
-  // which re-enters the full retry+backoff+dead-letter cycle (see webflow.service.js).
+  // Sweep the dead-letter queue: each row gets its original operation (sync/archive/delete)
+  // replayed via retryDeadLetter, re-entering the full retry+backoff+dead-letter cycle
+  // (see webflow.service.js).
   const pending = await prisma.webflowSyncFailure.findMany({
     where:  { status: 'PENDING_RETRY' },
-    select: { id: true, entity_type: true, entity_id: true },
+    select: { id: true, entity_type: true, entity_id: true, payload: true },
   });
 
   let retried = 0;
   for (const failure of pending) {
-    const syncFn = failure.entity_type === 'expert' ? syncExpert : syncService;
-    await syncFn(failure.entity_id).catch(() => {}); // status/dead-letter row updated inside
+    await retryDeadLetter(failure).catch(() => {}); // status/dead-letter row updated inside
     retried++;
   }
 
