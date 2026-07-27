@@ -103,11 +103,12 @@ async function createConnectLink(req, res) {
 
 // ─── Step 4 & 5: Stripe returns to platform — verify onboarding completion ───
 //
-// v2 accounts have no `details_submitted` boolean like v1. Capability status
-// moves 'pending' → 'active' once Stripe finishes activating it, so 'pending'
-// (as opposed to 'active', 'restricted', or absent because nothing was
-// submitted yet) is the closest replacement for the old "details submitted,
-// still activating" signal.
+// v2 accounts have no `details_submitted` boolean like v1, and capability
+// status is NOT a reliable proxy for it either — status can sit at
+// 'restricted' for a while immediately after the onboarding redirect purely
+// because Stripe is still verifying what was submitted, with nothing actually
+// outstanding. `requirements.entries` is the real "does Stripe need something
+// from the expert" signal (see below).
 async function handleStripeReturn(req, res) {
   try {
     const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
@@ -123,7 +124,17 @@ async function handleStripeReturn(req, res) {
     const cardPaymentsActive = cardPaymentsStatus === 'active';
     const transfersActive    = transfersStatus === 'active';
     const onboardingComplete = cardPaymentsActive && transfersActive;
-    const onboardingPending  = !onboardingComplete && (cardPaymentsStatus === 'pending' || transfersStatus === 'pending');
+
+    // Capability status alone isn't a reliable "needs action" signal on v2 — it
+    // can sit at 'restricted' (not just 'pending') for a stretch immediately
+    // after the onboarding redirect, purely while Stripe finishes verifying what
+    // was already submitted, with nothing outstanding from the expert. The
+    // `requirements.entries` list is what actually reflects whether Stripe is
+    // waiting on the expert for something, so use that to decide "blocked"
+    // (show the reconnect button) vs. "pending" (keep polling, no action needed).
+    const requirementEntries = account.requirements?.entries ?? [];
+    const onboardingBlocked  = !onboardingComplete && requirementEntries.length > 0;
+    const onboardingPending  = !onboardingComplete && !onboardingBlocked;
 
     if (onboardingComplete && !expert.stripe_onboarding_complete) {
       await prisma.expert.update({
@@ -466,13 +477,23 @@ async function processStripeEvent(event) {
     // ── Account updated (expert onboarding / capability changes) ──────────
     case 'account.updated': {
       const account = event.data.object;
-      const cardPaymentsActive = account.capabilities?.card_payments === 'active';
-      console.log(`[Webhook] account.updated: ${account.id}, details_submitted=${account.details_submitted}, card_payments=${account.capabilities?.card_payments}`);
+      // v2 Core Accounts nest capability status under `configuration`, not the
+      // flat v1 `capabilities`/`details_submitted` fields — mirrors the logic
+      // in handleStripeReturn (see comment there for why "restricted" is the
+      // only status treated as truly incomplete).
+      const cardPaymentsStatus = account.configuration?.merchant?.capabilities?.card_payments?.status;
+      const transfersStatus    = account.configuration?.recipient?.capabilities?.stripe_balance?.stripe_transfers?.status;
+      const onboardingComplete = cardPaymentsStatus === 'active' && transfersStatus === 'active';
+      console.log(`[Webhook] account.updated: ${account.id}, card_payments=${cardPaymentsStatus}, transfers=${transfersStatus}`);
 
-      await prisma.expert.updateMany({
-        where: { stripe_account_id: account.id },
-        data:  { stripe_onboarding_complete: account.details_submitted === true && cardPaymentsActive },
-      });
+      // Never regress an already-complete flag back to false based on a single
+      // event snapshot — only flip it true once both capabilities are active.
+      if (onboardingComplete) {
+        await prisma.expert.updateMany({
+          where: { stripe_account_id: account.id },
+          data:  { stripe_onboarding_complete: true },
+        });
+      }
 
       // Durable currency sync — catches a settlement-currency change any time
       // after initial onboarding (e.g. the expert edits their bank details to

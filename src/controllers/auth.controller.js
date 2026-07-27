@@ -105,6 +105,15 @@ function userPayload(user) {
   return { id: user.id, name: user.name, email: user.email, role: user.role, language: user.language };
 }
 
+// ─── Email format validator ───────────────────────────────────────────────────
+// Requires a dot-atom local part and a domain made of valid, non-empty
+// dot-separated labels (rejects stray commas/spaces/consecutive dots like
+// "user@host,.com").
+const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
+function validateEmailFormat(email) {
+  return EMAIL_REGEX.test(email);
+}
+
 // ─── European phone validator ─────────────────────────────────────────────────
 function validateEuropeanPhone(phone) {
   const normalized = phone.trim().replace(/[\s\-().]/g, '');
@@ -130,6 +139,10 @@ async function register(req, res) {
 
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
+  }
+
+  if (!validateEmailFormat(email)) {
+    return res.status(400).json({ error: "Please enter a valid email address" });
   }
 
   // GDPR hard block — server-side enforcement (client-side alone is not sufficient).
@@ -831,8 +844,7 @@ async function updateEmail(req, res) {
     return res.status(400).json({ error: "New email and current password are required" });
   }
 
-  const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-  if (!emailRegex.test(email)) {
+  if (!validateEmailFormat(email)) {
     return res.status(400).json({ error: "Please enter a valid email address" });
   }
 
