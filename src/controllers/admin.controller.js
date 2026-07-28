@@ -3591,10 +3591,15 @@ async function webflowSyncAll(req, res) {
       orderBy: { id: "asc" },
     });
 
-    // Kick off all syncs concurrently but cap at 3 at a time to respect rate limits
+    // Kick off syncs in small batches with a pause between them to stay under Webflow's rate
+    // limit — each expert sync can itself fan out into several API calls (reference lookups,
+    // item publish), so even a small batch size bursts more requests than it looks like.
+    const BATCH_SIZE = 2;
+    const BATCH_PAUSE_MS = 1000;
+
     let ok = 0, failed = 0;
-    for (let i = 0; i < experts.length; i += 3) {
-      const batch = experts.slice(i, i + 3);
+    for (let i = 0; i < experts.length; i += BATCH_SIZE) {
+      const batch = experts.slice(i, i + BATCH_SIZE);
       await Promise.all(
         batch.map(e =>
           webflowService.syncExpert(e.id)
@@ -3603,6 +3608,7 @@ async function webflowSyncAll(req, res) {
             .catch(() => { failed++; }),
         ),
       );
+      if (i + BATCH_SIZE < experts.length) await webflowService.sleep(BATCH_PAUSE_MS);
     }
 
     return res.json({ synced: ok, failed, total: experts.length });
@@ -3672,14 +3678,19 @@ async function retryAllWebflowSyncFailures(req, res) {
       select: { id: true, entity_type: true, entity_id: true, payload: true },
     });
 
+    // Same batching/pause as webflowSyncAll — see comment there.
+    const BATCH_SIZE = 2;
+    const BATCH_PAUSE_MS = 1000;
+
     let ok = 0, failed = 0;
-    for (let i = 0; i < pending.length; i += 3) {
-      const batch = pending.slice(i, i + 3);
+    for (let i = 0; i < pending.length; i += BATCH_SIZE) {
+      const batch = pending.slice(i, i + BATCH_SIZE);
       await Promise.all(
         batch.map(f =>
           webflowService.retryDeadLetter(f).then(() => { ok++; }).catch(() => { failed++; }),
         ),
       );
+      if (i + BATCH_SIZE < pending.length) await webflowService.sleep(BATCH_PAUSE_MS);
     }
 
     return res.json({ synced: ok, failed, total: pending.length });

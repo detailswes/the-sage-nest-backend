@@ -135,7 +135,10 @@ function validatePasswordStrength(password) {
 
 // ─── Register ───────────────────────────────────────────────────────────────
 async function register(req, res) {
-  const { email, password, role, name, phone, timezone, termsAccepted, marketingConsent, returnTo, language } = req.body;
+  const {
+    email, password, role, name, phone, timezone, termsAccepted, marketingConsent, returnTo, language,
+    city, addressStreet, addressPostalCode, addressCountry, fiscalCode,
+  } = req.body;
 
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
@@ -162,6 +165,14 @@ async function register(req, res) {
     }
     if (!validateEuropeanPhone(phone)) {
       return res.status(400).json({ error: "Please enter a valid phone number (e.g. +44 7700 900000)." });
+    }
+    // Collected once at registration so experts have what they need for invoicing
+    // without asking the parent again on every booking.
+    if (!city?.trim() || !addressStreet?.trim() || !addressPostalCode?.trim() || !addressCountry?.trim()) {
+      return res.status(400).json({ error: "Please provide your full address (street, city, postal code, and country)." });
+    }
+    if (!fiscalCode?.trim()) {
+      return res.status(400).json({ error: "Fiscal code is required for parent accounts." });
     }
   }
 
@@ -191,6 +202,13 @@ async function register(req, res) {
         is_verified: false,
         verification_code: hashToken(verificationCode),
         verification_expires_at: verificationExpiresAt,
+        ...(assignedRole === "PARENT" ? {
+          city: city.trim(),
+          address_street: addressStreet.trim(),
+          address_postal_code: addressPostalCode.trim(),
+          address_country: addressCountry.trim(),
+          fiscal_code: fiscalCode.trim(),
+        } : {}),
       },
     });
 
@@ -759,7 +777,11 @@ async function getProfile(req, res) {
   try {
     const user = await prisma.user.findUnique({
       where: { id: req.user.id },
-      select: { id: true, name: true, email: true, pending_email: true, phone: true, city: true, timezone: true, is_verified: true, role: true },
+      select: {
+        id: true, name: true, email: true, pending_email: true, phone: true, city: true, timezone: true,
+        is_verified: true, role: true,
+        address_street: true, address_postal_code: true, address_country: true, fiscal_code: true,
+      },
     });
     if (!user) return res.status(404).json({ error: "User not found" });
     return res.json(user);
@@ -771,7 +793,7 @@ async function getProfile(req, res) {
 
 // ─── Update Profile (name + phone) ────────────────────────────────────────────
 async function updateProfile(req, res) {
-  const { name, phone, city, timezone, language } = req.body;
+  const { name, phone, city, timezone, language, addressStreet, addressPostalCode, addressCountry, fiscalCode } = req.body;
 
   if (!name || !name.trim()) {
     return res.status(400).json({ error: "Name is required." });
@@ -803,8 +825,15 @@ async function updateProfile(req, res) {
         city:     city?.trim()  || null,
         timezone: timezone?.trim() || null,
         ...(language !== undefined ? { language: normalizeConsentLanguage(language) } : {}),
+        ...(addressStreet      !== undefined ? { address_street:      addressStreet?.trim()      || null } : {}),
+        ...(addressPostalCode  !== undefined ? { address_postal_code: addressPostalCode?.trim()  || null } : {}),
+        ...(addressCountry     !== undefined ? { address_country:     addressCountry?.trim()      || null } : {}),
+        ...(fiscalCode         !== undefined ? { fiscal_code:         fiscalCode?.trim()          || null } : {}),
       },
-      select: { id: true, name: true, email: true, phone: true, city: true, timezone: true, language: true, role: true },
+      select: {
+        id: true, name: true, email: true, phone: true, city: true, timezone: true, language: true, role: true,
+        address_street: true, address_postal_code: true, address_country: true, fiscal_code: true,
+      },
     });
     return res.json(updated);
   } catch (err) {

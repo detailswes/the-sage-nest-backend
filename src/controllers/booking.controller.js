@@ -1241,6 +1241,11 @@ async function verifyPayment(req, res) {
             language: true,
             timezone: true,
             notify_booking_confirmation: true,
+            city: true,
+            address_street: true,
+            address_postal_code: true,
+            address_country: true,
+            fiscal_code: true,
           },
         },
         expert: {
@@ -1320,6 +1325,14 @@ async function verifyPayment(req, res) {
     ]
       .filter(Boolean)
       .join(", ");
+    const parentAddressVerify = [
+      booking.parent.address_street,
+      booking.parent.city,
+      booking.parent.address_postal_code,
+      booking.parent.address_country,
+    ]
+      .filter(Boolean)
+      .join(", ");
     if (booking.parent.notify_booking_confirmation !== false) {
       const confirmationLanguage = booking.consent?.language || booking.parent.language || "en";
       getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
@@ -1373,6 +1386,8 @@ async function verifyPayment(req, res) {
           timezone: booking.expert.timezone,
           language: expertLanguage,
           policyUrl,
+          parentAddress: parentAddressVerify || undefined,
+          parentFiscalCode: booking.parent.fiscal_code || undefined,
         });
       }).catch((e) =>
         console.error(
