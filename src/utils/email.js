@@ -468,6 +468,7 @@ const sendBookingCancellationNotification = ({
  *   serviceTitle: string, format: string, scheduledAt: Date, durationMinutes: number,
  *   location?: string, amount?: number | string | null, currency?: string,
  *   timezone?: string | null, language?: 'en' | 'it', policyUrl: string,
+ *   parentAddress?: string, parentFiscalCode?: string,
  * }} param0
  */
 const sendNewBookingNotificationEmail = ({
@@ -486,6 +487,8 @@ const sendNewBookingNotificationEmail = ({
   timezone,
   language,
   policyUrl,
+  parentAddress,
+  parentFiscalCode,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const text =
@@ -514,6 +517,8 @@ const sendNewBookingNotificationEmail = ({
       contactEmail: CONTACT_EMAIL,
       supportEmail: SUPPORT_EMAIL,
       policyUrl,
+      parentAddress,
+      parentFiscalCode,
     }),
   });
 };

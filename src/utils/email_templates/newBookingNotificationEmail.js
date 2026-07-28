@@ -21,6 +21,12 @@ const COPY = {
       price: "Session Price",
       bookingRef: "Booking Ref",
     },
+    invoicingHeading: "Invoicing Details",
+    invoicingIntro: "The parent provided the following details at registration in case you need them for invoicing:",
+    invoicingLabels: {
+      address: "Address",
+      fiscalCode: "Fiscal Code",
+    },
     formatLabel: { ONLINE: "Online", IN_PERSON: "In-person" },
     actionRequired: (parentFirstName, parentEmail) =>
       `<strong>Action required — online session:</strong> please send ${parentFirstName} the video call details at <a href="mailto:${parentEmail}" style="color:#065F46;">${parentEmail}</a> no later than 24 hours before the session — or as soon as possible, if the session starts sooner.`,
@@ -60,6 +66,12 @@ const COPY = {
       location: "Luogo",
       price: "Prezzo della Sessione",
       bookingRef: "Riferimento Prenotazione",
+    },
+    invoicingHeading: "Dati per la Fatturazione",
+    invoicingIntro: "Il genitore ha fornito questi dati in fase di registrazione, nel caso ti servano per la fatturazione:",
+    invoicingLabels: {
+      address: "Indirizzo",
+      fiscalCode: "Codice Fiscale",
     },
     formatLabel: { ONLINE: "Online", IN_PERSON: "In presenza" },
     actionRequired: (parentFirstName, parentEmail) =>
@@ -101,6 +113,7 @@ function formatPrice(amount, currency, language) {
  *   durationMinutes: number, location?: string, amount?: number | string | null,
  *   currency?: string, bookingId: number, timezone?: string | null, language?: 'en' | 'it',
  *   clientUrl: string, contactEmail: string, supportEmail: string, policyUrl: string,
+ *   parentAddress?: string, parentFiscalCode?: string,
  * }} params
  */
 const newBookingNotificationEmailHtml = ({
@@ -121,6 +134,8 @@ const newBookingNotificationEmailHtml = ({
   contactEmail,
   supportEmail,
   policyUrl,
+  parentAddress,
+  parentFiscalCode,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const t = COPY[lang];
@@ -229,6 +244,28 @@ const newBookingNotificationEmailHtml = ({
               </tr>
             </table>
           </div>
+
+          ${(parentAddress || parentFiscalCode) ? `
+          <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.invoicingHeading}</p>
+          <p style="margin:0 0 12px;font-size:13px;color:#5e6d5b;line-height:1.5;">${t.invoicingIntro}</p>
+          <div style="background:#F5F7F5;border-radius:12px;padding:20px 24px;margin-bottom:24px;">
+            <table width="100%" cellpadding="0" cellspacing="0">
+              ${parentAddress ? `
+              <tr>
+                <td style="padding-bottom:${parentFiscalCode ? "12px" : "0"};">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.invoicingLabels.address}</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${parentAddress}</span>
+                </td>
+              </tr>` : ""}
+              ${parentFiscalCode ? `
+              <tr>
+                <td style="padding-top:${parentAddress ? "12px" : "0"};${parentAddress ? "border-top:1px solid #c5ceba;" : ""}">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.invoicingLabels.fiscalCode}</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${parentFiscalCode}</span>
+                </td>
+              </tr>` : ""}
+            </table>
+          </div>` : ""}
 
           ${format === "ONLINE" ? `
           <div style="background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px;padding:16px;margin-bottom:24px;">

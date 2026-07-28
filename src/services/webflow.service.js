@@ -27,11 +27,12 @@ const CLUSTER_DISPLAY = {
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
 
 class WebflowApiError extends Error {
-  constructor(message, status, body) {
+  constructor(message, status, body, retryAfterMs) {
     super(message);
-    this.name   = 'WebflowApiError';
-    this.status = status;
-    this.body   = body;
+    this.name         = 'WebflowApiError';
+    this.status       = status;
+    this.body         = body;
+    this.retryAfterMs = retryAfterMs ?? null;
   }
 }
 
@@ -49,7 +50,11 @@ async function webflowRequest(method, path, body) {
   if (!res.ok) {
     const errData = await res.json().catch(() => ({}));
     const msg     = errData.message || errData.msg || res.statusText;
-    throw new WebflowApiError(`Webflow ${method} ${path} → ${res.status}: ${msg}`, res.status, errData);
+    // Webflow sends Retry-After (seconds) on 429s — honor it instead of guessing, so a real
+    // rate-limit backs off exactly as long as Webflow asks rather than hammering it again.
+    const retryAfterHeader = res.status === 429 ? res.headers.get('retry-after') : null;
+    const retryAfterMs     = retryAfterHeader ? Number(retryAfterHeader) * 1000 : null;
+    throw new WebflowApiError(`Webflow ${method} ${path} → ${res.status}: ${msg}`, res.status, errData, retryAfterMs);
   }
 
   if (res.status === 204) return null;
@@ -177,7 +182,7 @@ async function syncWithRetry(fn, { entityType, entityId, payload, idempotencyKey
         outcome:     isLastTry ? 'dead_lettered' : 'retrying',
         durationMs:  Date.now() - start,
       });
-      if (!isLastTry) await sleep(RETRY_DELAYS_MS[attempt - 1]);
+      if (!isLastTry) await sleep(Math.max(RETRY_DELAYS_MS[attempt - 1], err.retryAfterMs || 0));
     }
   }
 
@@ -226,19 +231,20 @@ async function upsertCollectionItem(collectionId, name) {
   return created.id;
 }
 
-// Multi-value version of upsertCollectionItem.
+// Multi-value version of upsertCollectionItem. Sequential, not Promise.all — a single expert
+// can list several languages/certifications, and firing them all at once compounds with the
+// concurrent batches in webflowSyncAll to burst well past Webflow's rate limit.
 async function upsertMultiRefIds(collectionId, names) {
   if (!names || names.length === 0) return null;
-  const ids = (
-    await Promise.all(
-      names.map(n =>
-        upsertCollectionItem(collectionId, n).catch(err => {
-          console.error(`[Webflow] Could not upsert "${n}" in ${collectionId}:`, err.message);
-          return null;
-        }),
-      ),
-    )
-  ).filter(Boolean);
+  const resolved = [];
+  for (const n of names) {
+    const id = await upsertCollectionItem(collectionId, n).catch(err => {
+      console.error(`[Webflow] Could not upsert "${n}" in ${collectionId}:`, err.message);
+      return null;
+    });
+    resolved.push(id);
+  }
+  const ids = resolved.filter(Boolean);
   return ids.length > 0 ? ids : null;
 }
 
@@ -724,4 +730,5 @@ module.exports = {
   deleteExpertFromWebflow,
   deleteServiceFromWebflow,
   retryDeadLetter,
+  sleep,
 };
