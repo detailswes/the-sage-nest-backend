@@ -378,7 +378,12 @@ async function getBookingById(req, res) {
     const booking = await prisma.booking.findUnique({
       where: { id: parseInt(id) },
       include: {
-        parent: { select: { id: true, name: true, email: true } },
+        parent: {
+          select: {
+            id: true, name: true, email: true,
+            city: true, address_street: true, address_country: true, fiscal_code: true,
+          },
+        },
         expert: {
           include: {
             user: { select: { id: true, name: true, account_deleted: true } },
@@ -398,6 +403,14 @@ async function getBookingById(req, res) {
     }
 
     if (!isExpert) delete booking.expert_note;
+    // Invoicing details (address/fiscal code) are for the assigned expert's
+    // invoicing use only — not shown back to the parent in their own view.
+    if (!isExpert) {
+      delete booking.parent.city;
+      delete booking.parent.address_street;
+      delete booking.parent.address_country;
+      delete booking.parent.fiscal_code;
+    }
     return res.json(booking);
   } catch (err) {
     console.error(err);
@@ -1051,7 +1064,14 @@ async function getUpcomingAppointments(req, res) {
       orderBy: { scheduled_at: "asc" },
       take: 10,
       include: {
-        parent: { select: { name: true, email: true } },
+        // Invoicing fields are scoped to this expert's own bookings only — never
+        // exposed on cross-expert list/search/export endpoints.
+        parent: {
+          select: {
+            name: true, email: true,
+            city: true, address_street: true, address_country: true, fiscal_code: true,
+          },
+        },
         service: {
           select: { title: true, duration_minutes: true, format: true },
         },
@@ -1206,7 +1226,12 @@ async function getPastAppointments(req, res) {
         skip,
         take: limit,
         include: {
-          parent: { select: { name: true, email: true } },
+          parent: {
+            select: {
+              name: true, email: true,
+              city: true, address_street: true, address_country: true, fiscal_code: true,
+            },
+          },
           service: { select: { title: true, duration_minutes: true } },
         },
       }),
@@ -1243,7 +1268,6 @@ async function verifyPayment(req, res) {
             notify_booking_confirmation: true,
             city: true,
             address_street: true,
-            address_postal_code: true,
             address_country: true,
             fiscal_code: true,
           },
@@ -1325,10 +1349,11 @@ async function verifyPayment(req, res) {
     ]
       .filter(Boolean)
       .join(", ");
+    // Billing details are collected for every booking, regardless of which
+    // expert is assigned — shown to the expert here whenever on file.
     const parentAddressVerify = [
       booking.parent.address_street,
       booking.parent.city,
-      booking.parent.address_postal_code,
       booking.parent.address_country,
     ]
       .filter(Boolean)

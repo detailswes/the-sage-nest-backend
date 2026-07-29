@@ -179,7 +179,7 @@ async function processStripeEvent(event) {
       const booking = await prisma.booking.findFirst({
         where: { stripe_payment_intent_id: pi.id },
         include: {
-          parent:  { select: { name: true, email: true, language: true, timezone: true, notify_booking_confirmation: true, city: true, address_street: true, address_postal_code: true, address_country: true, fiscal_code: true } },
+          parent:  { select: { name: true, email: true, language: true, timezone: true, notify_booking_confirmation: true, city: true, address_street: true, address_country: true, fiscal_code: true } },
           expert:  { select: { address_street: true, address_city: true, address_postcode: true, timezone: true, notify_new_booking: true, user: { select: { name: true, email: true, language: true } } } },
           service: { select: { title: true } },
           consent: { select: { language: true, withdrawal_applicable: true } },
@@ -219,9 +219,9 @@ async function processStripeEvent(event) {
 
         // Fire-and-forget: parent confirmation + expert new-booking notification
         const expertAddress = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
-        // Collected once at the parent's registration — shared with the expert here so
-        // they have what they need for invoicing without asking the parent again.
-        const parentAddress = [booking.parent.address_street, booking.parent.city, booking.parent.address_postal_code, booking.parent.address_country].filter(Boolean).join(', ');
+        // Billing details are collected for every booking, regardless of which
+        // expert is assigned — shown to the expert here whenever on file.
+        const parentAddress = [booking.parent.address_street, booking.parent.city, booking.parent.address_country].filter(Boolean).join(', ');
         if (booking.parent.notify_booking_confirmation !== false) {
           const confirmationLanguage = booking.consent?.language || booking.parent.language || 'en';
           getLegalDocLinks(confirmationLanguage).then((legalLinks) => {

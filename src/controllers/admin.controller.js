@@ -1407,7 +1407,12 @@ async function getBookingDetail(req, res) {
     const booking = await prisma.booking.findUnique({
       where: { id: parseInt(id) },
       include: {
-        parent:  { select: { id: true, name: true, email: true, phone: true } },
+        parent:  {
+          select: {
+            id: true, name: true, email: true, phone: true,
+            city: true, address_street: true, address_country: true, fiscal_code: true,
+          },
+        },
         expert:  {
           select: {
             id:               true,

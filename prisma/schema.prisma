@@ -31,7 +31,6 @@ model User {
   two_factor_enabled          Boolean                   @default(false)
   city                        String?
   address_street              String?
-  address_postal_code         String?
   address_country             String?
   fiscal_code                 String?
   timezone                    String?

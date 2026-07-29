@@ -22,7 +22,7 @@ const COPY = {
       bookingRef: "Booking Ref",
     },
     invoicingHeading: "Invoicing Details",
-    invoicingIntro: "The parent provided the following details at registration in case you need them for invoicing:",
+    invoicingIntro: "The parent provided the following details in case you need them for invoicing:",
     invoicingLabels: {
       address: "Address",
       fiscalCode: "Fiscal Code",
@@ -68,7 +68,7 @@ const COPY = {
       bookingRef: "Riferimento Prenotazione",
     },
     invoicingHeading: "Dati per la Fatturazione",
-    invoicingIntro: "Il genitore ha fornito questi dati in fase di registrazione, nel caso ti servano per la fatturazione:",
+    invoicingIntro: "Il genitore ha fornito questi dati nel caso ti servano per la fatturazione:",
     invoicingLabels: {
       address: "Indirizzo",
       fiscalCode: "Codice Fiscale",
