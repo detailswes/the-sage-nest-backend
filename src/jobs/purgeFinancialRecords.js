@@ -52,10 +52,13 @@ async function purgeBookingFinancials(cutoff) {
 }
 
 // ── BusinessInfo ──────────────────────────────────────────────────────────────
-// Anonymise DAC7-sensitive fields (IBAN, TIN, date of birth, VAT, company reg)
-// once the expert's most recent booking is beyond the statutory window.
-// Non-nullable string columns (iban, tin) receive the '[REDACTED]' sentinel
-// rather than null so the schema constraint is preserved.
+// Anonymise DAC7-sensitive fields (TIN, date of birth, VAT, company reg, and
+// any legacy IBAN still on file — no longer collected via the business-info
+// form, payout details now come from Stripe Connect onboarding) once the
+// expert's most recent booking is beyond the statutory window. tin is a
+// non-nullable string column and receives the '[REDACTED]' sentinel rather
+// than null so the schema constraint is preserved; iban is nullable and is
+// simply cleared.
 async function purgeBusinessInfo(cutoff) {
   const unpurged = await prisma.businessInfo.findMany({
     where: { tin: { not: '[REDACTED]' } },
@@ -88,7 +91,7 @@ async function purgeBusinessInfo(cutoff) {
     await prisma.businessInfo.update({
       where: { expert_id },
       data: {
-        iban:               '[REDACTED]',
+        iban:               null,
         tin:                '[REDACTED]',
         date_of_birth:      null,
         vat_number:         null,

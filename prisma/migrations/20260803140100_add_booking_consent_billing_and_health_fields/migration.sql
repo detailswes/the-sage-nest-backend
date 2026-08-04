@@ -1,6 +1,12 @@
 -- AlterTable
+-- billing_invoice_holder is nullable: existing bookings created before this
+-- feature was collected have no value to backfill, and this table is not
+-- empty in production. New bookings still always populate it at the
+-- application layer (see booking.controller.js createBooking) — this is a
+-- storage-level relaxation to tolerate pre-existing rows, not a change to
+-- what's required going forward.
 ALTER TABLE "BookingConsent"
-  ADD COLUMN "billing_invoice_holder" TEXT NOT NULL,
+  ADD COLUMN "billing_invoice_holder" TEXT,
   ADD COLUMN "billing_address" TEXT,
   ADD COLUMN "billing_postcode" TEXT,
   ADD COLUMN "billing_town" TEXT,

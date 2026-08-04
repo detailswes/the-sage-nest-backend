@@ -24,7 +24,8 @@ function isValidTimezone(tz) {
 const VALID_QUALIFICATION_TYPES = [
   'LACTATION_CONSULTANT', 'BREASTFEEDING_COUNSELLOR', 'INFANT_SLEEP_CONSULTANT',
   'DOULA', 'MIDWIFE', 'BABY_OSTEOPATH', 'PAEDIATRIC_NUTRITIONIST',
-  'EARLY_YEARS_SPECIALIST', 'POSTNATAL_PHYSIOTHERAPIST', 'PARENTING_COACH', 'OTHER',
+  'EARLY_YEARS_SPECIALIST', 'POSTNATAL_PHYSIOTHERAPIST', 'PARENTING_COACH',
+  'DIETITIAN', 'PEDAGOGIST', 'OTHER',
 ];
 
 // ─── Profile ──────────────────────────────────────────────────────────────────
@@ -655,9 +656,6 @@ async function saveBusinessInfo(req, res) {
   if (entity_type === 'COMPANY' && !company_reg_number?.trim()) {
     return res.status(400).json({ error: 'Company registration number is required for legal entities.' });
   }
-  if (!iban?.trim()) {
-    return res.status(400).json({ error: 'IBAN / bank account is required.' });
-  }
   if (!business_email?.trim()) {
     return res.status(400).json({ error: 'Email address is required.' });
   }
@@ -674,7 +672,11 @@ async function saveBusinessInfo(req, res) {
     const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
     if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
 
-    const encryptedIban = encryptIban(iban.trim());
+    // IBAN is no longer collected here — payout details come from Stripe
+    // Connect onboarding. Left in the schema (nullable) for the legacy values
+    // already on file; an update with no iban in the payload leaves whatever
+    // is already stored untouched rather than wiping it.
+    const encryptedIban = iban?.trim() ? encryptIban(iban.trim()) : undefined;
 
     const info = await prisma.businessInfo.upsert({
       where: { expert_id: expert.id },
@@ -689,7 +691,7 @@ async function saveBusinessInfo(req, res) {
         tin:                 tin.trim(),
         vat_number:          vat_number?.trim()             || null,
         company_reg_number:  entity_type === 'COMPANY' ? company_reg_number.trim() : null,
-        iban:                encryptedIban,
+        ...(encryptedIban !== undefined ? { iban: encryptedIban } : {}),
         business_email:      business_email.trim(),
         website:             website?.trim()             || null,
         municipality:        municipality?.trim()           || null,
@@ -707,7 +709,7 @@ async function saveBusinessInfo(req, res) {
         tin:                 tin.trim(),
         vat_number:          vat_number?.trim()             || null,
         company_reg_number:  entity_type === 'COMPANY' ? company_reg_number.trim() : null,
-        iban:                encryptedIban,
+        iban:                encryptedIban ?? null,
         business_email:      business_email.trim(),
         website:             website?.trim()             || null,
         municipality:        municipality?.trim()           || null,
