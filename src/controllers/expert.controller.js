@@ -303,6 +303,10 @@ async function getExpertById(req, res) {
         qualifications: { orderBy: { created_at: 'asc' } },
         certifications: { orderBy: { created_at: 'asc' } },
         insurance: true,
+        // Only the country is exposed publicly — it's the booking flow's
+        // billing trigger (spec v1.7 §3: billing block driven by the EXPERT's
+        // country, not the parent's). No other BusinessInfo field is public.
+        business_info: { select: { address_country: true } },
       },
     });
     if (!expert) return res.status(404).json({ error: 'Expert not found' });

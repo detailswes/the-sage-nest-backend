@@ -24,6 +24,7 @@ const COPY = {
     invoicingHeading: "Invoicing Details",
     invoicingIntro: "The parent provided the following details in case you need them for invoicing:",
     invoicingLabels: {
+      invoiceHolder: "Invoice Holder",
       address: "Address",
       fiscalCode: "Fiscal Code",
     },
@@ -70,6 +71,7 @@ const COPY = {
     invoicingHeading: "Dati per la Fatturazione",
     invoicingIntro: "Il genitore ha fornito questi dati nel caso ti servano per la fatturazione:",
     invoicingLabels: {
+      invoiceHolder: "Intestatario Fattura",
       address: "Indirizzo",
       fiscalCode: "Codice Fiscale",
     },
@@ -113,7 +115,7 @@ function formatPrice(amount, currency, language) {
  *   durationMinutes: number, location?: string, amount?: number | string | null,
  *   currency?: string, bookingId: number, timezone?: string | null, language?: 'en' | 'it',
  *   clientUrl: string, contactEmail: string, supportEmail: string, policyUrl: string,
- *   parentAddress?: string, parentFiscalCode?: string,
+ *   parentAddress?: string, parentFiscalCode?: string, parentInvoiceHolder?: string,
  * }} params
  */
 const newBookingNotificationEmailHtml = ({
@@ -136,6 +138,7 @@ const newBookingNotificationEmailHtml = ({
   policyUrl,
   parentAddress,
   parentFiscalCode,
+  parentInvoiceHolder,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const t = COPY[lang];
@@ -245,21 +248,28 @@ const newBookingNotificationEmailHtml = ({
             </table>
           </div>
 
-          ${(parentAddress || parentFiscalCode) ? `
+          ${(parentInvoiceHolder || parentAddress || parentFiscalCode) ? `
           <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.invoicingHeading}</p>
           <p style="margin:0 0 12px;font-size:13px;color:#5e6d5b;line-height:1.5;">${t.invoicingIntro}</p>
           <div style="background:#F5F7F5;border-radius:12px;padding:20px 24px;margin-bottom:24px;">
             <table width="100%" cellpadding="0" cellspacing="0">
+              ${parentInvoiceHolder ? `
+              <tr>
+                <td style="padding-bottom:${(parentAddress || parentFiscalCode) ? "12px" : "0"};">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.invoicingLabels.invoiceHolder}</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${parentInvoiceHolder}</span>
+                </td>
+              </tr>` : ""}
               ${parentAddress ? `
               <tr>
-                <td style="padding-bottom:${parentFiscalCode ? "12px" : "0"};">
+                <td style="padding-top:${parentInvoiceHolder ? "12px" : "0"};padding-bottom:${parentFiscalCode ? "12px" : "0"};${parentInvoiceHolder ? "border-top:1px solid #c5ceba;" : ""}">
                   <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.invoicingLabels.address}</span><br>
                   <span style="font-size:15px;font-weight:600;color:#445446;">${parentAddress}</span>
                 </td>
               </tr>` : ""}
               ${parentFiscalCode ? `
               <tr>
-                <td style="padding-top:${parentAddress ? "12px" : "0"};${parentAddress ? "border-top:1px solid #c5ceba;" : ""}">
+                <td style="padding-top:${(parentInvoiceHolder || parentAddress) ? "12px" : "0"};${(parentInvoiceHolder || parentAddress) ? "border-top:1px solid #c5ceba;" : ""}">
                   <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.invoicingLabels.fiscalCode}</span><br>
                   <span style="font-size:15px;font-weight:600;color:#445446;">${parentFiscalCode}</span>
                 </td>

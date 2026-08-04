@@ -300,6 +300,14 @@ async function approveExpert(req, res) {
       });
     }
 
+    // Booking flow spec v1.7 §7.1 — admin-set, no default, mandatory before approval.
+    if (expert.is_health_professional === null) {
+      return res.status(409).json({
+        error: "This expert's professional classification (regulated health profession — yes/no) has not been set yet. Set it before approving.",
+        code: "HEALTH_CLASSIFICATION_REQUIRED",
+      });
+    }
+
     const updated = await prisma.expert.update({
       where: { id: parseInt(id) },
       data: {
@@ -313,6 +321,40 @@ async function approveExpert(req, res) {
       .then(() => webflowService.syncExpertServices(parseInt(id)))
       .catch(err => console.error("[Webflow] Sync after approve failed:", err.message));
     return res.json({ message: "Expert approved", expert: updated });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// PATCH /admin/experts/:id/health-classification — body: { is_health_professional: boolean }
+// Booking flow spec v1.7 §7.1: admin-only source of truth, never derived from
+// qualification type/title/anything the expert enters, and must remain
+// changeable after approval.
+async function setHealthClassification(req, res) {
+  const { id } = req.params;
+  const { is_health_professional } = req.body;
+
+  if (typeof is_health_professional !== "boolean") {
+    return res.status(400).json({ error: "is_health_professional must be a boolean" });
+  }
+
+  try {
+    const expert = await prisma.expert.findUnique({ where: { id: parseInt(id) } });
+    if (!expert) return res.status(404).json({ error: "Expert not found" });
+
+    const updated = await prisma.expert.update({
+      where: { id: parseInt(id) },
+      data: { is_health_professional },
+    });
+    await logAudit(
+      req.user.id,
+      "SET_HEALTH_CLASSIFICATION",
+      "EXPERT",
+      parseInt(id),
+      `Professional classification set to ${is_health_professional ? "regulated health profession" : "not a regulated health profession"}.`,
+    );
+    return res.json({ message: "Professional classification updated", expert: updated });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -1408,10 +1450,7 @@ async function getBookingDetail(req, res) {
       where: { id: parseInt(id) },
       include: {
         parent:  {
-          select: {
-            id: true, name: true, email: true, phone: true,
-            city: true, address_street: true, address_country: true, fiscal_code: true,
-          },
+          select: { id: true, name: true, email: true, phone: true },
         },
         expert:  {
           select: {
@@ -1437,8 +1476,15 @@ async function getBookingDetail(req, res) {
         },
         // Audit trail: which Privacy Policy version was displayed/linked to the
         // parent at the moment of this booking (notice-only, not "accepted").
+        // Billing fields are the per-booking snapshot (spec v1.7 §8) — never
+        // read live from the parent's profile.
         consent: {
-          select: { privacy_policy_version_displayed: true },
+          select: {
+            privacy_policy_version_displayed: true,
+            billing_invoice_holder: true, billing_address: true, billing_postcode: true,
+            billing_town: true, billing_province: true, billing_country: true,
+            billing_fiscal_code: true, billing_no_fiscal_code: true,
+          },
         },
       },
     });
@@ -3711,6 +3757,7 @@ module.exports = {
   listExperts,
   approveExpert,
   rejectExpert,
+  setHealthClassification,
   approveLanguage,
   rejectLanguage,
   toggleApproval,

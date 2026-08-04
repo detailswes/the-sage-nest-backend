@@ -6,6 +6,7 @@ const {
   listExperts,
   approveExpert,
   rejectExpert,
+  setHealthClassification,
   approveLanguage,
   rejectLanguage,
   toggleApproval,
@@ -69,6 +70,7 @@ router.get('/notifications', getAdminNotifications);
 // ── Status actions ────────────────────────────────────────────────────────────
 router.post('/experts/:id/approve',              approveExpert);
 router.post('/experts/:id/reject',               rejectExpert);
+router.patch('/experts/:id/health-classification', setHealthClassification);
 router.post('/experts/:id/languages/approve',    approveLanguage);
 router.post('/experts/:id/languages/reject',     rejectLanguage);
 router.patch('/experts/:id/toggle',    toggleApproval);
