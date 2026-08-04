@@ -111,6 +111,10 @@ model Expert {
   webflow_sync_status        WebflowSyncStatus   @default(UNSYNCED)
   webflow_synced_at          DateTime?
   webflow_sync_error         String?
+  // Regulated-health-profession classification. Nullable with no default —
+  // admin-set only, at profile approval, never derived from qualification
+  // type/title/anything the expert enters (booking flow spec v1.7 §7.1).
+  is_health_professional     Boolean?
   availability               Availability[]
   blockouts                  AvailabilityBlock[]
   bookings                   Booking[]           @relation("ExpertBookings")
@@ -134,6 +138,10 @@ model Service {
   price               Decimal            @db.Decimal(10, 2)
   is_active           Boolean            @default(true)
   cluster             ServiceCluster?
+  // Distinct from `cluster` (a Webflow marketing tag) — this gates which
+  // health-consent wording a parent sees, so it must never be derived from
+  // or conflated with the marketing category (booking flow spec v1.7 §7.2).
+  health_service_recipient ServiceRecipient?
   description         String?
   format              ServiceFormat?
   sort_order          Int                @default(0)
@@ -302,6 +310,27 @@ model BookingConsent {
   marketing_consent                 Boolean   @default(false)
   language                          String    @default("en")
   created_at                        DateTime  @default(now())
+  // Billing details snapshot — spec v1.7 §8: collected fresh every booking,
+  // never saved to the parent profile, never read live afterwards. Sage
+  // Nest issues no invoice itself; this is passed to the expert by email.
+  billing_invoice_holder            String
+  billing_address                   String?
+  billing_postcode                  String?
+  billing_town                      String?
+  billing_province                  String?
+  billing_country                   String?
+  billing_fiscal_code                String?
+  billing_no_fiscal_code             Boolean   @default(false)
+  // Health-data consent snapshot — independent of the withdrawal fields
+  // above. health_consent_flow is "A" (parents) or "B" (baby), always
+  // derived server-side from the service, never trusted from the client.
+  health_consent_required            Boolean   @default(false)
+  health_consent_flow                String?
+  health_consent_given               Boolean   @default(false)
+  health_consent_accepted_at         DateTime?
+  health_consent_wording_snapshot    String?
+  health_consent_helper_snapshot     String?
+  health_consent_version             String?
   booking                           Booking   @relation(fields: [booking_id], references: [id], onDelete: Cascade)
   user                              User      @relation(fields: [user_id], references: [id], onDelete: Cascade)
 }
@@ -497,6 +526,11 @@ enum ServiceCluster {
   PACKAGE
   GIFT
   EVENT
+}
+
+enum ServiceRecipient {
+  PARENTS
+  BABY
 }
 
 enum QualificationType {

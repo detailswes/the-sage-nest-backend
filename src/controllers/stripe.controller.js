@@ -179,10 +179,17 @@ async function processStripeEvent(event) {
       const booking = await prisma.booking.findFirst({
         where: { stripe_payment_intent_id: pi.id },
         include: {
-          parent:  { select: { name: true, email: true, language: true, timezone: true, notify_booking_confirmation: true, city: true, address_street: true, address_country: true, fiscal_code: true } },
+          parent:  { select: { name: true, email: true, language: true, timezone: true, notify_booking_confirmation: true } },
           expert:  { select: { address_street: true, address_city: true, address_postcode: true, timezone: true, notify_new_booking: true, user: { select: { name: true, email: true, language: true } } } },
           service: { select: { title: true } },
-          consent: { select: { language: true, withdrawal_applicable: true } },
+          consent: {
+            select: {
+              language: true, withdrawal_applicable: true,
+              billing_invoice_holder: true, billing_address: true, billing_postcode: true,
+              billing_town: true, billing_province: true, billing_country: true,
+              billing_fiscal_code: true, billing_no_fiscal_code: true,
+            },
+          },
         },
       });
 
@@ -219,9 +226,12 @@ async function processStripeEvent(event) {
 
         // Fire-and-forget: parent confirmation + expert new-booking notification
         const expertAddress = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
-        // Billing details are collected for every booking, regardless of which
-        // expert is assigned — shown to the expert here whenever on file.
-        const parentAddress = [booking.parent.address_street, booking.parent.city, booking.parent.address_country].filter(Boolean).join(', ');
+        // Billing details are a per-booking snapshot (spec v1.7 §8) — collected
+        // fresh for every booking, never read live from the parent's profile.
+        const parentAddress = [
+          booking.consent?.billing_address, booking.consent?.billing_postcode,
+          booking.consent?.billing_town, booking.consent?.billing_province, booking.consent?.billing_country,
+        ].filter(Boolean).join(', ');
         if (booking.parent.notify_booking_confirmation !== false) {
           const confirmationLanguage = booking.consent?.language || booking.parent.language || 'en';
           getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
@@ -265,7 +275,8 @@ async function processStripeEvent(event) {
               language:        expertLanguage,
               policyUrl,
               parentAddress:      parentAddress || undefined,
-              parentFiscalCode:   booking.parent.fiscal_code || undefined,
+              parentFiscalCode:   booking.consent?.billing_fiscal_code || undefined,
+              parentInvoiceHolder: booking.consent?.billing_invoice_holder || undefined,
             });
           }).catch((e) => console.error('[Email] Expert notification email failed:', e.message));
         }

@@ -5,6 +5,10 @@ const { logAudit } = require('../utils/auditLog');
 
 const VALID_FORMATS    = ['ONLINE', 'IN_PERSON'];
 const VALID_CLUSTERS   = ['FOR_PARENTS', 'FOR_BABY', 'FOR_FAMILY', 'PACKAGE', 'GIFT', 'EVENT'];
+// Distinct from VALID_CLUSTERS (a Webflow marketing tag) — this gates which
+// health-consent wording a parent is shown, so it's never conflated with the
+// marketing category (booking flow spec v1.7 §7.2).
+const VALID_SERVICE_RECIPIENTS = ['PARENTS', 'BABY'];
 
 async function getExpertIdForUser(userId) {
   const expert = await prisma.expert.findUnique({ where: { user_id: userId } });
@@ -26,10 +30,13 @@ function logCurrencyRejection(actorUserId, serviceId, attempted, expected) {
 }
 
 async function createService(req, res) {
-  const { title, description, duration_minutes, price, format, cluster } = req.body;
+  const { title, description, duration_minutes, price, format, cluster, health_service_recipient } = req.body;
 
   if (!title || !description || !duration_minutes || !price || !format || !cluster) {
     return res.status(400).json({ error: 'title, description, duration_minutes, price, format, and cluster are required.' });
+  }
+  if (health_service_recipient !== undefined && health_service_recipient !== null && health_service_recipient !== '' && !VALID_SERVICE_RECIPIENTS.includes(health_service_recipient)) {
+    return res.status(400).json({ error: 'Invalid service recipient. Must be PARENTS or BABY.' });
   }
   if (title.trim().length > 80) {
     return res.status(400).json({ error: 'Service title must be 80 characters or fewer.' });
@@ -87,6 +94,7 @@ async function createService(req, res) {
         currency,
         format: format || null,
         cluster: cluster || null,
+        health_service_recipient: health_service_recipient || null,
         is_active: false,
         sort_order,
       },
@@ -116,7 +124,7 @@ async function listServices(req, res) {
 
 async function updateService(req, res) {
   const { id } = req.params;
-  const { title, description, duration_minutes, price, currency, is_active, format, cluster } = req.body;
+  const { title, description, duration_minutes, price, currency, is_active, format, cluster, health_service_recipient } = req.body;
 
   if (title !== undefined && title.trim().length > 80) {
     return res.status(400).json({ error: 'Service title must be 80 characters or fewer.' });
@@ -135,6 +143,9 @@ async function updateService(req, res) {
   }
   if (cluster !== undefined && cluster !== null && cluster !== '' && !VALID_CLUSTERS.includes(cluster)) {
     return res.status(400).json({ error: 'Invalid cluster. Must be FOR_PARENTS, FOR_BABY, FOR_FAMILY, PACKAGE, GIFT, or EVENT.' });
+  }
+  if (health_service_recipient !== undefined && health_service_recipient !== null && health_service_recipient !== '' && !VALID_SERVICE_RECIPIENTS.includes(health_service_recipient)) {
+    return res.status(400).json({ error: 'Invalid service recipient. Must be PARENTS or BABY.' });
   }
 
   try {
@@ -189,6 +200,15 @@ async function updateService(req, res) {
       });
     }
 
+    // Booking flow spec v1.7 §7.2 — required for experts flagged as practising
+    // a regulated health profession; publication is blocked until answered.
+    const effectiveRecipient = health_service_recipient !== undefined ? (health_service_recipient || null) : service.health_service_recipient;
+    if (is_active === true && expert.is_health_professional === true && !effectiveRecipient) {
+      return res.status(400).json({
+        error: 'This service needs a "Service recipient" (For the Parents / For the Baby) before it can be published — it determines which health-consent wording parents see.',
+      });
+    }
+
     const updated = await prisma.service.update({
       where: { id: parseInt(id) },
       data: {
@@ -200,6 +220,7 @@ async function updateService(req, res) {
         ...(is_active !== undefined    && { is_active }),
         ...(format !== undefined       && { format: format || null }),
         ...(cluster !== undefined      && { cluster: cluster || null }),
+        ...(health_service_recipient !== undefined && { health_service_recipient: health_service_recipient || null }),
       },
     });
 

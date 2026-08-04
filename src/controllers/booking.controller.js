@@ -2,7 +2,8 @@ const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 const prisma = require("../prisma/client");
 const { logAudit } = require("../utils/auditLog");
 const { normalizeConsentLanguage } = require("../utils/language");
-const { getConsentWording } = require("../utils/legalConsentWording");
+const { getConsentWording, getHealthConsentWording, HEALTH_CONSENT_VERSION } = require("../utils/legalConsentWording");
+const { normalizeFiscalCode, isValidItalianFiscalCode } = require("../utils/fiscalCode");
 const { getLegalDocLinks } = require("../utils/legalDocLinks");
 const { upsertMarketingConsent, syncMarketingConsentToBrevo } = require("../utils/marketingConsent");
 const { createRefundWithFallback } = require("../utils/stripeRefund");
@@ -15,6 +16,20 @@ const {
   sendExpertCancellationConfirmationEmail,
   sendImLateNotification,
 } = require("../utils/email");
+
+// Billing details are a per-booking snapshot on BookingConsent (spec v1.7 §8) —
+// never read live from the parent's profile. Shared select shape for every
+// site that surfaces "invoice to" info to the assigned expert/admin.
+const BILLING_SNAPSHOT_SELECT = {
+  billing_invoice_holder: true,
+  billing_address: true,
+  billing_postcode: true,
+  billing_town: true,
+  billing_province: true,
+  billing_country: true,
+  billing_fiscal_code: true,
+  billing_no_fiscal_code: true,
+};
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 async function getExpertIdForUser(userId) {
@@ -30,7 +45,11 @@ async function getExpertIdForUser(userId) {
 const WITHDRAWAL_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
 
 async function createBooking(req, res) {
-  const { expertId, serviceId, scheduledAt, format, lockId, tcAccepted, withdrawalAccepted, marketingConsent, language } = req.body;
+  const {
+    expertId, serviceId, scheduledAt, format, lockId, tcAccepted, withdrawalAccepted, marketingConsent, language,
+    billingInvoiceHolder, billingAddress, billingPostcode, billingTown, billingProvince, billingCountry,
+    billingFiscalCode, billingNoFiscalCode, healthConsentGiven,
+  } = req.body;
 
   if (!expertId || !serviceId || !scheduledAt || !format || !lockId) {
     return res
@@ -60,7 +79,10 @@ async function createBooking(req, res) {
     // ── Load expert (need stripe_account_id) ────────────────────────────────
     const expert = await prisma.expert.findUnique({
       where: { id: parseInt(expertId) },
-      include: { user: { select: { name: true } } },
+      include: {
+        user: { select: { name: true } },
+        business_info: { select: { address_country: true } },
+      },
     });
     if (!expert) return res.status(404).json({ error: "Expert not found" });
     if (expert.status !== "APPROVED") {
@@ -178,6 +200,48 @@ async function createBooking(req, res) {
       });
     }
 
+    // ── Billing details (booking flow spec v1.7 §5.1) ───────────────────────
+    // Billing trigger is the EXPERT's country, never the parent's — an Italian
+    // expert needs Italian invoice data from every parent, a non-Italian expert
+    // needs none of it. Collected fresh every booking, never read from/saved to
+    // the parent profile, snapshotted verbatim onto BookingConsent below.
+    const isItalianExpert = expert.business_info?.address_country === "it";
+
+    const invoiceHolder = (billingInvoiceHolder || "").trim();
+    if (!invoiceHolder) {
+      return res.status(400).json({ error: "Invoice holder name is required." });
+    }
+
+    let normalizedFiscalCode = null;
+    if (isItalianExpert) {
+      if (!(billingAddress || "").trim() || !(billingPostcode || "").trim() ||
+          !(billingTown || "").trim() || !(billingProvince || "").trim()) {
+        return res.status(400).json({
+          error: "Address, postcode, town, and province are required for this expert's invoicing.",
+        });
+      }
+      if (billingNoFiscalCode !== true) {
+        normalizedFiscalCode = normalizeFiscalCode(billingFiscalCode);
+        if (!normalizedFiscalCode) {
+          return res.status(400).json({ error: "Please enter your fiscal code — it is required on the invoice." });
+        }
+        if (!isValidItalianFiscalCode(normalizedFiscalCode)) {
+          return res.status(400).json({ error: "This does not look like a valid fiscal code. Please check it for a typo." });
+        }
+      }
+    }
+
+    // ── Health-data consent (booking flow spec v1.7 §5.2) ───────────────────
+    // Required only when the expert is admin-flagged as a regulated health
+    // profession. Flow (A = parent, B = baby) is derived server-side from the
+    // service's recipient — never trusted from the client. Unset/other service
+    // types default to Flow A, same as a future service type would.
+    const healthConsentRequired = expert.is_health_professional === true;
+    const healthConsentFlow = service.health_service_recipient === "BABY" ? "B" : "A";
+    if (healthConsentRequired && healthConsentGiven !== true) {
+      return res.status(400).json({ error: "Please confirm your consent to continue." });
+    }
+
     // ── Verify slot lock ────────────────────────────────────────────────────
     const now = new Date();
     const lock = await prisma.slotLock.findUnique({
@@ -217,6 +281,7 @@ async function createBooking(req, res) {
 
     const consentLanguage = normalizeConsentLanguage(language);
     const consentWording  = getConsentWording(consentLanguage);
+    const healthConsentWording = healthConsentRequired ? getHealthConsentWording(consentLanguage, healthConsentFlow) : null;
 
     let booking;
     try {
@@ -271,6 +336,21 @@ async function createBooking(req, res) {
             privacy_policy_version_displayed: currentPpDoc?.version ?? null,
             marketing_consent: marketingConsent === true,
             language: consentLanguage,
+            billing_invoice_holder: invoiceHolder,
+            billing_address: isItalianExpert ? (billingAddress || "").trim() : null,
+            billing_postcode: isItalianExpert ? (billingPostcode || "").trim() : null,
+            billing_town: isItalianExpert ? (billingTown || "").trim() : null,
+            billing_province: isItalianExpert ? (billingProvince || "").trim() : null,
+            billing_country: isItalianExpert ? (billingCountry || "").trim() || null : null,
+            billing_fiscal_code: normalizedFiscalCode,
+            billing_no_fiscal_code: isItalianExpert && billingNoFiscalCode === true,
+            health_consent_required: healthConsentRequired,
+            health_consent_flow: healthConsentRequired ? healthConsentFlow : null,
+            health_consent_given: healthConsentRequired && healthConsentGiven === true,
+            health_consent_accepted_at: healthConsentRequired ? now : null,
+            health_consent_wording_snapshot: healthConsentWording?.body ?? null,
+            health_consent_helper_snapshot: healthConsentWording?.helper ?? null,
+            health_consent_version: healthConsentRequired ? HEALTH_CONSENT_VERSION : null,
           },
         });
 
@@ -379,10 +459,7 @@ async function getBookingById(req, res) {
       where: { id: parseInt(id) },
       include: {
         parent: {
-          select: {
-            id: true, name: true, email: true,
-            city: true, address_street: true, address_country: true, fiscal_code: true,
-          },
+          select: { id: true, name: true, email: true },
         },
         expert: {
           include: {
@@ -390,6 +467,7 @@ async function getBookingById(req, res) {
           },
         },
         service: true,
+        consent: { select: BILLING_SNAPSHOT_SELECT },
       },
     });
 
@@ -403,14 +481,9 @@ async function getBookingById(req, res) {
     }
 
     if (!isExpert) delete booking.expert_note;
-    // Invoicing details (address/fiscal code) are for the assigned expert's
-    // invoicing use only — not shown back to the parent in their own view.
-    if (!isExpert) {
-      delete booking.parent.city;
-      delete booking.parent.address_street;
-      delete booking.parent.address_country;
-      delete booking.parent.fiscal_code;
-    }
+    // Invoicing details are for the assigned expert's invoicing use only —
+    // not shown back to the parent in their own view.
+    if (!isExpert) delete booking.consent;
     return res.json(booking);
   } catch (err) {
     console.error(err);
@@ -1067,14 +1140,12 @@ async function getUpcomingAppointments(req, res) {
         // Invoicing fields are scoped to this expert's own bookings only — never
         // exposed on cross-expert list/search/export endpoints.
         parent: {
-          select: {
-            name: true, email: true,
-            city: true, address_street: true, address_country: true, fiscal_code: true,
-          },
+          select: { name: true, email: true },
         },
         service: {
           select: { title: true, duration_minutes: true, format: true },
         },
+        consent: { select: BILLING_SNAPSHOT_SELECT },
       },
     });
 
@@ -1226,13 +1297,9 @@ async function getPastAppointments(req, res) {
         skip,
         take: limit,
         include: {
-          parent: {
-            select: {
-              name: true, email: true,
-              city: true, address_street: true, address_country: true, fiscal_code: true,
-            },
-          },
+          parent: { select: { name: true, email: true } },
           service: { select: { title: true, duration_minutes: true } },
+          consent: { select: BILLING_SNAPSHOT_SELECT },
         },
       }),
     ]);
@@ -1266,10 +1333,6 @@ async function verifyPayment(req, res) {
             language: true,
             timezone: true,
             notify_booking_confirmation: true,
-            city: true,
-            address_street: true,
-            address_country: true,
-            fiscal_code: true,
           },
         },
         expert: {
@@ -1283,7 +1346,7 @@ async function verifyPayment(req, res) {
           },
         },
         service: { select: { title: true } },
-        consent: { select: { language: true, withdrawal_applicable: true } },
+        consent: { select: { language: true, withdrawal_applicable: true, ...BILLING_SNAPSHOT_SELECT } },
       },
     });
 
@@ -1349,12 +1412,14 @@ async function verifyPayment(req, res) {
     ]
       .filter(Boolean)
       .join(", ");
-    // Billing details are collected for every booking, regardless of which
-    // expert is assigned — shown to the expert here whenever on file.
+    // Billing details are a per-booking snapshot (spec v1.7 §8) — collected
+    // fresh for every booking, never read live from the parent's profile.
     const parentAddressVerify = [
-      booking.parent.address_street,
-      booking.parent.city,
-      booking.parent.address_country,
+      booking.consent?.billing_address,
+      booking.consent?.billing_postcode,
+      booking.consent?.billing_town,
+      booking.consent?.billing_province,
+      booking.consent?.billing_country,
     ]
       .filter(Boolean)
       .join(", ");
@@ -1412,7 +1477,8 @@ async function verifyPayment(req, res) {
           language: expertLanguage,
           policyUrl,
           parentAddress: parentAddressVerify || undefined,
-          parentFiscalCode: booking.parent.fiscal_code || undefined,
+          parentFiscalCode: booking.consent?.billing_fiscal_code || undefined,
+          parentInvoiceHolder: booking.consent?.billing_invoice_holder || undefined,
         });
       }).catch((e) =>
         console.error(
