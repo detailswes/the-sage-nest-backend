@@ -193,7 +193,7 @@ model BusinessInfo {
   tin                 String
   vat_number          String?
   company_reg_number  String?
-  iban                String
+  iban                String?
   business_email      String?
   website             String?
   municipality        String?
@@ -313,7 +313,7 @@ model BookingConsent {
   // Billing details snapshot — spec v1.7 §8: collected fresh every booking,
   // never saved to the parent profile, never read live afterwards. Sage
   // Nest issues no invoice itself; this is passed to the expert by email.
-  billing_invoice_holder            String
+  billing_invoice_holder            String?
   billing_address                   String?
   billing_postcode                  String?
   billing_town                      String?
@@ -544,6 +544,8 @@ enum QualificationType {
   EARLY_YEARS_SPECIALIST
   POSTNATAL_PHYSIOTHERAPIST
   PARENTING_COACH
+  DIETITIAN
+  PEDAGOGIST
   OTHER
 }
 

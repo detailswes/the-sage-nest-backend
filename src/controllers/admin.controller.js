@@ -38,6 +38,8 @@ const VALID_QUALIFICATION_TYPES = [
   "EARLY_YEARS_SPECIALIST",
   "POSTNATAL_PHYSIOTHERAPIST",
   "PARENTING_COACH",
+  "DIETITIAN",
+  "PEDAGOGIST",
   "OTHER",
 ];
 const VALID_CLUSTERS = ["FOR_PARENTS", "FOR_BABY", "FOR_FAMILY", "PACKAGE", "GIFT", "EVENT"];
@@ -2358,6 +2360,8 @@ const QUAL_LABELS = {
   EARLY_YEARS_SPECIALIST:    "Early Years Specialist",
   POSTNATAL_PHYSIOTHERAPIST: "Postnatal Physiotherapist",
   PARENTING_COACH:           "Parenting Coach",
+  DIETITIAN:                 "Dietitian",
+  PEDAGOGIST:                "Pedagogist",
   OTHER:                     "Other",
 };
 
