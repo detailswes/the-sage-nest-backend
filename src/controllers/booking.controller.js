@@ -234,10 +234,11 @@ async function createBooking(req, res) {
     // ── Health-data consent (booking flow spec v1.7 §5.2) ───────────────────
     // Required only when the expert is admin-flagged as a regulated health
     // profession. Flow (A = parent, B = baby) is derived server-side from the
-    // service's recipient — never trusted from the client. Unset/other service
-    // types default to Flow A, same as a future service type would.
+    // service's category tag — never trusted from the client. Any tag other
+    // than FOR_BABY (For Parents, Family, Package, Gift, Event) defaults to
+    // Flow A.
     const healthConsentRequired = expert.is_health_professional === true;
-    const healthConsentFlow = service.health_service_recipient === "BABY" ? "B" : "A";
+    const healthConsentFlow = service.cluster === "FOR_BABY" ? "B" : "A";
     if (healthConsentRequired && healthConsentGiven !== true) {
       return res.status(400).json({ error: "Please confirm your consent to continue." });
     }
