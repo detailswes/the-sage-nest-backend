@@ -1485,7 +1485,7 @@ async function disable2FA(req, res) {
 async function getLegalVersions(req, res) {
   try {
     const select = { version: true, effective_from: true, file_url_en: true, file_url_it: true };
-    const [pp, tc, cp] = await Promise.all([
+    const [pp, tc, cp, et, ep] = await Promise.all([
       prisma.legalDocument.findFirst({
         where: { type: "PRIVACY_POLICY" },
         orderBy: { effective_from: "desc" },
@@ -1501,8 +1501,24 @@ async function getLegalVersions(req, res) {
         orderBy: { effective_from: "desc" },
         select,
       }),
+      prisma.legalDocument.findFirst({
+        where: { type: "EXPERT_TERMS_CONDITIONS" },
+        orderBy: { effective_from: "desc" },
+        select,
+      }),
+      prisma.legalDocument.findFirst({
+        where: { type: "EXPERT_PRIVACY_NOTICE" },
+        orderBy: { effective_from: "desc" },
+        select,
+      }),
     ]);
-    return res.json({ privacy_policy: pp, terms_conditions: tc, cancellation_policy: cp });
+    return res.json({
+      privacy_policy: pp,
+      terms_conditions: tc,
+      cancellation_policy: cp,
+      expert_terms_conditions: et,
+      expert_privacy_notice: ep,
+    });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
