@@ -1764,7 +1764,10 @@ async function updateBookingNote(req, res) {
 
 // ─── Legal documents ──────────────────────────────────────────────────────────
 
-const LEGAL_DOC_TYPES = ["PRIVACY_POLICY", "TERMS_CONDITIONS", "CANCELLATION_POLICY"];
+const LEGAL_DOC_TYPES = [
+  "PRIVACY_POLICY", "TERMS_CONDITIONS", "CANCELLATION_POLICY",
+  "EXPERT_TERMS_CONDITIONS", "EXPERT_PRIVACY_NOTICE",
+];
 
 // Cancellation Policy has no standalone acceptance ledger — it's covered by the
 // same checkbox as the current T&C at booking checkout — so its acceptance count
@@ -1797,18 +1800,24 @@ const enrichDocs = (docs, countMap) => docs.map((d) => ({
 
 async function getLegalDocuments(req, res) {
   try {
-    const [ppDocs, tcDocs, cpDocs, ppCounts, tcCounts] = await Promise.all([
+    const [ppDocs, tcDocs, cpDocs, etDocs, epDocs, ppCounts, tcCounts] = await Promise.all([
       prisma.legalDocument.findMany({ where: { type: "PRIVACY_POLICY" },     orderBy: { effective_from: "desc" } }),
       prisma.legalDocument.findMany({ where: { type: "TERMS_CONDITIONS" },   orderBy: { effective_from: "desc" } }),
       prisma.legalDocument.findMany({ where: { type: "CANCELLATION_POLICY" }, orderBy: { effective_from: "desc" } }),
+      prisma.legalDocument.findMany({ where: { type: "EXPERT_TERMS_CONDITIONS" }, orderBy: { effective_from: "desc" } }),
+      prisma.legalDocument.findMany({ where: { type: "EXPERT_PRIVACY_NOTICE" },   orderBy: { effective_from: "desc" } }),
       acceptanceCountsFor("PRIVACY_POLICY"),
       acceptanceCountsFor("TERMS_CONDITIONS"),
     ]);
 
     return res.json({
-      privacy_policy:      enrichDocs(ppDocs, toCountMap(ppCounts)),
-      terms_conditions:    enrichDocs(tcDocs, toCountMap(tcCounts)),
-      cancellation_policy: enrichDocs(cpDocs, {}),
+      privacy_policy:           enrichDocs(ppDocs, toCountMap(ppCounts)),
+      terms_conditions:         enrichDocs(tcDocs, toCountMap(tcCounts)),
+      cancellation_policy:      enrichDocs(cpDocs, {}),
+      // No acceptance ledger for expert documents — account creation date is
+      // the record of when an expert agreed to these, per product decision.
+      expert_terms_conditions:  enrichDocs(etDocs, {}),
+      expert_privacy_notice:    enrichDocs(epDocs, {}),
     });
   } catch (err) {
     console.error(err);
