@@ -138,10 +138,6 @@ model Service {
   price               Decimal            @db.Decimal(10, 2)
   is_active           Boolean            @default(true)
   cluster             ServiceCluster?
-  // Distinct from `cluster` (a Webflow marketing tag) — this gates which
-  // health-consent wording a parent sees, so it must never be derived from
-  // or conflated with the marketing category (booking flow spec v1.7 §7.2).
-  health_service_recipient ServiceRecipient?
   description         String?
   format              ServiceFormat?
   sort_order          Int                @default(0)
@@ -526,11 +522,6 @@ enum ServiceCluster {
   PACKAGE
   GIFT
   EVENT
-}
-
-enum ServiceRecipient {
-  PARENTS
-  BABY
 }
 
 enum QualificationType {
