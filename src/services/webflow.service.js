@@ -313,6 +313,15 @@ function formatPrice(amount, currency) {
   }).format(Number(amount));
 }
 
+// Collapses line breaks (and any whitespace hugging them) into a single space.
+// Webflow's single-line PlainText fields reject line breaks outright, so text
+// destined for one must be flattened first. Handles \r\n, \r and \n, and leaves
+// text without breaks completely unchanged.
+function flattenForSingleLine(text) {
+  if (!text) return text;
+  return text.replace(/[ \t]*(?:\r\n|\r|\n)+[ \t]*/g, ' ').trim();
+}
+
 async function buildExpertFields(expert, slug) {
   const activeServices = (expert.services || []).filter(s => s.is_active);
   const cheapest = activeServices.length
@@ -385,7 +394,13 @@ async function buildServiceFields(service, expertId, expertWebflowItemId) {
     'booking-url': `${APP_URL}/book?expertId=${expertId}&serviceId=${service.id}`,
   };
 
-  if (service.description)      fields['description'] = service.description;
+  // Webflow's `description` field is configured as single-line PlainText, so any
+  // line break is rejected with a 400 Validation Error and the whole service
+  // silently fails to sync. Collapse breaks (and the whitespace around them) to a
+  // single space so multi-paragraph descriptions still publish. The original text
+  // is left untouched in our database, so the portal and emails keep their
+  // paragraphs — only the Webflow copy is flattened.
+  if (service.description)      fields['description'] = flattenForSingleLine(service.description);
   if (service.duration_minutes) fields['duration']    = formatDuration(service.duration_minutes);
   if (service.format)           fields['format']      = service.format === 'ONLINE' ? 'Online' : 'In-Person';
   if (expertWebflowItemId)      fields['expert']      = expertWebflowItemId;
