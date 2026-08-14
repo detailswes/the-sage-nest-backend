@@ -9,7 +9,7 @@ const COPY = {
       `Hi ${expertFirstName},<br><br>We are writing to let you know that <strong>${parentFirstName}</strong> has cancelled the following booking:`,
     cancelledBooking: "Cancelled Booking",
     labels: { parentName: "Parent name", service: "Service", date: "Date", time: "Time", format: "Format", bookingRef: "Booking Ref", reason: "Reason" },
-    formatLabel: { ONLINE: "Online", IN_PERSON: "In-Person" },
+    formatLabel: { ONLINE: "Online", IN_PERSON: "In-Person", HOME_VISIT: "Home Visit" },
     refundOutcomeHeading: "Refund outcome",
     refundOutcome100: (parentFirstName, amountStr) =>
       `As the cancellation was made more than 24 hours before the session, ${parentFirstName} has received a full refund of ${amountStr}.`,
@@ -31,7 +31,7 @@ const COPY = {
       `Ciao ${expertFirstName},<br><br>ti informiamo che <strong>${parentFirstName}</strong> ha cancellato la seguente prenotazione:`,
     cancelledBooking: "Prenotazione Cancellata",
     labels: { parentName: "Nome del genitore", service: "Servizio", date: "Data", time: "Orario", format: "Modalità", bookingRef: "Riferimento Prenotazione", reason: "Motivo" },
-    formatLabel: { ONLINE: "Online", IN_PERSON: "In presenza" },
+    formatLabel: { ONLINE: "Online", IN_PERSON: "In presenza", HOME_VISIT: "Visita a domicilio" },
     refundOutcomeHeading: "Esito del rimborso",
     refundOutcome100: (parentFirstName, amountStr) =>
       `Poiché la cancellazione è avvenuta più di 24 ore prima della sessione, ${parentFirstName} ha ricevuto un rimborso completo di ${amountStr}.`,

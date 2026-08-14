@@ -5,6 +5,7 @@ const { normalizeConsentLanguage } = require("../utils/language");
 const { getConsentWording, getHealthConsentWording, HEALTH_CONSENT_VERSION } = require("../utils/legalConsentWording");
 const { normalizeFiscalCode, isValidItalianFiscalCode } = require("../utils/fiscalCode");
 const { getLegalDocLinks } = require("../utils/legalDocLinks");
+const { SERVICE_FORMATS, usesExpertAddress, isHomeVisit } = require("../constants/format");
 const { upsertMarketingConsent, syncMarketingConsentToBrevo } = require("../utils/marketingConsent");
 const { createRefundWithFallback } = require("../utils/stripeRefund");
 const {
@@ -69,10 +70,10 @@ async function createBooking(req, res) {
       .status(400)
       .json({ error: "Scheduled time must be in the future" });
   }
-  if (!["ONLINE", "IN_PERSON"].includes(format)) {
+  if (!SERVICE_FORMATS.includes(format)) {
     return res
       .status(400)
-      .json({ error: "format must be ONLINE or IN_PERSON" });
+      .json({ error: `format must be one of ${SERVICE_FORMATS.join(", ")}` });
   }
 
   try {
@@ -1065,7 +1066,7 @@ async function rescheduleBooking(req, res) {
           scheduledAt: newDate,
           durationMinutes: booking.duration_minutes,
           location:
-            booking.format === "IN_PERSON"
+            usesExpertAddress(booking.format)
               ? expertAddress || undefined
               : undefined,
           language: confirmationLanguage,
@@ -1331,6 +1332,9 @@ async function verifyPayment(req, res) {
             id: true,
             name: true,
             email: true,
+            // Forwarded to the expert for home-visit bookings only — the
+            // gating lives at the send site, not here.
+            phone: true,
             language: true,
             timezone: true,
             notify_booking_confirmation: true,
@@ -1436,7 +1440,7 @@ async function verifyPayment(req, res) {
           scheduledAt: booking.scheduled_at,
           durationMinutes: booking.duration_minutes,
           location:
-            booking.format === "IN_PERSON"
+            usesExpertAddress(booking.format)
               ? expertAddressVerify || undefined
               : undefined,
           language: confirmationLanguage,
@@ -1463,12 +1467,15 @@ async function verifyPayment(req, res) {
           expertName: booking.expert.user.name,
           parentName: booking.parent.name,
           parentEmail: booking.parent.email,
+          // Home visits only — the expert travels to the parent, so they need
+          // to reach them to agree the address. Withheld for every other format.
+          parentPhone: isHomeVisit(booking.format) ? booking.parent.phone : null,
           serviceTitle: booking.service.title,
           format: booking.format,
           scheduledAt: booking.scheduled_at,
           durationMinutes: booking.duration_minutes,
           location:
-            booking.format === "IN_PERSON"
+            usesExpertAddress(booking.format)
               ? expertAddressVerify || undefined
               : undefined,
           amount: booking.amount,

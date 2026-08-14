@@ -14,6 +14,13 @@ const LOCATIONS_COL_ID      = process.env.WEBFLOW_LOCATIONS_COLLECTION_ID;
 const CERTIFICATIONS_COL_ID = process.env.WEBFLOW_CERTIFICATIONS_COLLECTION_ID;
 const CATEGORIES_COL_ID     = process.env.WEBFLOW_CATEGORIES_COLLECTION_ID;
 
+// Public-site labels for each delivery format.
+const SERVICE_FORMAT_LABELS = {
+  ONLINE:     'Online',
+  IN_PERSON:  'In-Person',
+  HOME_VISIT: 'Home Visit',
+};
+
 // ServiceCluster enum → Webflow Services Categories item name (must match exactly, case-insensitive)
 const CLUSTER_DISPLAY = {
   FOR_PARENTS: 'service for the mum',
@@ -336,9 +343,13 @@ async function buildExpertFields(expert, slug) {
 
   // ── Reference fields ─────────────────────────────────────────────────────────
 
-  // Online (Reference → Online Experts collection — "Yes" for online-capable, "No" for in-person only)
+  // Online (Reference → Online Experts collection — "Yes" for online-capable, "No" otherwise)
+  // Allow-list rather than "not IN_PERSON": HOME_VISIT is delivered at the
+  // parent's address and must publish as "No", which a negated check would
+  // have silently got wrong.
   if (ONLINE_COL_ID && expert.session_format) {
-    const onlineName = expert.session_format === 'IN_PERSON' ? 'No' : 'Yes';
+    const onlineCapable = ['ONLINE', 'BOTH'].includes(expert.session_format);
+    const onlineName = onlineCapable ? 'Yes' : 'No';
     const id = await resolveSingleRefId(ONLINE_COL_ID, onlineName);
     if (id) fields['online-2'] = id;
   }
@@ -387,7 +398,11 @@ async function buildServiceFields(service, expertId, expertWebflowItemId) {
 
   if (service.description)      fields['description'] = service.description;
   if (service.duration_minutes) fields['duration']    = formatDuration(service.duration_minutes);
-  if (service.format)           fields['format']      = service.format === 'ONLINE' ? 'Online' : 'In-Person';
+  // Lookup rather than a two-way ternary so a new mode can never fall through
+  // to the wrong label. NOTE: the Webflow 'format' field must accept
+  // "Home Visit" — if it is an option/select field there, the option needs
+  // adding on the Webflow side before home-visit services will sync.
+  if (service.format)           fields['format']      = SERVICE_FORMAT_LABELS[service.format] || service.format;
   if (expertWebflowItemId)      fields['expert']      = expertWebflowItemId;
 
   // Category (Reference → Services Categories collection)

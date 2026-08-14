@@ -1,9 +1,10 @@
 const prisma = require('../prisma/client');
 const webflowService = require('../services/webflow.service');
 const { PRICE_LIMITS } = require('../constants/currency');
+const { SERVICE_FORMATS } = require('../constants/format');
 const { logAudit } = require('../utils/auditLog');
 
-const VALID_FORMATS    = ['ONLINE', 'IN_PERSON'];
+const VALID_FORMATS    = SERVICE_FORMATS;
 const VALID_CLUSTERS   = ['FOR_PARENTS', 'FOR_BABY', 'FOR_FAMILY', 'PACKAGE', 'GIFT', 'EVENT'];
 
 async function getExpertIdForUser(userId) {
@@ -42,7 +43,7 @@ async function createService(req, res) {
     return res.status(400).json({ error: 'Duration must be between 15 and 480 minutes.' });
   }
   if (!VALID_FORMATS.includes(format)) {
-    return res.status(400).json({ error: 'Invalid format. Must be ONLINE or IN_PERSON.' });
+    return res.status(400).json({ error: `Invalid format. Must be one of ${VALID_FORMATS.join(', ')}.` });
   }
   if (!VALID_CLUSTERS.includes(cluster)) {
     return res.status(400).json({ error: 'Invalid cluster. Must be FOR_PARENTS, FOR_BABY, FOR_FAMILY, PACKAGE, GIFT, or EVENT.' });
@@ -131,7 +132,7 @@ async function updateService(req, res) {
     }
   }
   if (format !== undefined && format !== null && format !== '' && !VALID_FORMATS.includes(format)) {
-    return res.status(400).json({ error: 'Invalid format. Must be ONLINE or IN_PERSON.' });
+    return res.status(400).json({ error: `Invalid format. Must be one of ${VALID_FORMATS.join(', ')}.` });
   }
   if (cluster !== undefined && cluster !== null && cluster !== '' && !VALID_CLUSTERS.includes(cluster)) {
     return res.status(400).json({ error: 'Invalid cluster. Must be FOR_PARENTS, FOR_BABY, FOR_FAMILY, PACKAGE, GIFT, or EVENT.' });

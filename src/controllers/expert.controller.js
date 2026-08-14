@@ -2,8 +2,9 @@ const prisma = require('../prisma/client');
 const { encryptIban, decryptIban } = require('../utils/encryption');
 const { uploadFile, deleteFile } = require('../utils/storage');
 const { syncExpert } = require('../services/webflow.service');
+const { SESSION_FORMATS, cascadesToServices } = require('../constants/format');
 
-const VALID_SESSION_FORMATS = ['ONLINE', 'IN_PERSON', 'BOTH'];
+const VALID_SESSION_FORMATS = SESSION_FORMATS;
 
 // Fire-and-forget audit entry written on behalf of an expert (not an admin).
 // admin_id stores the expert's user_id — the User record exists so the name
@@ -63,10 +64,9 @@ async function updateMyProfile(req, res) {
     buffer_minutes, advance_booking_days, min_notice_hours,
   } = req.body;
 
-  const VALID_SESSION_FORMATS = ['ONLINE', 'IN_PERSON', 'BOTH'];
   if (session_format !== undefined && session_format !== null && session_format !== '') {
     if (!VALID_SESSION_FORMATS.includes(session_format)) {
-      return res.status(400).json({ error: 'session_format must be ONLINE, IN_PERSON, or BOTH.' });
+      return res.status(400).json({ error: `session_format must be one of ${VALID_SESSION_FORMATS.join(', ')}.` });
     }
   }
 
@@ -251,10 +251,10 @@ async function updateMyProfile(req, res) {
       },
     });
 
-    // When profile session_format is locked to ONLINE or IN_PERSON, cascade to
-    // all services so they stay in sync. BOTH means the expert controls each
+    // When profile session_format is locked to a single mode, cascade to all
+    // services so they stay in sync. BOTH means the expert controls each
     // service individually, so we leave those untouched.
-    if (session_format === 'ONLINE' || session_format === 'IN_PERSON') {
+    if (cascadesToServices(session_format)) {
       await prisma.service.updateMany({
         where: { expert_id: current.id },
         data:  { format: session_format },

@@ -12,6 +12,7 @@ const COPY = {
     labels: {
       parentName: "Parent Name",
       parentEmail: "Parent Email",
+      parentPhone: "Parent Phone",
       service: "Service",
       date: "Date",
       time: "Time",
@@ -28,9 +29,11 @@ const COPY = {
       address: "Address",
       fiscalCode: "Fiscal Code",
     },
-    formatLabel: { ONLINE: "Online", IN_PERSON: "In-person" },
+    formatLabel: { ONLINE: "Online", IN_PERSON: "In-person", HOME_VISIT: "Home visit" },
     actionRequired: (parentFirstName, parentEmail) =>
       `<strong>Action required — online session:</strong> please send ${parentFirstName} the video call details at <a href="mailto:${parentEmail}" style="color:#065F46;">${parentEmail}</a> no later than 24 hours before the session — or as soon as possible, if the session starts sooner.`,
+    actionRequiredHomeVisit: (parentFirstName, parentEmail, parentPhone) =>
+      `<strong>Action required — home visit:</strong> please contact ${parentFirstName} to agree the address and any access details before the session. You can reach them at <a href="mailto:${parentEmail}" style="color:#065F46;">${parentEmail}</a>${parentPhone ? ` or on <a href="tel:${parentPhone}" style="color:#065F46;">${parentPhone}</a>` : ""}.`,
     actionPurposeLimitation:
       "The parent's contact details are shared with you solely for delivering this session and must not be used for any other purpose.",
     payoutLine:
@@ -59,6 +62,7 @@ const COPY = {
     labels: {
       parentName: "Nome del Genitore",
       parentEmail: "Email del Genitore",
+      parentPhone: "Telefono del Genitore",
       service: "Servizio",
       date: "Data",
       time: "Orario",
@@ -75,9 +79,11 @@ const COPY = {
       address: "Indirizzo",
       fiscalCode: "Codice Fiscale",
     },
-    formatLabel: { ONLINE: "Online", IN_PERSON: "In presenza" },
+    formatLabel: { ONLINE: "Online", IN_PERSON: "In presenza", HOME_VISIT: "Visita a domicilio" },
     actionRequired: (parentFirstName, parentEmail) =>
       `<strong>Azione richiesta — sessione online:</strong> invia a ${parentFirstName} i dettagli per la videochiamata all'indirizzo <a href="mailto:${parentEmail}" style="color:#065F46;">${parentEmail}</a> almeno 24 ore prima della sessione. Se la prenotazione è stata effettuata con meno di 24 ore di anticipo, inviali il prima possibile.`,
+    actionRequiredHomeVisit: (parentFirstName, parentEmail, parentPhone) =>
+      `<strong>Azione richiesta — visita a domicilio:</strong> contatta ${parentFirstName} per concordare l'indirizzo ed eventuali dettagli di accesso prima della sessione. Puoi raggiungerlo all'indirizzo <a href="mailto:${parentEmail}" style="color:#065F46;">${parentEmail}</a>${parentPhone ? ` o al numero <a href="tel:${parentPhone}" style="color:#065F46;">${parentPhone}</a>` : ""}.`,
     actionPurposeLimitation:
       "I dati di contatto del genitore ti vengono forniti esclusivamente per questa sessione e non possono essere utilizzati per altre finalità.",
     payoutLine:
@@ -111,7 +117,8 @@ function formatPrice(amount, currency, language) {
  *
  * @param {{
  *   expertName: string, parentName: string, parentEmail: string,
- *   serviceTitle: string, format: 'ONLINE' | 'IN_PERSON', scheduledAt: Date,
+ *   parentPhone?: string | null,
+ *   serviceTitle: string, format: 'ONLINE' | 'IN_PERSON' | 'HOME_VISIT', scheduledAt: Date,
  *   durationMinutes: number, location?: string, amount?: number | string | null,
  *   currency?: string, bookingId: number, timezone?: string | null, language?: 'en' | 'it',
  *   clientUrl: string, contactEmail: string, supportEmail: string, policyUrl: string,
@@ -122,6 +129,9 @@ const newBookingNotificationEmailHtml = ({
   expertName,
   parentName,
   parentEmail,
+  // Only ever passed for HOME_VISIT bookings — the expert needs to reach the
+  // parent to agree the address. Never included for online or in-person.
+  parentPhone,
   serviceTitle,
   format,
   scheduledAt,
@@ -188,11 +198,18 @@ const newBookingNotificationEmailHtml = ({
                   <span style="font-size:15px;font-weight:600;color:#445446;">${parentName}</span>
                 </td>
               </tr>
-              ${format === "ONLINE" ? `
+              ${parentEmail ? `
               <tr>
                 <td style="padding:12px 0;border-top:1px solid #c5ceba;">
                   <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.parentEmail}</span><br>
                   <a href="mailto:${parentEmail}" style="font-size:15px;font-weight:600;color:#445446;text-decoration:none;">${parentEmail}</a>
+                </td>
+              </tr>` : ""}
+              ${format === "HOME_VISIT" && parentPhone ? `
+              <tr>
+                <td style="padding:12px 0;border-top:1px solid #c5ceba;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.parentPhone}</span><br>
+                  <a href="tel:${parentPhone}" style="font-size:15px;font-weight:600;color:#445446;text-decoration:none;">${parentPhone}</a>
                 </td>
               </tr>` : ""}
               <tr>
@@ -277,9 +294,13 @@ const newBookingNotificationEmailHtml = ({
             </table>
           </div>` : ""}
 
-          ${format === "ONLINE" ? `
+          ${format === "ONLINE" || format === "HOME_VISIT" ? `
           <div style="background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px;padding:16px;margin-bottom:24px;">
-            <p style="margin:0 0 8px;font-size:13px;color:#065F46;line-height:1.5;">${t.actionRequired(parentFirstName, parentEmail)}</p>
+            <p style="margin:0 0 8px;font-size:13px;color:#065F46;line-height:1.5;">${
+              format === "HOME_VISIT"
+                ? t.actionRequiredHomeVisit(parentFirstName, parentEmail, parentPhone)
+                : t.actionRequired(parentFirstName, parentEmail)
+            }</p>
             <p style="margin:0;font-size:13px;color:#065F46;line-height:1.5;">${t.actionPurposeLimitation}</p>
           </div>` : ""}
 

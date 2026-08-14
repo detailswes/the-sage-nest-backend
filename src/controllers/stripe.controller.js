@@ -7,6 +7,7 @@ const {
   sendAdminPayoutAlert,
 } = require('../utils/email');
 const { getLegalDocLinks } = require('../utils/legalDocLinks');
+const { usesExpertAddress, isHomeVisit } = require('../constants/format');
 const { syncExpertCurrencyOnReturn, syncExpertCurrencyFromWebhook } = require('../services/expertCurrency.service');
 
 // ─── Step 1 & 2: Expert clicks connect — create Stripe onboarding link ────────
@@ -179,7 +180,7 @@ async function processStripeEvent(event) {
       const booking = await prisma.booking.findFirst({
         where: { stripe_payment_intent_id: pi.id },
         include: {
-          parent:  { select: { name: true, email: true, language: true, timezone: true, notify_booking_confirmation: true } },
+          parent:  { select: { name: true, email: true, phone: true, language: true, timezone: true, notify_booking_confirmation: true } },
           expert:  { select: { address_street: true, address_city: true, address_postcode: true, timezone: true, notify_new_booking: true, user: { select: { name: true, email: true, language: true } } } },
           service: { select: { title: true } },
           consent: {
@@ -243,7 +244,7 @@ async function processStripeEvent(event) {
               format:          booking.format,
               scheduledAt:     booking.scheduled_at,
               durationMinutes: booking.duration_minutes,
-              location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
+              location:        usesExpertAddress(booking.format) ? (expertAddress || undefined) : undefined,
               language:        confirmationLanguage,
               amount:          booking.amount,
               currency:        booking.currency,
@@ -263,11 +264,14 @@ async function processStripeEvent(event) {
               expertName:      booking.expert.user.name,
               parentName:      booking.parent.name,
               parentEmail:     booking.parent.email,
+              // Home visits only — the expert travels to the parent, so they
+              // need to reach them to agree the address. Withheld otherwise.
+              parentPhone:     isHomeVisit(booking.format) ? booking.parent.phone : null,
               serviceTitle:    booking.service.title,
               format:          booking.format,
               scheduledAt:     booking.scheduled_at,
               durationMinutes: booking.duration_minutes,
-              location:        booking.format === 'IN_PERSON' ? (expertAddress || undefined) : undefined,
+              location:        usesExpertAddress(booking.format) ? (expertAddress || undefined) : undefined,
               amount:          booking.amount,
               currency:        booking.currency,
               bookingId:       booking.id,

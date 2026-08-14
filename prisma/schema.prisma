@@ -507,12 +507,14 @@ enum ParentStatus {
 enum SessionFormat {
   ONLINE
   IN_PERSON
+  HOME_VISIT
   BOTH
 }
 
 enum ServiceFormat {
   ONLINE
   IN_PERSON
+  HOME_VISIT
 }
 
 enum ServiceCluster {

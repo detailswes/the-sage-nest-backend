@@ -19,10 +19,14 @@ const COPY = {
       expert: (recipientName, otherPartyName, timeLabel) => `Hi ${recipientName}, you have an upcoming session with <strong>${otherPartyName}</strong> ${timeLabel}.`,
     },
     labels: { service: "Service", dateTime: "Date &amp; Time", duration: "Duration", format: "Format", bookingRef: "Booking Ref" },
-    formatLabel: { ONLINE: "Online Session", IN_PERSON: "In-Person Session" },
+    formatLabel: { ONLINE: "Online Session", IN_PERSON: "In-Person Session", HOME_VISIT: "Home Visit" },
     onlineNote: {
       parent: "<strong>Online session:</strong> your expert will send you the video call details no later than 24 hours before your session — or as soon as possible, if the session starts sooner.",
       expert: (otherPartyName) => `<strong>Online session:</strong> please send <strong>${otherPartyName}</strong> the video call details no later than 24 hours before the session — or as soon as possible, if the session starts sooner.`,
+    },
+    homeVisitNote: {
+      parent: "<strong>Home visit:</strong> your expert will travel to the address you agreed together. If anything has changed, please let them know as soon as possible.",
+      expert: (otherPartyName) => `<strong>Home visit:</strong> you are travelling to <strong>${otherPartyName}</strong>'s address for this session. Please confirm the address and timing with them if you have not already.`,
     },
     ctaLabel: { parent: "View My Bookings", expert: "View My Calendar" },
     footerAddress: "Sage Nest ApS &middot; CVR 46566181 &middot; Copenhagen, Denmark",
@@ -49,10 +53,14 @@ const COPY = {
       expert: (recipientName, otherPartyName, timeLabel) => `Ciao ${recipientName}, hai una sessione in programma con <strong>${otherPartyName}</strong> ${timeLabel}.`,
     },
     labels: { service: "Servizio", dateTime: "Data e Orario", duration: "Durata", format: "Modalità", bookingRef: "Riferimento Prenotazione" },
-    formatLabel: { ONLINE: "Sessione Online", IN_PERSON: "Sessione in Presenza" },
+    formatLabel: { ONLINE: "Sessione Online", IN_PERSON: "Sessione in Presenza", HOME_VISIT: "Visita a domicilio" },
     onlineNote: {
       parent: "<strong>Sessione online:</strong> il tuo Professionista ti invierà i dettagli per la videochiamata entro e non oltre 24 ore prima della sessione — oppure il prima possibile, se la sessione inizia prima.",
       expert: (otherPartyName) => `<strong>Sessione online:</strong> invia a <strong>${otherPartyName}</strong> i dettagli per la videochiamata entro e non oltre 24 ore prima della sessione — oppure il prima possibile, se la sessione inizia prima.`,
+    },
+    homeVisitNote: {
+      parent: "<strong>Visita a domicilio:</strong> il tuo Professionista raggiungerà l'indirizzo che avete concordato. Se qualcosa è cambiato, faglielo sapere il prima possibile.",
+      expert: (otherPartyName) => `<strong>Visita a domicilio:</strong> raggiungerai l'indirizzo di <strong>${otherPartyName}</strong> per questa sessione. Conferma l'indirizzo e l'orario se non l'hai già fatto.`,
     },
     ctaLabel: { parent: "Visualizza le Mie Prenotazioni", expert: "Vai al Mio Calendario" },
     footerAddress: "Sage Nest ApS &middot; CVR 46566181 &middot; Copenaghen, Danimarca",
@@ -181,14 +189,18 @@ const bookingReminderEmailHtml = ({
             </table>
           </div>
 
-          ${format === "ONLINE" && role === "parent" ? `
+          ${(format === "ONLINE" || format === "HOME_VISIT") && role === "parent" ? `
           <div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:16px;margin-bottom:24px;">
-            <p style="margin:0;font-size:13px;color:#1E40AF;line-height:1.5;">${t.onlineNote.parent}</p>
+            <p style="margin:0;font-size:13px;color:#1E40AF;line-height:1.5;">${
+              format === "HOME_VISIT" ? t.homeVisitNote.parent : t.onlineNote.parent
+            }</p>
           </div>` : ""}
 
-          ${format === "ONLINE" && role === "expert" ? `
+          ${(format === "ONLINE" || format === "HOME_VISIT") && role === "expert" ? `
           <div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:16px;margin-bottom:24px;">
-            <p style="margin:0;font-size:13px;color:#1E40AF;line-height:1.5;">${t.onlineNote.expert(otherPartyName)}</p>
+            <p style="margin:0;font-size:13px;color:#1E40AF;line-height:1.5;">${
+              format === "HOME_VISIT" ? t.homeVisitNote.expert(otherPartyName) : t.onlineNote.expert(otherPartyName)
+            }</p>
           </div>` : ""}
 
           <div style="text-align:center;">

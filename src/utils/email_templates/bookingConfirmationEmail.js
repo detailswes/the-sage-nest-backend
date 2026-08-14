@@ -11,8 +11,9 @@ const COPY = {
     greetingSub: "Your booking is confirmed. Here are your session details:",
     bookingDetails: "Booking Details",
     labels: { expert: "Expert", service: "Service", date: "Date", time: "Time", duration: "Duration", format: "Format", location: "Location", price: "Price Paid", bookingRef: "Booking Ref" },
-    formatLabel: { ONLINE: "Online", IN_PERSON: "In-Person" },
+    formatLabel: { ONLINE: "Online", IN_PERSON: "In-Person", HOME_VISIT: "Home Visit" },
     onlineNotice: "For online sessions: your expert will send you the video call details no later than 24 hours before your session — or promptly after booking, if your session starts sooner.",
+    homeVisitNotice: "For home visits: your expert will contact you to agree the address and any details before your session. Your email address, and the phone number on your account, are shared with them for this booking so they can reach you.",
     paymentHeading: "Payment",
     payment: (amountStr, expertName) =>
       `Your payment of <strong>${amountStr}</strong> has been processed securely via Stripe. Your session is provided by <strong>${expertName}</strong>, who is responsible for the service and appears as the merchant for this transaction; Sage Nest operates the platform through which the booking and payment are made.`,
@@ -42,8 +43,9 @@ const COPY = {
     greetingSub: "la tua prenotazione è confermata. Ecco i dettagli della tua sessione:",
     bookingDetails: "Dettagli della Prenotazione",
     labels: { expert: "Professionista", service: "Servizio", date: "Data", time: "Orario", duration: "Durata", format: "Modalità", location: "Luogo", price: "Prezzo Pagato", bookingRef: "Riferimento Prenotazione" },
-    formatLabel: { ONLINE: "Online", IN_PERSON: "In presenza" },
+    formatLabel: { ONLINE: "Online", IN_PERSON: "In presenza", HOME_VISIT: "Visita a domicilio" },
     onlineNotice: "Per le sessioni online: il tuo Professionista ti invierà i dettagli per la videochiamata entro e non oltre 24 ore prima della sessione — oppure subito dopo la prenotazione, se la tua sessione inizia prima.",
+    homeVisitNotice: "Per le visite a domicilio: il tuo Professionista ti contatterà per concordare l'indirizzo e gli altri dettagli prima della sessione. Il tuo indirizzo email e il numero di telefono del tuo account vengono condivisi con lui per questa prenotazione, così potrà contattarti.",
     paymentHeading: "Pagamento",
     payment: (amountStr, expertName) =>
       `Il tuo pagamento di <strong>${amountStr}</strong> è stato elaborato in modo sicuro tramite Stripe. La tua sessione è fornita da <strong>${expertName}</strong>, che è responsabile del servizio e figura come esercente della transazione; Sage Nest gestisce la piattaforma attraverso la quale vengono effettuati la prenotazione e il pagamento.`,
@@ -227,9 +229,11 @@ const bookingConfirmationEmailHtml = ({
             </table>
           </div>
 
-          ${format === "ONLINE" ? `
+          ${format === "ONLINE" || format === "HOME_VISIT" ? `
           <div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:16px;margin-bottom:24px;">
-            <p style="margin:0;font-size:13px;color:#1E40AF;line-height:1.5;">${t.onlineNotice}</p>
+            <p style="margin:0;font-size:13px;color:#1E40AF;line-height:1.5;">${
+              format === "HOME_VISIT" ? t.homeVisitNotice : t.onlineNotice
+            }</p>
           </div>` : ""}
 
           <!-- Payment -->
