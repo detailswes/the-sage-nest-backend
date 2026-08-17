@@ -8,6 +8,7 @@ const prisma = require("../prisma/client");
 const webflowService = require("../services/webflow.service");
 const { createRefundWithFallback } = require("../utils/stripeRefund");
 const { getLegalDocLinks } = require("../utils/legalDocLinks");
+const { cascadesToServices } = require("../constants/format");
 const {
   sendPasswordResetEmail,
   sendVerificationEmail,
@@ -1048,7 +1049,7 @@ async function approveProfileDraft(req, res) {
 
     // Cascade session_format to all services when it is locked to a single mode.
     // BOTH means the expert controls each service individually — leave untouched.
-    if (session_format === 'ONLINE' || session_format === 'IN_PERSON') {
+    if (cascadesToServices(session_format)) {
       await prisma.service.updateMany({
         where: { expert_id: parseInt(id) },
         data:  { format: session_format },

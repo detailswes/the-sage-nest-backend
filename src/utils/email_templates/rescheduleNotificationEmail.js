@@ -18,9 +18,11 @@ const COPY = {
     durationLabel: "Duration",
     formatLabel: "Format",
     bookingRefLabel: "Booking Ref",
-    formatValue: { ONLINE: "Online Session", IN_PERSON: "In-Person Session" },
+    formatValue: { ONLINE: "Online Session", IN_PERSON: "In-Person Session", HOME_VISIT: "Home Visit" },
     onlineReminder: (parentFirstName) =>
       `<strong>Online session:</strong> Please send ${parentFirstName} the updated video call details no later than 24 hours before the new session time — or as soon as possible, if it starts sooner.`,
+    homeVisitReminder: (parentFirstName) =>
+      `<strong>Home visit:</strong> Please reconfirm the address and arrangements with ${parentFirstName} for the new session time. Their contact details are included in this booking.`,
     paymentNoteLabel: "Payment:",
     paymentNote: "The original payment is carried over to the new session. No new charge has been made and no refund has been issued.",
     button: "View My Calendar",
@@ -44,9 +46,11 @@ const COPY = {
     durationLabel: "Durata",
     formatLabel: "Modalità",
     bookingRefLabel: "Riferimento Prenotazione",
-    formatValue: { ONLINE: "Sessione Online", IN_PERSON: "Sessione in Presenza" },
+    formatValue: { ONLINE: "Sessione Online", IN_PERSON: "Sessione in Presenza", HOME_VISIT: "Visita a domicilio" },
     onlineReminder: (parentFirstName) =>
       `<strong>Sessione online:</strong> invia a ${parentFirstName} i dettagli aggiornati per la videochiamata entro e non oltre 24 ore prima del nuovo orario della sessione — oppure il prima possibile, se la sessione inizia prima.`,
+    homeVisitReminder: (parentFirstName) =>
+      `<strong>Visita a domicilio:</strong> riconferma l'indirizzo e gli accordi con ${parentFirstName} per il nuovo orario della sessione. I suoi contatti sono inclusi in questa prenotazione.`,
     paymentNoteLabel: "Pagamento:",
     paymentNote: "Il pagamento originale viene mantenuto per la nuova sessione. Non è stato effettuato alcun nuovo addebito e non è stato emesso alcun rimborso.",
     button: "Vai al Mio Calendario",
@@ -201,10 +205,12 @@ const rescheduleNotificationEmailHtml = ({
             </table>
           </div>
 
-          <!-- Online session reminder -->
-          ${format === "ONLINE" ? `
+          <!-- Format-specific coordination reminder (online link / home-visit address) -->
+          ${format === "ONLINE" || format === "HOME_VISIT" ? `
           <div style="background:#EFF6FF;border:1px solid #BFDBFE;border-radius:8px;padding:16px;margin-bottom:24px;">
-            <p style="margin:0;font-size:13px;color:#1E40AF;line-height:1.5;">${t.onlineReminder(parentFirstName)}</p>
+            <p style="margin:0;font-size:13px;color:#1E40AF;line-height:1.5;">${
+              format === "HOME_VISIT" ? t.homeVisitReminder(parentFirstName) : t.onlineReminder(parentFirstName)
+            }</p>
           </div>` : ""}
 
           <!-- Payment note -->

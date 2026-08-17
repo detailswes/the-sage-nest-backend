@@ -3,65 +3,82 @@ const { formatBookingRef } = require("../bookingRef");
 
 const COPY = {
   en: {
-    subject: ({ serviceTitle, dateStr }) => `Booking cancelled — ${serviceTitle} on ${dateStr}`,
-    title: "Booking Cancelled – Sage Nest",
-    greeting: (expertFirstName, parentFirstName) =>
-      `Hi ${expertFirstName},<br><br>We are writing to let you know that <strong>${parentFirstName}</strong> has cancelled the following booking:`,
-    cancelledBooking: "Cancelled Booking",
-    labels: { parentName: "Parent name", service: "Service", date: "Date", time: "Time", format: "Format", bookingRef: "Booking Ref", reason: "Reason" },
+    subject: ({ serviceTitle, dateStr }) =>
+      `Cancellation confirmed — ${serviceTitle} on ${dateStr}`,
+    title: "Cancellation Confirmed – Sage Nest",
+    greeting: (parentFirstName) =>
+      `Hi ${parentFirstName},<br><br>This confirms that you have cancelled the following session.`,
+    cancelledSession: "Cancelled Session",
+    labels: { expert: "Expert", service: "Service", date: "Date", time: "Time", format: "Format", bookingRef: "Booking Ref", reason: "Reason" },
     formatLabel: { ONLINE: "Online", IN_PERSON: "In-Person", HOME_VISIT: "Home Visit" },
     refundOutcomeHeading: "Refund outcome",
-    refundOutcome100: (parentFirstName, amountStr) =>
-      `As the cancellation was made more than 24 hours before the session, ${parentFirstName} has received a full refund of ${amountStr}.`,
-    refundOutcome50: (parentFirstName, halfAmountStr) =>
-      `As the cancellation was made between 12 and 24 hours before the session, ${parentFirstName} has received a 50% refund of ${halfAmountStr}. The remaining 50% (${halfAmountStr}) will be transferred to you in line with the standard payout schedule.`,
-    refundOutcome0: (totalAmountStr) =>
-      `As the cancellation was made less than 12 hours before the session, no refund has been issued. The full amount (${totalAmountStr}) will be transferred to you in line with the standard payout schedule.`,
-    body1: "We are sorry for the disruption to your schedule. You can view all your bookings and any updates in your Sage Nest expert dashboard.",
-    body2: (email) => `If you have any questions, please do not hesitate to contact us at <a href="mailto:${email}" style="color:#445446;">${email}</a>.`,
+    refundOutcome100: (amountStr) =>
+      `As the cancellation was made more than 24 hours before the session, you have received a full refund of ${amountStr}.`,
+    refundOutcome50: (halfAmountStr) =>
+      `As the cancellation was made between 12 and 24 hours before the session, you have received a 50% refund of ${halfAmountStr}.`,
+    refundOutcome0: () =>
+      `As the cancellation was made less than 12 hours before the session, no refund has been issued.`,
+    refundNote: "Please allow 5–10 business days for the refund to appear, depending on your bank.",
+    findHeading: "Find Another Expert",
+    findBody: "If you'd like to book with another expert, you can browse available specialists and find a time that works for you.",
+    findButton: "Find another expert",
+    closing: (dashboardUrl) =>
+      `You can view the details of this cancellation in <a href="${dashboardUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">your dashboard</a> at any time.`,
+    closing2: (email) => `If this cancellation was made in error, or you have any questions, write to us at <a href="mailto:${email}" style="color:#445446;">${email}</a>.`,
     signoff: "The Sage Nest Team",
     footerAddress: "Sage Nest ApS &middot; CVR 46566181 &middot; Copenhagen, Denmark",
     footerContact: (email) => `Questions? Contact us at <a href="mailto:${email}" style="color:#445446;">${email}</a>`,
-    transactional: (email) => `This is a transactional message about a booking, sent from ${email}.`,
+    transactional: (email) => `This is a transactional message about your booking, sent from ${email}.`,
   },
   it: {
-    subject: ({ serviceTitle, dateStr }) => `Prenotazione cancellata — ${serviceTitle} il ${dateStr}`,
-    title: "Prenotazione Cancellata – Sage Nest",
-    greeting: (expertFirstName, parentFirstName) =>
-      `Ciao ${expertFirstName},<br><br>ti informiamo che <strong>${parentFirstName}</strong> ha cancellato la seguente prenotazione:`,
-    cancelledBooking: "Prenotazione Cancellata",
-    labels: { parentName: "Nome del genitore", service: "Servizio", date: "Data", time: "Orario", format: "Modalità", bookingRef: "Riferimento Prenotazione", reason: "Motivo" },
+    subject: ({ serviceTitle, dateStr }) =>
+      `Cancellazione confermata — ${serviceTitle} il ${dateStr}`,
+    title: "Cancellazione Confermata – Sage Nest",
+    greeting: (parentFirstName) =>
+      `Ciao ${parentFirstName},<br><br>ti confermiamo la cancellazione della seguente sessione.`,
+    cancelledSession: "Sessione Cancellata",
+    labels: { expert: "Professionista", service: "Servizio", date: "Data", time: "Orario", format: "Modalità", bookingRef: "Riferimento Prenotazione", reason: "Motivo" },
     formatLabel: { ONLINE: "Online", IN_PERSON: "In presenza", HOME_VISIT: "Visita a domicilio" },
     refundOutcomeHeading: "Esito del rimborso",
-    refundOutcome100: (parentFirstName, amountStr) =>
-      `Poiché la cancellazione è avvenuta più di 24 ore prima della sessione, ${parentFirstName} ha ricevuto un rimborso completo di ${amountStr}.`,
-    refundOutcome50: (parentFirstName, halfAmountStr) =>
-      `Poiché la cancellazione è avvenuta tra 12 e 24 ore prima della sessione, ${parentFirstName} ha ricevuto un rimborso del 50% di ${halfAmountStr}. Il restante 50% (${halfAmountStr}) ti verrà trasferito secondo il consueto calendario dei pagamenti.`,
-    refundOutcome0: (totalAmountStr) =>
-      `Poiché la cancellazione è avvenuta meno di 12 ore prima della sessione, non è stato emesso alcun rimborso. L'importo completo (${totalAmountStr}) ti verrà trasferito secondo il consueto calendario dei pagamenti.`,
-    body1: "Ci scusiamo per il disagio arrecato ai tuoi impegni. Puoi consultare tutte le tue prenotazioni e i relativi aggiornamenti nella tua dashboard esperti Sage Nest.",
-    body2: (email) => `Per qualsiasi domanda, non esitare a contattarci a <a href="mailto:${email}" style="color:#445446;">${email}</a>.`,
+    refundOutcome100: (amountStr) =>
+      `Poiché la cancellazione è avvenuta più di 24 ore prima della sessione, hai ricevuto un rimborso integrale di ${amountStr}.`,
+    refundOutcome50: (halfAmountStr) =>
+      `Poiché la cancellazione è avvenuta tra 12 e 24 ore prima della sessione, hai ricevuto un rimborso del 50% di ${halfAmountStr}.`,
+    refundOutcome0: () =>
+      `Poiché la cancellazione è avvenuta meno di 12 ore prima della sessione, non è stato emesso alcun rimborso.`,
+    refundNote: "L'accredito potrà richiedere dai 5 ai 10 giorni lavorativi, a seconda della tua banca.",
+    findHeading: "Trova un Altro Professionista",
+    findBody: "Se desideri prenotare con un altro professionista, puoi consultare gli specialisti disponibili e scegliere l'orario più adatto a te.",
+    findButton: "Trova un altro professionista",
+    closing: (dashboardUrl) =>
+      `Puoi consultare i dettagli di questa cancellazione nella <a href="${dashboardUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">tua dashboard</a> in qualsiasi momento.`,
+    closing2: (email) => `Se questa cancellazione è avvenuta per errore, o per qualsiasi domanda, scrivici a <a href="mailto:${email}" style="color:#445446;">${email}</a>.`,
     signoff: "Il team di Sage Nest",
     footerAddress: "Sage Nest ApS &middot; CVR 46566181 &middot; Copenaghen, Danimarca",
     footerContact: (email) => `Domande? Contattaci a <a href="mailto:${email}" style="color:#445446;">${email}</a>`,
-    transactional: (email) => `Questa è una comunicazione di servizio relativa a una prenotazione, inviata da ${email}.`,
+    transactional: (email) => `Questa è una comunicazione di servizio relativa alla tua prenotazione, inviata da ${email}.`,
   },
 };
 
 /**
- * Cancellation notification email sent to the expert when a parent cancels.
+ * Confirmation email sent to a parent after they cancel their own booking —
+ * their durable record of what was cancelled and the refund outcome. Mirrors
+ * expertCancellationConfirmationEmail (the expert-side equivalent) and shares
+ * refund-tier copy with cancellationNotificationEmail (the expert-facing
+ * notice sent from the same cancelBooking flow).
  *
  * @param {{
- *   expertName: string, parentName: string, serviceTitle: string,
- *   format: 'ONLINE' | 'IN_PERSON', scheduledAt: Date, cancellationReason?: string,
- *   refundPercent: 0 | 50 | 100, amount: number | string, currency?: string, bookingId: number,
+ *   parentName: string, expertName: string, serviceTitle: string,
+ *   format: 'ONLINE' | 'IN_PERSON' | 'HOME_VISIT', scheduledAt: Date,
+ *   cancellationReason?: string, refundPercent: 0 | 50 | 100,
+ *   amount: number | string, currency?: string, bookingId: number,
  *   timezone?: string | null, language?: 'en' | 'it', clientUrl: string,
  *   contactEmail: string, supportEmail: string,
  * }} params
  */
-const cancellationNotificationEmailHtml = ({
-  expertName,
+const parentCancellationConfirmationEmailHtml = ({
   parentName,
+  expertName,
   serviceTitle,
   format,
   scheduledAt,
@@ -79,9 +96,10 @@ const cancellationNotificationEmailHtml = ({
   const lang = language === "it" ? "it" : "en";
   const t = COPY[lang];
   const locale = lang === "it" ? "it-IT" : "en-GB";
-  const expertFirstName = expertName.split(" ")[0];
-  const parentFirstName = parentName.split(" ")[0];
+  const parentFirstName = parentName?.split(" ")[0] || "there";
   const logoUrl = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
+  const dashboardUrl = `${clientUrl}/dashboard/parent/upcoming`;
+  const findExpertUrl = `${clientUrl}/book`;
 
   const { dateStr, timeStr, tzLabel } = formatDateTime(scheduledAt, timezone, lang);
 
@@ -91,10 +109,10 @@ const cancellationNotificationEmailHtml = ({
 
   const refundOutcome =
     refundPercent === 100
-      ? t.refundOutcome100(parentFirstName, fmt(totalAmount))
+      ? t.refundOutcome100(fmt(totalAmount))
       : refundPercent === 50
-      ? t.refundOutcome50(parentFirstName, fmt(halfAmount))
-      : t.refundOutcome0(fmt(totalAmount));
+      ? t.refundOutcome50(fmt(halfAmount))
+      : t.refundOutcome0();
 
   return `
 <!DOCTYPE html>
@@ -118,17 +136,17 @@ const cancellationNotificationEmailHtml = ({
         <tr><td style="background:#ffffff;border-radius:16px;border:1px solid #c5ceba;padding:40px 36px;">
 
           <p style="margin:0 0 28px;font-size:15px;color:#445446;line-height:1.6;">
-            ${t.greeting(expertFirstName, parentFirstName)}
+            ${t.greeting(parentFirstName)}
           </p>
 
-          <!-- Cancelled booking section -->
-          <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.cancelledBooking}</p>
+          <!-- Cancelled session -->
+          <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.cancelledSession}</p>
           <div style="background:#F5F7F5;border-radius:12px;padding:20px 24px;margin-bottom:${cancellationReason ? "16px" : "24px"};">
             <table width="100%" cellpadding="0" cellspacing="0">
               <tr>
                 <td style="padding-bottom:12px;">
-                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.parentName}</span><br>
-                  <span style="font-size:15px;font-weight:600;color:#445446;">${parentName}</span>
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.expert}</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${expertName}</span>
                 </td>
               </tr>
               <tr>
@@ -173,12 +191,27 @@ const cancellationNotificationEmailHtml = ({
           <!-- Refund outcome -->
           <div style="background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px;padding:16px;margin-bottom:28px;">
             <p style="margin:0 0 6px;font-size:11px;font-weight:700;text-transform:uppercase;color:#065F46;letter-spacing:0.6px;">${t.refundOutcomeHeading}</p>
-            <p style="margin:0;font-size:13px;color:#065F46;line-height:1.6;">${refundOutcome}</p>
+            <p style="margin:0;font-size:13px;color:#065F46;line-height:1.6;">${refundOutcome} ${refundPercent > 0 ? t.refundNote : ""}</p>
           </div>
 
-          <!-- Body -->
-          <p style="margin:0 0 12px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.body1}</p>
-          <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.body2(supportEmail)}</p>
+          <!-- Find another expert -->
+          <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.findHeading}</p>
+          <p style="margin:0 0 20px;font-size:14px;color:#5e6d5b;line-height:1.6;">
+            ${t.findBody}
+          </p>
+
+          <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">
+            <tr><td align="center">
+              <a href="${findExpertUrl}" style="display:inline-block;background:#445446;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:14px 28px;border-radius:10px;">${t.findButton}</a>
+            </td></tr>
+          </table>
+
+          <p style="margin:0 0 12px;font-size:14px;color:#5e6d5b;line-height:1.6;">
+            ${t.closing(dashboardUrl)}
+          </p>
+          <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">
+            ${t.closing2(supportEmail)}
+          </p>
 
           <!-- Sign-off -->
           <p style="margin:0 0 4px;font-size:14px;font-weight:600;color:#445446;">${t.signoff}</p>
@@ -199,10 +232,10 @@ const cancellationNotificationEmailHtml = ({
 </html>`;
 };
 
-const cancellationNotificationEmailSubject = ({ language, serviceTitle, scheduledAt, timezone }) => {
+const parentCancellationConfirmationEmailSubject = ({ language, serviceTitle, scheduledAt, timezone }) => {
   const lang = language === "it" ? "it" : "en";
   const { dateStr } = formatDateTime(scheduledAt, timezone, lang);
   return COPY[lang].subject({ serviceTitle, dateStr });
 };
 
-module.exports = { cancellationNotificationEmailHtml, cancellationNotificationEmailSubject };
+module.exports = { parentCancellationConfirmationEmailHtml, parentCancellationConfirmationEmailSubject };
