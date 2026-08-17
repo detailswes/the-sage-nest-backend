@@ -10,6 +10,7 @@ const { upsertMarketingConsent, syncMarketingConsentToBrevo } = require("../util
 const { createRefundWithFallback } = require("../utils/stripeRefund");
 const {
   sendBookingCancellationNotification,
+  sendParentCancellationConfirmationEmail,
   sendBookingConfirmationEmail,
   sendNewBookingNotificationEmail,
   sendRescheduleNotificationEmail,
@@ -677,7 +678,7 @@ async function cancelBooking(req, res) {
     const booking = await prisma.booking.findUnique({
       where: { id: parseInt(id) },
       include: {
-        parent: { select: { name: true, email: true } },
+        parent: { select: { name: true, email: true, language: true, timezone: true } },
         expert: { include: { user: { select: { name: true, email: true, language: true } } } },
         service: { select: { title: true } },
       },
@@ -861,6 +862,25 @@ async function cancelBooking(req, res) {
       language: booking.expert.user.language,
     }).catch((e) =>
       console.error("[Email] Cancellation notification failed:", e.message),
+    );
+
+    // ── Confirm cancellation to the parent ──────────────────────────────────
+    sendParentCancellationConfirmationEmail({
+      to: booking.parent.email,
+      parentName: booking.parent.name,
+      expertName: booking.expert.user.name,
+      serviceTitle: booking.service.title,
+      format: booking.format,
+      scheduledAt: booking.scheduled_at,
+      cancellationReason: reason || null,
+      refundPercent,
+      amount: booking.amount,
+      currency: booking.currency || "EUR",
+      bookingId: booking.id,
+      timezone: booking.parent.timezone || booking.expert.timezone,
+      language: booking.parent.language,
+    }).catch((e) =>
+      console.error("[Email] Cancellation confirmation failed:", e.message),
     );
 
     return res.json({

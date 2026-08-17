@@ -15,6 +15,10 @@ const {
   cancellationNotificationEmailSubject,
 } = require("./email_templates/cancellationNotificationEmail");
 const {
+  parentCancellationConfirmationEmailHtml,
+  parentCancellationConfirmationEmailSubject,
+} = require("./email_templates/parentCancellationConfirmationEmail");
+const {
   newBookingNotificationEmailHtml,
   newBookingNotificationEmailSubject,
 } = require("./email_templates/newBookingNotificationEmail");
@@ -443,6 +447,63 @@ const sendBookingCancellationNotification = ({
     html: cancellationNotificationEmailHtml({
       expertName,
       parentName,
+      serviceTitle,
+      format,
+      scheduledAt,
+      cancellationReason,
+      refundPercent,
+      amount,
+      currency,
+      bookingId,
+      timezone,
+      language: lang,
+      clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
+    }),
+  });
+};
+
+/**
+ * Cancellation confirmation email — sent to the parent when they cancel their
+ * own booking. Their durable record of what was cancelled and the refund
+ * outcome. Fired from the same cancelBooking flow as
+ * sendBookingCancellationNotification (the expert-facing notice), so it takes
+ * the same refund tier inputs.
+ * @param {{
+ *   to: string, parentName: string, expertName: string,
+ *   serviceTitle: string, format: string,
+ *   scheduledAt: Date, cancellationReason?: string,
+ *   refundPercent: 0 | 50 | 100, amount: number | string
+ * }} param0
+ */
+const sendParentCancellationConfirmationEmail = ({
+  to,
+  parentName,
+  expertName,
+  serviceTitle,
+  format,
+  scheduledAt,
+  cancellationReason,
+  refundPercent,
+  amount,
+  currency = 'EUR',
+  bookingId,
+  timezone,
+  language,
+}) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${parentName}, ti confermiamo la cancellazione della prenotazione per ${serviceTitle} con ${expertName}.`
+      : `Hi ${parentName}, this confirms your cancellation of the booking for ${serviceTitle} with ${expertName}.`;
+  return sendEmail({
+    to,
+    subject: parentCancellationConfirmationEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone }),
+    text,
+    html: parentCancellationConfirmationEmailHtml({
+      parentName,
+      expertName,
       serviceTitle,
       format,
       scheduledAt,
@@ -1266,6 +1327,7 @@ module.exports = {
   sendNewBookingNotificationEmail,
   sendBookingReminderEmail,
   sendBookingCancellationNotification,
+  sendParentCancellationConfirmationEmail,
   sendAccountLockedEmail,
   sendEmailChangeVerification,
   sendChangesRequestedEmail,

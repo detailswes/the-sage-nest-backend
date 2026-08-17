@@ -214,6 +214,32 @@ async function fetchCollectionItems(collectionId) {
   return items;
 }
 
+// ─── Site locale cache ─────────────────────────────────────────────────────────
+// Localization config essentially never changes at runtime — fetched once per
+// process lifetime and cached. `undefined` = not yet fetched, `null` = fetch
+// failed or the site isn't localized with both EN and IT, in which case callers
+// fall back to plain single-locale sync (unchanged pre-localization behavior).
+let _localeCmsIds;
+
+async function getLocaleCmsIds() {
+  if (_localeCmsIds !== undefined) return _localeCmsIds;
+  if (!SITE_ID) { _localeCmsIds = null; return null; }
+
+  try {
+    const site = await webflowRequest('GET', `/sites/${SITE_ID}`);
+    const all  = [site.locales?.primary, ...(site.locales?.secondary || [])].filter(Boolean);
+    const find = (prefix) => all.find(l => (l.tag || '').toLowerCase().startsWith(prefix))?.cmsLocaleId || null;
+    const en = find('en');
+    const it = find('it');
+    _localeCmsIds = (en && it) ? { EN: en, IT: it } : null;
+    if (!_localeCmsIds) console.warn('[Webflow] Site is not localized with both EN and IT — falling back to single-locale sync');
+  } catch (err) {
+    console.error('[Webflow] Failed to fetch site locales:', err.message);
+    _localeCmsIds = null;
+  }
+  return _localeCmsIds;
+}
+
 function normalizeLabel(s) {
   return (s || '').toLowerCase().trim();
 }
@@ -432,8 +458,17 @@ async function buildServiceFields(service, expertId, expertWebflowItemId) {
   return fields;
 }
 
-async function publishItems(collectionId, itemIds) {
-  await webflowRequest('POST', `/collections/${collectionId}/items/publish`, { itemIds });
+// `cmsLocaleIds`, when given, scopes the publish to specific locale variants of each item —
+// this must use the nested `items: [{ id, cmsLocaleIds }]` shape; the flat `itemIds` shape
+// always targets the primary locale regardless of any other field alongside it (confirmed
+// live: passing cmsLocaleIds alongside flat itemIds is silently ignored and publishes
+// primary only, which looks identical to "publishing forces primary live" but isn't — this
+// is the fix for that).
+async function publishItems(collectionId, itemIds, cmsLocaleIds) {
+  const body = cmsLocaleIds
+    ? { items: itemIds.map(id => ({ id, cmsLocaleIds })) }
+    : { itemIds };
+  await webflowRequest('POST', `/collections/${collectionId}/items/publish`, body);
 }
 
 // Full site publish — required after archive/delete so collection pages are regenerated on the live site.
@@ -444,22 +479,47 @@ async function publishSite() {
   console.log('[Webflow] Site published');
 }
 
+// Creates a brand-new item across every given locale in a single call. Required for any
+// item that doesn't exist yet on a localized site: Webflow's API can add locale content to
+// an item ONLY at creation time — an item created without a locale can never gain that
+// locale later via the API (confirmed against Webflow's docs and live-tested against the
+// real site; retrofitting an existing item requires manually adding the locale in the
+// Designer's CMS panel first). Content here is a placeholder — the real per-locale
+// fieldData/isDraft is applied by the upsertWebflowItem PATCH loop that follows.
+// All variants share one item id; regardless of locale count, `items[0].id` is that id.
+async function createItemAcrossLocales(collectionId, slug, cmsLocaleIds) {
+  const created = await webflowRequest('POST', `/collections/${collectionId}/items/bulk`, {
+    cmsLocaleIds,
+    fieldData:  { name: slug, slug },
+    isArchived: false,
+    isDraft:    true,
+  });
+  return created.items?.[0]?.id || null;
+}
+
 // Create-or-update a single Webflow item, guarded against duplicate creation on retry
 // (see findItemBySlug). Always re-evaluates `existingItemId` fresh on every call, so a
 // retry after a partial failure (e.g. create succeeded, publish didn't) resolves the
 // already-created item by slug instead of POSTing again.
-async function upsertWebflowItem(collectionId, existingItemId, slug, fieldData) {
+//
+// `cmsLocaleId` targets a specific locale's content on a localized site (omit for plain
+// single-locale sync). `isDraft: true` writes that locale's content but never publishes
+// it — the item stays visible in the Webflow CMS for translation without going live.
+async function upsertWebflowItem(collectionId, existingItemId, slug, fieldData, { cmsLocaleId, isDraft = false } = {}) {
   let itemId = existingItemId;
 
   if (!itemId) {
     itemId = await findItemBySlug(collectionId, slug);
   }
 
+  const body = {
+    fieldData, isArchived: false, isDraft,
+    ...(cmsLocaleId ? { cmsLocaleId } : {}),
+  };
+
   if (itemId) {
     try {
-      await webflowRequest('PATCH', `/collections/${collectionId}/items/${itemId}`, {
-        fieldData, isArchived: false, isDraft: false,
-      });
+      await webflowRequest('PATCH', `/collections/${collectionId}/items/${itemId}`, body);
     } catch (err) {
       // Stored item ID no longer exists on Webflow's side (deleted out-of-band) — without
       // this, a stale ID would 404 forever on every retry/cron sweep since it never falls
@@ -467,21 +527,21 @@ async function upsertWebflowItem(collectionId, existingItemId, slug, fieldData) 
       if (err.status !== 404) throw err;
       itemId = await findItemBySlug(collectionId, slug);
       if (itemId) {
-        await webflowRequest('PATCH', `/collections/${collectionId}/items/${itemId}`, {
-          fieldData, isArchived: false, isDraft: false,
-        });
+        await webflowRequest('PATCH', `/collections/${collectionId}/items/${itemId}`, body);
       }
     }
   }
 
   if (!itemId) {
-    const created = await webflowRequest('POST', `/collections/${collectionId}/items`, {
-      fieldData, isArchived: false, isDraft: false,
-    });
+    const created = await webflowRequest('POST', `/collections/${collectionId}/items`, body);
     itemId = created.id;
   }
 
-  await publishItems(collectionId, [itemId]);
+  // A draft variant must never be published — publishing is what makes a locale's
+  // content go live, and a draft is exactly the "present but not published" state.
+  if (!isDraft) {
+    await publishItems(collectionId, [itemId], cmsLocaleId ? [cmsLocaleId] : undefined);
+  }
   return itemId;
 }
 
@@ -496,21 +556,68 @@ async function syncExpert(expertId) {
   const expert = await prisma.expert.findUnique({
     where:   { id: expertId },
     include: {
-      user:           { select: { name: true } },
+      user:           { select: { name: true, language: true } },
       services:       { orderBy: { sort_order: 'asc' } },
       certifications: { select: { name: true } },
     },
   });
   if (!expert) return;
 
-  const slug      = expert.webflow_slug || expertSlug(expert.user.name, expert.id);
-  const fieldData = await buildExpertFields(expert, slug);
+  const slug          = expert.webflow_slug || expertSlug(expert.user.name, expert.id);
+  const fieldData     = await buildExpertFields(expert, slug);
+  const activeLocale  = expert.user.language === 'it' ? 'IT' : 'EN';
+  const locales       = await getLocaleCmsIds().catch(() => null);
 
   try {
-    const itemId = await syncWithRetry(
-      () => upsertWebflowItem(EXPERTS_COLLECTION_ID, expert.webflow_item_id, slug, fieldData),
-      { entityType: 'expert', entityId: expertId, payload: fieldData },
-    );
+    let itemId = expert.webflow_item_id;
+
+    if (!locales) {
+      // Site isn't localized (or locale lookup failed) — plain single-locale sync,
+      // unchanged from pre-localization behavior.
+      itemId = await syncWithRetry(
+        () => upsertWebflowItem(EXPERTS_COLLECTION_ID, itemId, slug, fieldData),
+        { entityType: 'expert', entityId: expertId, payload: fieldData },
+      );
+    } else {
+      // Brand-new item: must be created across both locales in one call, or it can never
+      // gain the second locale later (see createItemAcrossLocales). Only applies the first
+      // time — once itemId exists, every future sync just PATCHes each locale below.
+      if (!itemId) {
+        itemId = await findItemBySlug(EXPERTS_COLLECTION_ID, slug);
+      }
+      if (!itemId) {
+        itemId = await syncWithRetry(
+          () => createItemAcrossLocales(EXPERTS_COLLECTION_ID, slug, Object.values(locales)),
+          {
+            entityType:     'expert',
+            entityId:       expertId,
+            payload:        { action: 'create-localized', slug },
+            idempotencyKey: `expert:${expertId}:create`,
+          },
+        );
+      }
+
+      // Publish live in the expert's own language; push the same content into the
+      // other locale as a draft so it exists in the CMS for translation but never
+      // shows on the public site (client requirement: profiles must publish only
+      // in the expert's own language).
+      for (const localeKey of ['EN', 'IT']) {
+        const cmsLocaleId = locales[localeKey];
+        if (!cmsLocaleId) continue;
+        itemId = await syncWithRetry(
+          () => upsertWebflowItem(EXPERTS_COLLECTION_ID, itemId, slug, fieldData, {
+            cmsLocaleId,
+            isDraft: localeKey !== activeLocale,
+          }),
+          {
+            entityType:     'expert',
+            entityId:       expertId,
+            payload:        fieldData,
+            idempotencyKey: `expert:${expertId}:${localeKey}`,
+          },
+        );
+      }
+    }
 
     await prisma.expert.update({
       where: { id: expertId },
@@ -543,22 +650,27 @@ async function syncExpertServices(expertId) {
 
   const expert = await prisma.expert.findUnique({
     where:   { id: expertId },
-    include: { services: { where: { is_active: true }, orderBy: { sort_order: 'asc' } } },
+    include: {
+      services: { where: { is_active: true }, orderBy: { sort_order: 'asc' } },
+      user:     { select: { language: true } },
+    },
   });
   if (!expert?.webflow_item_id) return;
 
   for (const svc of expert.services) {
-    await syncService(svc.id, expert.id, expert.webflow_item_id).catch(() => {});
+    await syncService(svc.id, expert.id, expert.webflow_item_id, expert.user.language).catch(() => {});
   }
 }
 
-// Sync a single service (can be called with overrides to avoid extra DB lookups)
-async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverride) {
+// Sync a single service (can be called with overrides to avoid extra DB lookups).
+// `expertLanguageOverride` mirrors the expert's registered language so the service
+// publishes live in that locale too — falls back to a fresh lookup when omitted.
+async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverride, expertLanguageOverride) {
   if (!SERVICES_COLLECTION_ID) return;
 
   const service = await prisma.service.findUnique({
     where:   { id: serviceId },
-    include: { expert: { select: { id: true, webflow_item_id: true } } },
+    include: { expert: { select: { id: true, webflow_item_id: true, user: { select: { language: true } } } } },
   });
   if (!service) return;
 
@@ -566,13 +678,53 @@ async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverr
   const expertWebflowItemId = expertWebflowItemIdOverride ?? service.expert?.webflow_item_id;
   if (!expertWebflowItemId) return; // expert not yet synced — retry job will catch it
 
-  const fieldData = await buildServiceFields(service, expertId, expertWebflowItemId);
+  const activeLocale = (expertLanguageOverride ?? service.expert?.user?.language) === 'it' ? 'IT' : 'EN';
+  const fieldData     = await buildServiceFields(service, expertId, expertWebflowItemId);
+  const locales       = await getLocaleCmsIds().catch(() => null);
 
   try {
-    const itemId = await syncWithRetry(
-      () => upsertWebflowItem(SERVICES_COLLECTION_ID, service.webflow_item_id, fieldData.slug, fieldData),
-      { entityType: 'service', entityId: serviceId, payload: fieldData },
-    );
+    let itemId = service.webflow_item_id;
+
+    if (!locales) {
+      itemId = await syncWithRetry(
+        () => upsertWebflowItem(SERVICES_COLLECTION_ID, itemId, fieldData.slug, fieldData),
+        { entityType: 'service', entityId: serviceId, payload: fieldData },
+      );
+    } else {
+      // Brand-new item: must be created across both locales in one call, or it can never
+      // gain the second locale later (see createItemAcrossLocales).
+      if (!itemId) {
+        itemId = await findItemBySlug(SERVICES_COLLECTION_ID, fieldData.slug);
+      }
+      if (!itemId) {
+        itemId = await syncWithRetry(
+          () => createItemAcrossLocales(SERVICES_COLLECTION_ID, fieldData.slug, Object.values(locales)),
+          {
+            entityType:     'service',
+            entityId:       serviceId,
+            payload:        { action: 'create-localized', slug: fieldData.slug },
+            idempotencyKey: `service:${serviceId}:create`,
+          },
+        );
+      }
+
+      for (const localeKey of ['EN', 'IT']) {
+        const cmsLocaleId = locales[localeKey];
+        if (!cmsLocaleId) continue;
+        itemId = await syncWithRetry(
+          () => upsertWebflowItem(SERVICES_COLLECTION_ID, itemId, fieldData.slug, fieldData, {
+            cmsLocaleId,
+            isDraft: localeKey !== activeLocale,
+          }),
+          {
+            entityType:     'service',
+            entityId:       serviceId,
+            payload:        fieldData,
+            idempotencyKey: `service:${serviceId}:${localeKey}`,
+          },
+        );
+      }
+    }
 
     await prisma.service.update({
       where: { id: serviceId },
@@ -599,6 +751,50 @@ async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverr
   }
 }
 
+// A 404 on the archive-PATCH or DELETE step means a prior (partially-failed) attempt
+// already deleted the item on Webflow's side — treat as done rather than retrying forever.
+// Also covers a locale variant that never existed (e.g. a pre-existing item whose secondary
+// locale was never manually added in the Designer) — there's nothing live there to hide.
+async function ignoreIfAlreadyGone(fn) {
+  try {
+    await fn();
+  } catch (err) {
+    if (err.status !== 404) throw err;
+  }
+}
+
+// Archives (hides) an item across every configured locale. Locale variants are fully
+// independent — archiving only the primary locale leaves any other locale's published
+// content live and publicly visible (confirmed live: hiding one locale does not hide
+// another). Omit `locales` for plain single-locale sync.
+async function archiveItemAcrossLocales(collectionId, itemId, locales) {
+  const localeIds = locales ? Object.values(locales) : [undefined];
+  for (const cmsLocaleId of localeIds) {
+    // Both steps tolerate 404 the same way: if the item/locale is already gone (e.g. a
+    // retry after a prior attempt's delete step already succeeded), there's nothing left
+    // to archive or publish — without this, a retry storms forever on an already-deleted item.
+    await ignoreIfAlreadyGone(() => webflowRequest('PATCH', `/collections/${collectionId}/items/${itemId}`, {
+      isArchived: true, isDraft: false,
+      ...(cmsLocaleId ? { cmsLocaleId } : {}),
+    }));
+    await ignoreIfAlreadyGone(() => publishItems(collectionId, [itemId], cmsLocaleId ? [cmsLocaleId] : undefined));
+  }
+}
+
+// Deletes an item across every configured locale. A plain unscoped DELETE only removes the
+// primary locale's variant (confirmed live) — any secondary locale's content survives, fully
+// intact and still live, unless deleted with its own `cmsLocaleId` query param. GDPR erasure
+// depends on this being complete across every locale, not just the primary one.
+async function deleteItemAcrossLocales(collectionId, itemId, locales) {
+  const localeIds = locales ? Object.values(locales) : [undefined];
+  for (const cmsLocaleId of localeIds) {
+    await ignoreIfAlreadyGone(() => webflowRequest(
+      'DELETE',
+      `/collections/${collectionId}/items/${itemId}${cmsLocaleId ? `?cmsLocaleId=${cmsLocaleId}` : ''}`,
+    ));
+  }
+}
+
 // ─── Archive (hide without deleting) — used for suspend ───────────────────────
 
 async function archiveExpert(expertId) {
@@ -606,14 +802,12 @@ async function archiveExpert(expertId) {
   const expert = await prisma.expert.findUnique({ where: { id: expertId } });
   if (!expert?.webflow_item_id) return;
 
+  const locales = await getLocaleCmsIds().catch(() => null);
+
   try {
     await syncWithRetry(
       async () => {
-        await webflowRequest('PATCH', `/collections/${EXPERTS_COLLECTION_ID}/items/${expert.webflow_item_id}`, {
-          isArchived: true,
-          isDraft:    false,
-        });
-        await publishItems(EXPERTS_COLLECTION_ID, [expert.webflow_item_id]);
+        await archiveItemAcrossLocales(EXPERTS_COLLECTION_ID, expert.webflow_item_id, locales);
         await publishSite();
       },
       {
@@ -631,18 +825,9 @@ async function archiveExpert(expertId) {
 
 // ─── Delete — used for GDPR erasure ──────────────────────────────────────────
 
-// A 404 on the archive-PATCH or DELETE step means a prior (partially-failed) attempt
-// already deleted the item on Webflow's side — treat as done rather than retrying forever.
-async function ignoreIfAlreadyGone(fn) {
-  try {
-    await fn();
-  } catch (err) {
-    if (err.status !== 404) throw err;
-  }
-}
-
 async function deleteExpertFromWebflow(expertId, webflowItemId) {
   if (!webflowItemId || !EXPERTS_COLLECTION_ID) return;
+  const locales = await getLocaleCmsIds().catch(() => null);
 
   // Delete all synced services first
   if (SERVICES_COLLECTION_ID) {
@@ -653,13 +838,10 @@ async function deleteExpertFromWebflow(expertId, webflowItemId) {
     for (const svc of services) {
       try {
         await syncWithRetry(
-          () => ignoreIfAlreadyGone(async () => {
-            await webflowRequest('PATCH', `/collections/${SERVICES_COLLECTION_ID}/items/${svc.webflow_item_id}`, {
-              isArchived: true, isDraft: false,
-            });
-            await publishItems(SERVICES_COLLECTION_ID, [svc.webflow_item_id]);
-            await webflowRequest('DELETE', `/collections/${SERVICES_COLLECTION_ID}/items/${svc.webflow_item_id}`);
-          }),
+          async () => {
+            await archiveItemAcrossLocales(SERVICES_COLLECTION_ID, svc.webflow_item_id, locales);
+            await deleteItemAcrossLocales(SERVICES_COLLECTION_ID, svc.webflow_item_id, locales);
+          },
           {
             entityType:     'service',
             entityId:       svc.id,
@@ -679,13 +861,8 @@ async function deleteExpertFromWebflow(expertId, webflowItemId) {
   try {
     await syncWithRetry(
       async () => {
-        await ignoreIfAlreadyGone(async () => {
-          await webflowRequest('PATCH', `/collections/${EXPERTS_COLLECTION_ID}/items/${webflowItemId}`, {
-            isArchived: true, isDraft: false,
-          });
-          await publishItems(EXPERTS_COLLECTION_ID, [webflowItemId]);
-          await webflowRequest('DELETE', `/collections/${EXPERTS_COLLECTION_ID}/items/${webflowItemId}`);
-        });
+        await archiveItemAcrossLocales(EXPERTS_COLLECTION_ID, webflowItemId, locales);
+        await deleteItemAcrossLocales(EXPERTS_COLLECTION_ID, webflowItemId, locales);
         await publishSite();
       },
       {
@@ -704,17 +881,14 @@ async function deleteExpertFromWebflow(expertId, webflowItemId) {
 
 async function deleteServiceFromWebflow(serviceId, webflowItemId) {
   if (!webflowItemId || !SERVICES_COLLECTION_ID) return;
+  const locales = await getLocaleCmsIds().catch(() => null);
+
   try {
     await syncWithRetry(
       async () => {
         // Archive first so the live site hides the item on publish, then hard-delete from CMS
-        await ignoreIfAlreadyGone(async () => {
-          await webflowRequest('PATCH', `/collections/${SERVICES_COLLECTION_ID}/items/${webflowItemId}`, {
-            isArchived: true, isDraft: false,
-          });
-          await publishItems(SERVICES_COLLECTION_ID, [webflowItemId]);
-          await webflowRequest('DELETE', `/collections/${SERVICES_COLLECTION_ID}/items/${webflowItemId}`);
-        });
+        await archiveItemAcrossLocales(SERVICES_COLLECTION_ID, webflowItemId, locales);
+        await deleteItemAcrossLocales(SERVICES_COLLECTION_ID, webflowItemId, locales);
         await publishSite();
       },
       {
