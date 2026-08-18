@@ -247,21 +247,38 @@ function normalizeLabel(s) {
 // Returns a Webflow item ID for the given name, creating the item if it doesn't exist.
 // Used for data-driven collections (Languages, Locations, Certifications) where the set
 // of values is determined by expert profiles, not by editorial decision.
+//
+// On a localized site, creation must go through the same bulk multi-locale path used for
+// Experts/Services (see createItemAcrossLocales) — a reference item created single-locale
+// here would hit the identical "can't add a locale to an existing item later" wall, quietly
+// reproducing the exact backlog of un-localized items Aleksandra is currently fixing by hand.
 async function upsertCollectionItem(collectionId, name) {
   if (!name) return null;
   const items = await fetchCollectionItems(collectionId);
   const found = items.find(item => normalizeLabel(item.fieldData?.name) === normalizeLabel(name));
   if (found) return found.id;
 
-  const created = await webflowRequest('POST', `/collections/${collectionId}/items`, {
-    fieldData:  { name, slug: slugify(name) },
-    isArchived: false,
-    isDraft:    false,
-  });
-  await publishItems(collectionId, [created.id]);
+  const slug    = slugify(name);
+  const locales = await getLocaleCmsIds().catch(() => null);
+  let itemId;
+
+  if (locales) {
+    const cmsLocaleIds = Object.values(locales);
+    itemId = await createItemAcrossLocales(collectionId, slug, cmsLocaleIds, { name, slug }, false);
+    await publishItems(collectionId, [itemId], cmsLocaleIds);
+  } else {
+    const created = await webflowRequest('POST', `/collections/${collectionId}/items`, {
+      fieldData:  { name, slug },
+      isArchived: false,
+      isDraft:    false,
+    });
+    itemId = created.id;
+    await publishItems(collectionId, [itemId]);
+  }
+
   _colCache.delete(collectionId); // bust cache so next lookup sees the new item
-  console.log(`[Webflow] Auto-created "${name}" in collection ${collectionId} → ${created.id}`);
-  return created.id;
+  console.log(`[Webflow] Auto-created "${name}" in collection ${collectionId} → ${itemId}`);
+  return itemId;
 }
 
 // Multi-value version of upsertCollectionItem. Sequential, not Promise.all — a single expert
@@ -344,6 +361,16 @@ function formatPrice(amount, currency) {
     minimumFractionDigits: 0,
     maximumFractionDigits: 0,
   }).format(Number(amount));
+}
+
+// The app lives on a different subdomain (portal.sagenest.org) from the Webflow
+// marketing site (www.sagenest.org), so cross-origin navigation between them only
+// carries the referrer's origin under the browser's default Referrer-Policy — the
+// /it/ path prefix Webflow uses for the Italian locale never survives the hop. The
+// app's ?lang= detection (src/i18n/index.js) is what Book Now links must rely on
+// instead, so every locale variant's booking-url needs its own matching lang param.
+function withLangParam(url, localeKey) {
+  return `${url}&lang=${localeKey.toLowerCase()}`;
 }
 
 // Collapses line breaks (and any whitespace hugging them) into a single space.
@@ -484,15 +511,19 @@ async function publishSite() {
 // an item ONLY at creation time — an item created without a locale can never gain that
 // locale later via the API (confirmed against Webflow's docs and live-tested against the
 // real site; retrofitting an existing item requires manually adding the locale in the
-// Designer's CMS panel first). Content here is a placeholder — the real per-locale
-// fieldData/isDraft is applied by the upsertWebflowItem PATCH loop that follows.
-// All variants share one item id; regardless of locale count, `items[0].id` is that id.
-async function createItemAcrossLocales(collectionId, slug, cmsLocaleIds) {
+// Designer's CMS panel first). All variants share one item id; regardless of locale count,
+// `items[0].id` is that id.
+//
+// Defaults to a draft placeholder (name=slug, isDraft:true) for Expert/Service items, whose
+// real per-locale fieldData/isDraft is applied by the upsertWebflowItem PATCH loop that
+// follows. Reference-collection items (see upsertCollectionItem) instead pass their real
+// fieldData and isDraft:false directly, since they have no per-locale draft/live distinction.
+async function createItemAcrossLocales(collectionId, slug, cmsLocaleIds, fieldData, isDraft = true) {
   const created = await webflowRequest('POST', `/collections/${collectionId}/items/bulk`, {
     cmsLocaleIds,
-    fieldData:  { name: slug, slug },
+    fieldData:  fieldData || { name: slug, slug },
     isArchived: false,
-    isDraft:    true,
+    isDraft,
   });
   return created.items?.[0]?.id || null;
 }
@@ -574,9 +605,10 @@ async function syncExpert(expertId) {
     if (!locales) {
       // Site isn't localized (or locale lookup failed) — plain single-locale sync,
       // unchanged from pre-localization behavior.
+      const localeFieldData = { ...fieldData, 'booking-url': withLangParam(fieldData['booking-url'], activeLocale) };
       itemId = await syncWithRetry(
-        () => upsertWebflowItem(EXPERTS_COLLECTION_ID, itemId, slug, fieldData),
-        { entityType: 'expert', entityId: expertId, payload: fieldData },
+        () => upsertWebflowItem(EXPERTS_COLLECTION_ID, itemId, slug, localeFieldData),
+        { entityType: 'expert', entityId: expertId, payload: localeFieldData },
       );
     } else {
       // Brand-new item: must be created across both locales in one call, or it can never
@@ -604,15 +636,16 @@ async function syncExpert(expertId) {
       for (const localeKey of ['EN', 'IT']) {
         const cmsLocaleId = locales[localeKey];
         if (!cmsLocaleId) continue;
+        const localeFieldData = { ...fieldData, 'booking-url': withLangParam(fieldData['booking-url'], localeKey) };
         itemId = await syncWithRetry(
-          () => upsertWebflowItem(EXPERTS_COLLECTION_ID, itemId, slug, fieldData, {
+          () => upsertWebflowItem(EXPERTS_COLLECTION_ID, itemId, slug, localeFieldData, {
             cmsLocaleId,
             isDraft: localeKey !== activeLocale,
           }),
           {
             entityType:     'expert',
             entityId:       expertId,
-            payload:        fieldData,
+            payload:        localeFieldData,
             idempotencyKey: `expert:${expertId}:${localeKey}`,
           },
         );
@@ -686,9 +719,10 @@ async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverr
     let itemId = service.webflow_item_id;
 
     if (!locales) {
+      const localeFieldData = { ...fieldData, 'booking-url': withLangParam(fieldData['booking-url'], activeLocale) };
       itemId = await syncWithRetry(
-        () => upsertWebflowItem(SERVICES_COLLECTION_ID, itemId, fieldData.slug, fieldData),
-        { entityType: 'service', entityId: serviceId, payload: fieldData },
+        () => upsertWebflowItem(SERVICES_COLLECTION_ID, itemId, fieldData.slug, localeFieldData),
+        { entityType: 'service', entityId: serviceId, payload: localeFieldData },
       );
     } else {
       // Brand-new item: must be created across both locales in one call, or it can never
@@ -711,15 +745,16 @@ async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverr
       for (const localeKey of ['EN', 'IT']) {
         const cmsLocaleId = locales[localeKey];
         if (!cmsLocaleId) continue;
+        const localeFieldData = { ...fieldData, 'booking-url': withLangParam(fieldData['booking-url'], localeKey) };
         itemId = await syncWithRetry(
-          () => upsertWebflowItem(SERVICES_COLLECTION_ID, itemId, fieldData.slug, fieldData, {
+          () => upsertWebflowItem(SERVICES_COLLECTION_ID, itemId, fieldData.slug, localeFieldData, {
             cmsLocaleId,
             isDraft: localeKey !== activeLocale,
           }),
           {
             entityType:     'service',
             entityId:       serviceId,
-            payload:        fieldData,
+            payload:        localeFieldData,
             idempotencyKey: `service:${serviceId}:${localeKey}`,
           },
         );
