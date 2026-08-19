@@ -118,11 +118,15 @@ async function checkSlugConflicts(expert) {
   const locales = await getLocaleCmsIds();
   if (!locales) return problems;
 
-  async function checkSlug(collectionId, collectionLabel, slug) {
+  // `knownItemId` is whatever webflow_item_id we already have on file for this record — if
+  // the item found under the slug IS that one, it's not a conflict, it's just confirmation
+  // that this record is already correctly synced (e.g. resolved by a prior background
+  // retry). Only a DIFFERENT item under the same slug is an actual blocker.
+  async function checkSlug(collectionId, collectionLabel, slug, knownItemId) {
     for (const [localeKey, cmsLocaleId] of Object.entries(locales)) {
       const list  = await wf(`/collections/${collectionId}/items?cmsLocaleId=${cmsLocaleId}&limit=100`);
       const match = (list.items || []).find((i) => i.fieldData?.slug === slug);
-      if (match) {
+      if (match && match.id !== knownItemId) {
         problems.push({
           collection: collectionLabel, locale: localeKey, slug, itemId: match.id,
           isDraft: match.isDraft, lastPublished: match.lastPublished,
@@ -132,10 +136,10 @@ async function checkSlugConflicts(expert) {
     }
   }
 
-  await checkSlug(process.env.WEBFLOW_EXPERTS_COLLECTION_ID, 'Experts', webflowService.expertSlug(expert.user.name, expert.id));
+  await checkSlug(process.env.WEBFLOW_EXPERTS_COLLECTION_ID, 'Experts', webflowService.expertSlug(expert.user.name, expert.id), expert.webflow_item_id);
   for (const s of expert.services) {
     if (!s.is_active) continue;
-    await checkSlug(process.env.WEBFLOW_SERVICES_COLLECTION_ID, 'Services', webflowService.serviceSlug(s.title, s.id));
+    await checkSlug(process.env.WEBFLOW_SERVICES_COLLECTION_ID, 'Services', webflowService.serviceSlug(s.title, s.id), s.webflow_item_id);
   }
 
   return problems;
