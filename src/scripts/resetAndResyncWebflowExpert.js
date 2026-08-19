@@ -104,6 +104,43 @@ async function checkReferenceLocaleCoverage(expert, locales) {
   return problems;
 }
 
+// Checks whether the expert's own item (or any of their active services) already has a
+// leftover item under the same slug in either locale — separate from webflow_item_id, which
+// only tracks ONE item and may be stale/deleted. Confirmed live on a real profile: a prior
+// manual per-locale fix can leave a SEPARATE item (different id, same slug) holding real
+// content in one locale — e.g. a genuine Italian translation someone added by hand — which
+// then blocks the new item's creation in that locale with a silent slug-uniqueness conflict
+// (surfaces later as a confusing 404, not an obvious error). Surfacing this up front, with
+// the actual content found, avoids both blind failures and accidentally destroying real
+// manually-added translations that our sync doesn't know about.
+async function checkSlugConflicts(expert) {
+  const problems = [];
+  const locales = await getLocaleCmsIds();
+  if (!locales) return problems;
+
+  async function checkSlug(collectionId, collectionLabel, slug) {
+    for (const [localeKey, cmsLocaleId] of Object.entries(locales)) {
+      const list  = await wf(`/collections/${collectionId}/items?cmsLocaleId=${cmsLocaleId}&limit=100`);
+      const match = (list.items || []).find((i) => i.fieldData?.slug === slug);
+      if (match) {
+        problems.push({
+          collection: collectionLabel, locale: localeKey, slug, itemId: match.id,
+          isDraft: match.isDraft, lastPublished: match.lastPublished,
+          nameField: match.fieldData?.name,
+        });
+      }
+    }
+  }
+
+  await checkSlug(process.env.WEBFLOW_EXPERTS_COLLECTION_ID, 'Experts', webflowService.expertSlug(expert.user.name, expert.id));
+  for (const s of expert.services) {
+    if (!s.is_active) continue;
+    await checkSlug(process.env.WEBFLOW_SERVICES_COLLECTION_ID, 'Services', webflowService.serviceSlug(s.title, s.id));
+  }
+
+  return problems;
+}
+
 async function findExperts(term) {
   const experts = await prisma.expert.findMany({
     where: {
@@ -147,16 +184,31 @@ async function resetAndResync(expertId) {
   }
 
   console.log('\nChecking reference values (languages, city, certifications) for locale coverage...');
-  const locales  = await getLocaleCmsIds();
-  const problems = await checkReferenceLocaleCoverage(expert, locales);
-  if (problems.length) {
+  const locales      = await getLocaleCmsIds();
+  const refProblems  = await checkReferenceLocaleCoverage(expert, locales);
+  if (refProblems.length) {
     console.log('\n⚠ These reference values pre-date the locale fix and are missing the Italian locale.');
     console.log('  Syncing this expert into Italian WILL FAIL until Aleksandra deletes these from Webflow');
     console.log('  too (they will then be auto-recreated correctly in both locales on next sync):');
-    for (const p of problems) console.log(`    - [${p.collection}] "${p.name}" (item ${p.itemId})`);
+    for (const p of refProblems) console.log(`    - [${p.collection}] "${p.name}" (item ${p.itemId})`);
   } else {
     console.log('  OK — no known blockers.');
   }
+
+  console.log('\nChecking for leftover items under the same slug in either locale (e.g. from a prior manual fix)...');
+  const slugProblems = await checkSlugConflicts(expert);
+  if (slugProblems.length) {
+    console.log('\n⚠ Found existing item(s) still occupying the slug this expert/service would use.');
+    console.log('  Re-syncing WILL FAIL (or silently skip a locale) until these are resolved — check');
+    console.log('  whether any of these hold real content (e.g. a manual translation) before deleting:');
+    for (const p of slugProblems) {
+      console.log(`    - [${p.collection}] locale=${p.locale} slug="${p.slug}" item=${p.itemId} name="${p.nameField}" isDraft=${p.isDraft} lastPublished=${p.lastPublished}`);
+    }
+  } else {
+    console.log('  OK — no slug conflicts found.');
+  }
+
+  const problems = [...refProblems, ...slugProblems];
 
   if (!CONFIRM) {
     console.log('\nReport-only mode — pass --confirm to actually clear + re-sync.');
@@ -165,7 +217,7 @@ async function resetAndResync(expertId) {
   }
 
   if (problems.length) {
-    console.log('\nAborting — resolve the reference-value blockers above before re-syncing with --confirm.');
+    console.log('\nAborting — resolve the blockers above before re-syncing with --confirm.');
     return;
   }
 

@@ -409,10 +409,17 @@ async function buildExpertFields(expert, slug) {
   // Allow-list rather than "not IN_PERSON": HOME_VISIT is delivered at the
   // parent's address and must publish as "No", which a negated check would
   // have silently got wrong.
+  // Caught rather than left to throw (like the multi-ref lookups below already are via
+  // upsertMultiRefIds) — a transient failure resolving one reference field (e.g. a
+  // just-deleted item's slug still under Webflow's reuse cooldown) must not crash the
+  // entire sync; the field is just omitted this round and retried on the next sync.
   if (ONLINE_COL_ID && expert.session_format) {
     const onlineCapable = ['ONLINE', 'BOTH'].includes(expert.session_format);
     const onlineName = onlineCapable ? 'Yes' : 'No';
-    const id = await resolveSingleRefId(ONLINE_COL_ID, onlineName);
+    const id = await resolveSingleRefId(ONLINE_COL_ID, onlineName).catch(err => {
+      console.error(`[Webflow] Could not resolve online status "${onlineName}":`, err.message);
+      return null;
+    });
     if (id) fields['online-2'] = id;
   }
 
@@ -424,7 +431,10 @@ async function buildExpertFields(expert, slug) {
 
   // Location (Reference → Locations Experts collection — auto-creates missing cities)
   if (expert.address_city) {
-    const id = await upsertCollectionItem(LOCATIONS_COL_ID, expert.address_city);
+    const id = await upsertCollectionItem(LOCATIONS_COL_ID, expert.address_city).catch(err => {
+      console.error(`[Webflow] Could not upsert location "${expert.address_city}":`, err.message);
+      return null;
+    });
     if (id) fields['location'] = id;
   }
 
@@ -970,4 +980,9 @@ module.exports = {
   deleteServiceFromWebflow,
   retryDeadLetter,
   sleep,
+  // Exported for scripts (e.g. resetAndResyncWebflowExpert.js) that need to pre-check for
+  // leftover items under the same slug before clearing/resyncing — must match the sync
+  // logic's own slug generation exactly, so re-exported rather than duplicated.
+  expertSlug,
+  serviceSlug,
 };
