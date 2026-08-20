@@ -21,12 +21,18 @@ const SERVICE_FORMAT_LABELS = {
   HOME_VISIT: 'Home Visit',
 };
 
-// ServiceCluster enum → Webflow Services Categories item name (must match exactly, case-insensitive)
+// ServiceCluster enum → Webflow Services Categories item name (must match exactly, case-insensitive).
+// Verified live against the actual Webflow collection — FOR_PARENTS and PACKAGE previously
+// pointed at stale names ('service for the mum' / 'service for the package') that no longer
+// matched anything after the category items were renamed in Webflow, so every service in
+// those two clusters silently never got a category assigned (resolveSingleRefId finds no
+// match → field just omitted, no error). EVENT has no corresponding item in Webflow at all
+// currently — that one needs a category item created there before it can ever resolve.
 const CLUSTER_DISPLAY = {
-  FOR_PARENTS: 'service for the mum',
+  FOR_PARENTS: 'service for the parents',
   FOR_BABY:    'service for the baby',
   FOR_FAMILY:  'service for the family',
-  PACKAGE:     'service for the package',
+  PACKAGE:     'package',
   GIFT:        'gift cards',
   EVENT:       'event',
 };
