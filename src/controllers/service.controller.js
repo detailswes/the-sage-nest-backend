@@ -7,6 +7,31 @@ const { logAudit } = require('../utils/auditLog');
 const VALID_FORMATS    = SERVICE_FORMATS;
 const VALID_CLUSTERS   = ['FOR_PARENTS', 'FOR_BABY', 'FOR_FAMILY', 'PACKAGE', 'GIFT', 'EVENT'];
 
+// Postal codes / areas an expert covers for a HOME_VISIT service. Free text
+// (not a validated postcode format) since coverage isn't limited to one
+// country's postcode shape — trimmed, deduped case-insensitively, and capped
+// so the list stays a short "where I travel to" summary rather than free-form
+// text.
+const MAX_HOME_VISIT_AREAS = 30;
+const MAX_AREA_LENGTH      = 20;
+
+function sanitizeHomeVisitAreas(areas) {
+  if (!Array.isArray(areas)) return [];
+  const seen = new Set();
+  const result = [];
+  for (const raw of areas) {
+    if (typeof raw !== 'string') continue;
+    const trimmed = raw.trim();
+    if (!trimmed || trimmed.length > MAX_AREA_LENGTH) continue;
+    const key = trimmed.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(trimmed);
+    if (result.length >= MAX_HOME_VISIT_AREAS) break;
+  }
+  return result;
+}
+
 async function getExpertIdForUser(userId) {
   const expert = await prisma.expert.findUnique({ where: { user_id: userId } });
   return expert ? expert.id : null;
@@ -27,7 +52,7 @@ function logCurrencyRejection(actorUserId, serviceId, attempted, expected) {
 }
 
 async function createService(req, res) {
-  const { title, description, duration_minutes, price, format, cluster } = req.body;
+  const { title, description, duration_minutes, price, format, cluster, home_visit_areas } = req.body;
 
   if (!title || !description || !duration_minutes || !price || !format || !cluster) {
     return res.status(400).json({ error: 'title, description, duration_minutes, price, format, and cluster are required.' });
@@ -47,6 +72,14 @@ async function createService(req, res) {
   }
   if (!VALID_CLUSTERS.includes(cluster)) {
     return res.status(400).json({ error: 'Invalid cluster. Must be FOR_PARENTS, FOR_BABY, FOR_FAMILY, PACKAGE, GIFT, or EVENT.' });
+  }
+
+  let sanitizedAreas = [];
+  if (format === 'HOME_VISIT') {
+    sanitizedAreas = sanitizeHomeVisitAreas(home_visit_areas);
+    if (sanitizedAreas.length === 0) {
+      return res.status(400).json({ error: 'At least one postal code or area is required for home visit services.' });
+    }
   }
 
   try {
@@ -87,6 +120,7 @@ async function createService(req, res) {
         price: priceVal,
         currency,
         format: format || null,
+        home_visit_areas: sanitizedAreas,
         cluster: cluster || null,
         is_active: false,
         sort_order,
@@ -117,7 +151,7 @@ async function listServices(req, res) {
 
 async function updateService(req, res) {
   const { id } = req.params;
-  const { title, description, duration_minutes, price, currency, is_active, format, cluster } = req.body;
+  const { title, description, duration_minutes, price, currency, is_active, format, cluster, home_visit_areas } = req.body;
 
   if (title !== undefined && title.trim().length > 80) {
     return res.status(400).json({ error: 'Service title must be 80 characters or fewer.' });
@@ -146,6 +180,24 @@ async function updateService(req, res) {
     const service = await prisma.service.findUnique({ where: { id: parseInt(id) } });
     if (!service || service.expert_id !== expert_id) {
       return res.status(404).json({ error: 'Service not found' });
+    }
+
+    // Home visit areas are only meaningful while the service's (possibly
+    // just-updated) format is HOME_VISIT — required and re-sanitized against
+    // whichever areas apply (new ones from this request, or the existing
+    // ones if this update doesn't touch them). Switching away from
+    // HOME_VISIT clears them so a later switch back doesn't resurrect a
+    // stale, no-longer-reviewed list.
+    const effectiveFormat = format !== undefined ? (format || null) : service.format;
+    let sanitizedAreas;
+    if (effectiveFormat === 'HOME_VISIT') {
+      const sourceAreas = home_visit_areas !== undefined ? home_visit_areas : service.home_visit_areas;
+      sanitizedAreas = sanitizeHomeVisitAreas(sourceAreas);
+      if (sanitizedAreas.length === 0) {
+        return res.status(400).json({ error: 'At least one postal code or area is required for home visit services.' });
+      }
+    } else if (home_visit_areas !== undefined || (format !== undefined && service.home_visit_areas.length > 0)) {
+      sanitizedAreas = [];
     }
 
     // Currency is locked to the expert's confirmed account currency. The only
@@ -200,6 +252,7 @@ async function updateService(req, res) {
         ...(currency !== undefined     && { currency }),
         ...(is_active !== undefined    && { is_active }),
         ...(format !== undefined       && { format: format || null }),
+        ...(sanitizedAreas !== undefined && { home_visit_areas: sanitizedAreas }),
         ...(cluster !== undefined      && { cluster: cluster || null }),
       },
     });

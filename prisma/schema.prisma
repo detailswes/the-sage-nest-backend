@@ -140,6 +140,7 @@ model Service {
   cluster             ServiceCluster?
   description         String?
   format              ServiceFormat?
+  home_visit_areas    String[]           @default([])
   sort_order          Int                @default(0)
   currency            String             @default("EUR")
   webflow_item_id     String?
