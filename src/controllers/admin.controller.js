@@ -225,6 +225,7 @@ async function listExperts(req, res) {
           year:              dac7Year,
           transaction_count: txCount,
           gross_earnings:    gross,
+          currency:          e.currency || "EUR",
           threshold_reached: txCount >= 30 || gross >= 2000,
         };
         e.pending_payout_count = payoutMap.get(e.id) ?? 0;
@@ -796,7 +797,8 @@ async function exportTaxData(req, res) {
       orderBy: { scheduled_at: 'asc' },
     });
 
-    const bi = expert.business_info;
+    const bi  = expert.business_info;
+    const cur = expert.currency || 'EUR';
 
     // ── Shared styles ─────────────────────────────────────────────────────────
     const HDR_FILL  = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD6E0D7' } };
@@ -835,6 +837,7 @@ async function exportTaxData(req, res) {
     addInfoRow('Joined', expert.user?.created_at
       ? new Date(expert.user.created_at).toISOString().split('T')[0]
       : '');
+    addInfoRow('Payout Currency', cur);
     infoSheet.addRow([]);
 
     addInfoSection('Business Information');
@@ -866,11 +869,11 @@ async function exportTaxData(req, res) {
       { header: 'Date',              key: 'date',           width: 14 },
       { header: 'Service',           key: 'service',        width: 32 },
       { header: 'Duration (min)',    key: 'duration',       width: 15 },
-      { header: 'Gross Amount (£)',  key: 'gross',          width: 17, style: { numFmt: MONEY_FMT } },
-      { header: 'Platform Fee (£)',  key: 'fee',            width: 17, style: { numFmt: MONEY_FMT } },
-      { header: 'Net Payout (£)',    key: 'net',            width: 17, style: { numFmt: MONEY_FMT } },
+      { header: `Gross Amount (${cur})`,  key: 'gross',        width: 17, style: { numFmt: MONEY_FMT } },
+      { header: `Platform Fee (${cur})`,  key: 'fee',          width: 17, style: { numFmt: MONEY_FMT } },
+      { header: `Net Payout (${cur})`,    key: 'net',          width: 17, style: { numFmt: MONEY_FMT } },
       { header: 'Status',            key: 'status',         width: 13 },
-      { header: 'Refund Amount (£)', key: 'refundAmount',   width: 17, style: { numFmt: MONEY_FMT } },
+      { header: `Refund Amount (${cur})`, key: 'refundAmount', width: 17, style: { numFmt: MONEY_FMT } },
       { header: 'Refund Date',       key: 'refundDate',     width: 14 },
       { header: 'Stripe Refund ID',  key: 'stripeRefundId', width: 30 },
     ];
@@ -975,8 +978,11 @@ async function getExpertDetail(req, res) {
     }
 
     // DAC7 threshold check for the current calendar year.
-    // Threshold: 30+ qualifying transactions OR gross earnings >= 2,000 (GBP, as
-    // booked amounts are stored in GBP — confirm EUR equivalence with tax adviser).
+    // Threshold: 30+ qualifying transactions OR gross earnings >= 2,000. The DAC7
+    // directive threshold is EUR 2,000; bookings are aggregated in the expert's
+    // own currency (a single expert only ever transacts in one currency), so for
+    // non-EUR experts this 2,000 comparison is an approximation — the FX-adjusted
+    // equivalent should be confirmed with the tax adviser.
     const dac7Year = new Date().getFullYear();
     const dac7From = new Date(`${dac7Year}-01-01T00:00:00.000Z`);
     const dac7To   = new Date(`${dac7Year + 1}-01-01T00:00:00.000Z`);
@@ -997,6 +1003,7 @@ async function getExpertDetail(req, res) {
       year:              dac7Year,
       transaction_count: dac7TxCount,
       gross_earnings:    dac7Gross,
+      currency:          expert.currency || "EUR",
       threshold_reached: byTx || byEarnings,
       threshold_reason:  byTx && byEarnings ? "both"
                        : byTx              ? "transactions"
@@ -1161,6 +1168,7 @@ async function manualRefund(req, res) {
 
     // Validate optional partial amount
     const bookingTotal = parseFloat(booking.amount);
+    const cur = booking.currency || "EUR";
     const isPartial = amount != null && amount !== "";
     const refundAmountValue = isPartial ? parseFloat(amount) : bookingTotal;
 
@@ -1170,7 +1178,7 @@ async function manualRefund(req, res) {
       }
       if (refundAmountValue > bookingTotal) {
         return res.status(400).json({
-          error: `Refund amount (£${refundAmountValue.toFixed(2)}) cannot exceed the booking total (£${bookingTotal.toFixed(2)})`,
+          error: `Refund amount (${cur} ${refundAmountValue.toFixed(2)}) cannot exceed the booking total (${cur} ${bookingTotal.toFixed(2)})`,
         });
       }
     }
@@ -1182,7 +1190,7 @@ async function manualRefund(req, res) {
     const isOnPolicy = Math.abs(refundAmountValue - policyAmount) < 0.005;
     if (!isOnPolicy && !override_reason?.trim()) {
       return res.status(422).json({
-        error: `The requested amount (£${refundAmountValue.toFixed(2)}) deviates from the cancellation policy (${tier} → £${policyAmount.toFixed(2)}). Provide an override reason to proceed.`,
+        error: `The requested amount (${cur} ${refundAmountValue.toFixed(2)}) deviates from the cancellation policy (${tier} → ${cur} ${policyAmount.toFixed(2)}). Provide an override reason to proceed.`,
         requires_override: true,
         policy_amount:     policyAmount,
         policy_percent:    policyPercent,
@@ -1230,7 +1238,7 @@ async function manualRefund(req, res) {
           const { sendAdminPayoutAlert } = require('../utils/email');
           sendAdminPayoutAlert({
             subject: `Admin refund platform-funded — Booking #${id}`,
-            body:    `A manual refund of £${refundAmountValue.toFixed(2)} for booking #${id} could not reverse the expert's transfer (insufficient funds). The platform has absorbed the cost. Please reconcile the expert's Stripe balance.`,
+            body:    `A manual refund of ${cur} ${refundAmountValue.toFixed(2)} for booking #${id} could not reverse the expert's transfer (insufficient funds). The platform has absorbed the cost. Please reconcile the expert's Stripe balance.`,
             bookingId: parseInt(id),
           }).catch((e) => console.error('[Email] Admin payout alert failed:', e.message));
         } catch (retryErr) {
@@ -1283,7 +1291,6 @@ async function manualRefund(req, res) {
     const overrideSuffix = override_reason?.trim() ? ` [POLICY OVERRIDE: ${override_reason.trim()}]` : "";
     // Self-contained note — the refund log falls back to this text if the
     // booking row is later deleted, so record amount, currency and parent here.
-    const cur = booking.currency || "EUR";
     const auditNote = isPartial
       ? `Partial refund of ${cur} ${refundAmountValue.toFixed(2)} of ${cur} ${bookingTotal.toFixed(2)} · Parent: ${booking.parent?.name || "—"}${reason ? ` — ${reason}` : ""}${overrideSuffix}`
       : `Full refund of ${cur} ${bookingTotal.toFixed(2)} · Parent: ${booking.parent?.name || "—"} — ${reason || "Admin manual refund"}${overrideSuffix}`;
@@ -3184,6 +3191,7 @@ async function getExpertYearlySummary(req, res) {
 
     return res.json({
       year,
+      currency:           expert.currency || "EUR",
       total_gross:        totalGross,
       total_fees:         totalFees,
       total_net:          totalNet,
@@ -3353,9 +3361,10 @@ async function exportTransactionsXlsx(req, res) {
       { header: "Specialist Name",          key: "expert_name",    width: 24 },
       { header: "Specialist Email",         key: "expert_email",   width: 32 },
       { header: "Service",                  key: "service",        width: 28 },
-      { header: "Amount (\u00a3)",           key: "amount",         width: 14 },
-      { header: "Platform Fee (\u00a3)",     key: "fee",            width: 16 },
-      { header: "Specialist Payout (\u00a3)",key: "payout",         width: 20 },
+      { header: "Currency",                 key: "currency",       width: 10 },
+      { header: "Amount",                   key: "amount",         width: 14 },
+      { header: "Platform Fee",             key: "fee",            width: 16 },
+      { header: "Specialist Payout",        key: "payout",         width: 20 },
       { header: "Payment Status",           key: "payment_status", width: 16 },
       { header: "Booking Status",           key: "booking_status", width: 16 },
       { header: "Stripe Payment Intent ID", key: "stripe_pi",      width: 36 },
@@ -3380,6 +3389,7 @@ async function exportTransactionsXlsx(req, res) {
         expert_name:    t.expert?.user?.name    || "",
         expert_email:   t.expert?.user?.email   || "",
         service:        t.service?.title        || "",
+        currency:       t.currency              || "EUR",
         amount:         amount.toFixed(2),
         fee:            fee.toFixed(2),
         payout:         payout.toFixed(2),

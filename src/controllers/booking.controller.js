@@ -832,7 +832,7 @@ async function cancelBooking(req, res) {
       `Booking #${booking.id} cancelled · ${refundPercent}% refund`,
     );
     if (refundInitiated) {
-      const refundAmountGbp = (
+      const refundAmountStr = (
         (Number(booking.amount) * refundPercent) /
         100
       ).toFixed(2);
@@ -841,7 +841,7 @@ async function cancelBooking(req, res) {
         "REFUND_ISSUED",
         "PARENT",
         req.user.id,
-        `Booking #${booking.id} · £${refundAmountGbp} refunded (${refundPercent}%)`,
+        `Booking #${booking.id} · ${booking.currency || "EUR"} ${refundAmountStr} refunded (${refundPercent}%)`,
       );
     }
 
