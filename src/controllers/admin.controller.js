@@ -1281,9 +1281,12 @@ async function manualRefund(req, res) {
     });
 
     const overrideSuffix = override_reason?.trim() ? ` [POLICY OVERRIDE: ${override_reason.trim()}]` : "";
+    // Self-contained note — the refund log falls back to this text if the
+    // booking row is later deleted, so record amount, currency and parent here.
+    const cur = booking.currency || "EUR";
     const auditNote = isPartial
-      ? `Partial refund of £${refundAmountValue.toFixed(2)}${reason ? ` — ${reason}` : ""}${overrideSuffix}`
-      : `Full refund — ${reason || "Admin manual refund"}${overrideSuffix}`;
+      ? `Partial refund of ${cur} ${refundAmountValue.toFixed(2)} of ${cur} ${bookingTotal.toFixed(2)} · Parent: ${booking.parent?.name || "—"}${reason ? ` — ${reason}` : ""}${overrideSuffix}`
+      : `Full refund of ${cur} ${bookingTotal.toFixed(2)} · Parent: ${booking.parent?.name || "—"} — ${reason || "Admin manual refund"}${overrideSuffix}`;
 
     await logAudit(req.user.id, "MANUAL_REFUND", "BOOKING", booking.id, auditNote);
     await logAudit(req.user.id, "REFUND_ISSUED", "PARENT", booking.parent_id, `Booking #${booking.id} · ${auditNote}`);
@@ -3487,6 +3490,7 @@ async function getRefundLog(req, res) {
           select: {
             id:              true,
             amount:          true,
+            currency:        true,
             refund_amount:   true,
             stripe_refund_id: true,
             parent: { select: { name: true } },
