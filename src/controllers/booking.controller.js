@@ -8,6 +8,7 @@ const { getLegalDocLinks } = require("../utils/legalDocLinks");
 const { SERVICE_FORMATS, usesExpertAddress, isHomeVisit } = require("../constants/format");
 const { upsertMarketingConsent, syncMarketingConsentToBrevo } = require("../utils/marketingConsent");
 const { createRefundWithFallback } = require("../utils/stripeRefund");
+const { PAYOUT_SETTLEMENT_MS } = require("../constants/payouts");
 const {
   sendBookingCancellationNotification,
   sendParentCancellationConfirmationEmail,
@@ -1011,12 +1012,12 @@ async function rescheduleBooking(req, res) {
         });
     }
 
-    // Recalculate transfer_due_at for the new session end time
+    // Recalculate transfer_due_at (payout-settled marker) for the new session end
     const newSessionEnd = new Date(
       newDate.getTime() + booking.duration_minutes * 60 * 1000,
     );
     const newTransferDueAt = new Date(
-      newSessionEnd.getTime() + 24 * 60 * 60 * 1000,
+      newSessionEnd.getTime() + PAYOUT_SETTLEMENT_MS,
     );
 
     // Snapshot the refund tier at this moment (before moving scheduled_at).
@@ -1408,7 +1409,7 @@ async function verifyPayment(req, res) {
       booking.scheduled_at.getTime() + booking.duration_minutes * 60 * 1000,
     );
     const transferDueAt = new Date(
-      sessionEndTime.getTime() + 24 * 60 * 60 * 1000,
+      sessionEndTime.getTime() + PAYOUT_SETTLEMENT_MS,
     );
 
     await prisma.booking.update({

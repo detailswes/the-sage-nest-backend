@@ -9,6 +9,7 @@ const {
 const { getLegalDocLinks } = require('../utils/legalDocLinks');
 const { usesExpertAddress, isHomeVisit } = require('../constants/format');
 const { syncExpertCurrencyOnReturn, syncExpertCurrencyFromWebhook } = require('../services/expertCurrency.service');
+const { PAYOUT_SETTLEMENT_MS } = require('../constants/payouts');
 
 // ─── Step 1 & 2: Expert clicks connect — create Stripe onboarding link ────────
 //
@@ -16,9 +17,9 @@ const { syncExpertCurrencyOnReturn, syncExpertCurrencyFromWebhook } = require('.
 // allows v1 Express account creation for new Connect platforms. The account
 // takes on two configurations: `merchant` (card_payments, matching v1's
 // card_payments capability) and `recipient` (stripe_transfers, matching v1's
-// transfers capability). Manual payout scheduling has no v2 equivalent yet,
-// so that one setting is still applied via the v1 accounts.update endpoint,
-// which remains interoperable with v2 account IDs.
+// transfers capability). Payout scheduling has no v2 equivalent yet, so that
+// setting is still applied via the v1 accounts.update endpoint, which remains
+// interoperable with v2 account IDs.
 async function createConnectLink(req, res) {
   try {
     const expert = await prisma.expert.findUnique({
@@ -77,10 +78,14 @@ async function createConnectLink(req, res) {
         .catch((e) => console.error('[Stripe] account update failed:', e.message));
     }
 
-    // Manual payout scheduling isn't part of the v2 Core Accounts schema —
-    // fall back to the v1 endpoint, which still accepts v2 account IDs.
+    // Automatic daily payouts with a 7-day settlement delay: Stripe releases
+    // each expert's cleared balance to their bank on its own schedule, waiting
+    // 7 days first so refunds/disputes can be settled before funds leave. No
+    // manual payout release needed. Payout scheduling isn't part of the v2 Core
+    // Accounts schema — fall back to the v1 endpoint, which still accepts v2
+    // account IDs.
     await stripe.accounts.update(accountId, {
-      settings: { payouts: { schedule: { interval: 'manual' } } },
+      settings: { payouts: { schedule: { interval: 'daily', delay_days: 7 } } },
     }).catch((e) => console.error('[Stripe] payout schedule update failed:', e.message));
 
     const accountLink = await stripe.v2.core.accountLinks.create({
@@ -202,11 +207,14 @@ async function processStripeEvent(event) {
       console.log(`[Webhook] Found booking ${booking.id} with status=${booking.status}`);
 
       if (booking.status === 'PENDING_PAYMENT') {
-        // transfer_due_at = session end time + 24 hours
+        // transfer_due_at = when Stripe's automatic payout has almost certainly
+        // settled the expert's share to their bank (session end + settlement
+        // buffer). Used only to flip transfer_status → 'completed' for the
+        // refund logic; no money moves at this time.
         const sessionEndTime = new Date(
           booking.scheduled_at.getTime() + booking.duration_minutes * 60 * 1000
         );
-        const transferDueAt = new Date(sessionEndTime.getTime() + 24 * 60 * 60 * 1000);
+        const transferDueAt = new Date(sessionEndTime.getTime() + PAYOUT_SETTLEMENT_MS);
 
         await prisma.booking.update({
           where: { id: booking.id },
