@@ -581,7 +581,22 @@ async function upsertWebflowItem(collectionId, existingItemId, slug, fieldData, 
       if (err.status !== 404) throw err;
       itemId = await findItemBySlug(collectionId, slug);
       if (itemId) {
-        await webflowRequest('PATCH', `/collections/${collectionId}/items/${itemId}`, body);
+        try {
+          await webflowRequest('PATCH', `/collections/${collectionId}/items/${itemId}`, body);
+        } catch (err2) {
+          // The base item still resolves by slug (just confirmed above), so this second
+          // 404 is scoped to the locale, not the item — its locale record was deleted
+          // out-of-band (e.g. someone in Webflow removed the Italian draft instead of
+          // re-editing it) rather than the whole item going missing. That's a state we
+          // can't fix from here (the API can't recreate a locale on an existing item —
+          // see createItemAcrossLocales above), so skip it quietly instead of
+          // retrying/dead-lettering/alerting on every future sync of this item.
+          if (cmsLocaleId && err2.status === 404) {
+            console.warn(`[Webflow] No ${cmsLocaleId} locale record for item ${itemId} in collection ${collectionId} — skipping (locale record missing, likely deleted in Webflow)`);
+            return itemId;
+          }
+          throw err2;
+        }
       }
     }
   }
@@ -637,10 +652,12 @@ async function syncExpert(expertId) {
       // Brand-new item: must be created across both locales in one call, or it can never
       // gain the second locale later (see createItemAcrossLocales). Only applies the first
       // time — once itemId exists, every future sync just PATCHes each locale below.
+      let isNewItem = false;
       if (!itemId) {
         itemId = await findItemBySlug(EXPERTS_COLLECTION_ID, slug);
       }
       if (!itemId) {
+        isNewItem = true;
         itemId = await syncWithRetry(
           () => createItemAcrossLocales(EXPERTS_COLLECTION_ID, slug, Object.values(locales)),
           {
@@ -652,24 +669,47 @@ async function syncExpert(expertId) {
         );
       }
 
-      // Publish live in the expert's own language; push the same content into the
-      // other locale as a draft so it exists in the CMS for translation but never
-      // shows on the public site (client requirement: profiles must publish only
-      // in the expert's own language).
-      for (const localeKey of ['EN', 'IT']) {
-        const cmsLocaleId = locales[localeKey];
-        if (!cmsLocaleId) continue;
-        const localeFieldData = { ...fieldData, 'booking-url': withLangParam(fieldData['booking-url'], localeKey) };
+      if (isNewItem) {
+        // Brand-new item: publish live in the expert's own language, and push the
+        // same content into the other locale as a draft so it exists in the CMS for
+        // translation but never shows on the public site (client requirement:
+        // profiles must publish only in the expert's own language). This locale
+        // loop runs ONLY here, at creation — see the else-branch below.
+        for (const localeKey of ['EN', 'IT']) {
+          const cmsLocaleId = locales[localeKey];
+          if (!cmsLocaleId) continue;
+          const localeFieldData = { ...fieldData, 'booking-url': withLangParam(fieldData['booking-url'], localeKey) };
+          itemId = await syncWithRetry(
+            () => upsertWebflowItem(EXPERTS_COLLECTION_ID, itemId, slug, localeFieldData, {
+              cmsLocaleId,
+              isDraft: localeKey !== activeLocale,
+            }),
+            {
+              entityType:     'expert',
+              entityId:       expertId,
+              payload:        localeFieldData,
+              idempotencyKey: `expert:${expertId}:${localeKey}`,
+            },
+          );
+        }
+      } else {
+        // Item already exists: touch ONLY its own (active) locale from here on. The
+        // other locale may since have been manually translated directly in Webflow —
+        // re-writing it here would silently overwrite that translation with
+        // source-language content (this is what happened to Ludovica's IT profile).
+        // Leave it alone permanently once the item has been created.
+        const cmsLocaleId       = locales[activeLocale];
+        const localeFieldData   = { ...fieldData, 'booking-url': withLangParam(fieldData['booking-url'], activeLocale) };
         itemId = await syncWithRetry(
           () => upsertWebflowItem(EXPERTS_COLLECTION_ID, itemId, slug, localeFieldData, {
             cmsLocaleId,
-            isDraft: localeKey !== activeLocale,
+            isDraft: false,
           }),
           {
             entityType:     'expert',
             entityId:       expertId,
             payload:        localeFieldData,
-            idempotencyKey: `expert:${expertId}:${localeKey}`,
+            idempotencyKey: `expert:${expertId}:${activeLocale}`,
           },
         );
       }
@@ -750,10 +790,12 @@ async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverr
     } else {
       // Brand-new item: must be created across both locales in one call, or it can never
       // gain the second locale later (see createItemAcrossLocales).
+      let isNewItem = false;
       if (!itemId) {
         itemId = await findItemBySlug(SERVICES_COLLECTION_ID, fieldData.slug);
       }
       if (!itemId) {
+        isNewItem = true;
         itemId = await syncWithRetry(
           () => createItemAcrossLocales(SERVICES_COLLECTION_ID, fieldData.slug, Object.values(locales)),
           {
@@ -765,20 +807,43 @@ async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverr
         );
       }
 
-      for (const localeKey of ['EN', 'IT']) {
-        const cmsLocaleId = locales[localeKey];
-        if (!cmsLocaleId) continue;
-        const localeFieldData = { ...fieldData, 'booking-url': withLangParam(fieldData['booking-url'], localeKey) };
+      if (isNewItem) {
+        // Locale loop runs ONLY at creation — see the else-branch below for every
+        // later sync of an item that already exists.
+        for (const localeKey of ['EN', 'IT']) {
+          const cmsLocaleId = locales[localeKey];
+          if (!cmsLocaleId) continue;
+          const localeFieldData = { ...fieldData, 'booking-url': withLangParam(fieldData['booking-url'], localeKey) };
+          itemId = await syncWithRetry(
+            () => upsertWebflowItem(SERVICES_COLLECTION_ID, itemId, fieldData.slug, localeFieldData, {
+              cmsLocaleId,
+              isDraft: localeKey !== activeLocale,
+            }),
+            {
+              entityType:     'service',
+              entityId:       serviceId,
+              payload:        localeFieldData,
+              idempotencyKey: `service:${serviceId}:${localeKey}`,
+            },
+          );
+        }
+      } else {
+        // Item already exists: touch ONLY its own (active) locale from here on — the
+        // other locale may since have been manually translated directly in Webflow,
+        // and re-writing it here would silently overwrite that translation with
+        // source-language content. Leave it alone permanently once created.
+        const cmsLocaleId     = locales[activeLocale];
+        const localeFieldData = { ...fieldData, 'booking-url': withLangParam(fieldData['booking-url'], activeLocale) };
         itemId = await syncWithRetry(
           () => upsertWebflowItem(SERVICES_COLLECTION_ID, itemId, fieldData.slug, localeFieldData, {
             cmsLocaleId,
-            isDraft: localeKey !== activeLocale,
+            isDraft: false,
           }),
           {
             entityType:     'service',
             entityId:       serviceId,
             payload:        localeFieldData,
-            idempotencyKey: `service:${serviceId}:${localeKey}`,
+            idempotencyKey: `service:${serviceId}:${activeLocale}`,
           },
         );
       }
