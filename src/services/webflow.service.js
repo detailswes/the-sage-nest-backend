@@ -489,6 +489,13 @@ async function buildServiceFields(service, expertId, expertWebflowItemId) {
   if (service.format)           fields['format']      = SERVICE_FORMAT_LABELS[service.format] || service.format;
   if (expertWebflowItemId)      fields['expert']      = expertWebflowItemId;
 
+  // Postal codes / areas covered for a Home Visit service. Always set (not just
+  // when truthy) so switching a service away from HOME_VISIT clears any stale
+  // areas left over in Webflow from a previous format.
+  fields['postal-code-area'] = (service.format === 'HOME_VISIT' && service.home_visit_areas?.length)
+    ? service.home_visit_areas.join(', ')
+    : '';
+
   // Category (Reference → Services Categories collection)
   if (service.cluster) {
     const categoryName = CLUSTER_DISPLAY[service.cluster];
