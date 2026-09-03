@@ -3217,12 +3217,14 @@ function buildTransactionWhere({ payment_status, from, to, search } = {}) {
         where.stripe_payment_intent_id = { not: null };
         break;
       case "refunded":
-        // Covers explicit REFUNDED status and CANCELLED bookings where payment was captured
+        // Covers explicit REFUNDED status, CANCELLED bookings where payment was
+        // captured, and partial refunds (which leave the booking CONFIRMED/COMPLETED).
         where.AND = [
           {
             OR: [
               { status: "REFUNDED" },
               { status: "CANCELLED", stripe_payment_intent_id: { not: null } },
+              { refund_status: "succeeded" },
             ],
           },
         ];

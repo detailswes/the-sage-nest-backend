@@ -52,7 +52,7 @@ app.get('/', (_req, res) => {
 
 const { verifyEmailConnection } = require('./utils/email');
 const { startCleanupJob }        = require('./jobs/cleanupPendingBookings');
-const { startTransferJob }       = require('./jobs/processTransfers');
+const { startPayoutSettlementJob } = require('./jobs/markPayoutsSettled');
 const { startReminderJob }       = require('./jobs/sendReminders');
 const { startMarkCompletedJob }  = require('./jobs/markCompletedBookings');
 const { startWebflowSyncJob }    = require('./jobs/webflowSyncJob');
@@ -68,7 +68,7 @@ app.listen(PORT, () => {
   console.log(`[Webhook] STRIPE_WEBHOOK_SECRET set: ${!!process.env.STRIPE_WEBHOOK_SECRET}`);
   verifyEmailConnection();
   startCleanupJob();
-  startTransferJob();
+  startPayoutSettlementJob();
   startReminderJob();
   startMarkCompletedJob();
   startWebflowSyncJob();
