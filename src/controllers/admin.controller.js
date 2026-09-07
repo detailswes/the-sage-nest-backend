@@ -1038,7 +1038,7 @@ async function approveProfileDraft(req, res) {
     // Merge draft fields onto live expert record
     const {
       bio, summary, position, session_format, address_street, address_city,
-      address_postcode, languages, pending_languages, timezone, instagram,
+      address_postcode, address_country, languages, pending_languages, timezone, instagram,
       facebook, linkedin, expertise,
     } = draft;
 
@@ -1047,7 +1047,7 @@ async function approveProfileDraft(req, res) {
         where: { id: parseInt(id) },
         data: {
           bio, summary, position, session_format, address_street, address_city,
-          address_postcode, languages, pending_languages, timezone, instagram,
+          address_postcode, address_country, languages, pending_languages, timezone, instagram,
           facebook, linkedin, expertise,
         },
       }),
@@ -2165,6 +2165,7 @@ async function gdprDeleteExpert(req, res) {
         address_street: null,
         address_city: null,
         address_postcode: null,
+        address_country: null,
         languages: [],
         instagram: null,
         facebook: null,
@@ -3416,7 +3417,7 @@ async function exportTransactionsXlsx(req, res) {
 
 const DRAFT_CONTENT_FIELDS = [
   'bio', 'expertise', 'summary', 'position', 'session_format',
-  'address_street', 'address_city', 'address_postcode', 'timezone',
+  'address_street', 'address_city', 'address_postcode', 'address_country', 'timezone',
   'instagram', 'facebook', 'linkedin',
 ];
 

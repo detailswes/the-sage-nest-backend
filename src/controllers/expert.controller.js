@@ -58,7 +58,7 @@ async function updateMyProfile(req, res) {
   const {
     bio, expertise, profile_image,
     summary, position, session_format,
-    address_street, address_city, address_postcode,
+    address_street, address_city, address_postcode, address_country,
     languages, pending_languages, timezone,
     instagram, facebook, linkedin,
     buffer_minutes, advance_booking_days, min_notice_hours,
@@ -80,6 +80,18 @@ async function updateMyProfile(req, res) {
   if (address_postcode !== undefined && !address_postcode?.trim()) {
     return res.status(400).json({ error: 'Postcode is required.' });
   }
+  if (address_country !== undefined) {
+    if (!address_country?.trim()) {
+      return res.status(400).json({ error: 'Country is required.' });
+    }
+    if (!/^[a-zA-Z]{2}$/.test(address_country.trim())) {
+      return res.status(400).json({ error: 'Country must be a valid ISO country selection.' });
+    }
+  }
+  // Normalised practice-address country — stored lowercase ISO-3166-1 alpha-2,
+  // matching BusinessInfo.address_country so the two compare directly.
+  const normalizedAddressCountry =
+    address_country !== undefined ? address_country.trim().toLowerCase() : undefined;
 
   // Validate bio length
   if (bio !== undefined && bio !== null && bio.length > 700) {
@@ -157,7 +169,7 @@ async function updateMyProfile(req, res) {
         id: true, status: true,
         bio: true, expertise: true, summary: true, position: true,
         session_format: true, address_street: true, address_city: true,
-        address_postcode: true, languages: true, timezone: true,
+        address_postcode: true, address_country: true, languages: true, timezone: true,
         instagram: true, facebook: true, linkedin: true,
       },
     });
@@ -176,6 +188,7 @@ async function updateMyProfile(req, res) {
         ...(address_street   !== undefined && { address_street:   address_street   || null }),
         ...(address_city     !== undefined && { address_city:     address_city     || null }),
         ...(address_postcode !== undefined && { address_postcode: address_postcode || null }),
+        ...(normalizedAddressCountry !== undefined && { address_country: normalizedAddressCountry || null }),
         ...(parsedLanguages !== undefined && { languages: parsedLanguages }),
         ...(timezone  !== undefined && timezone !== null && timezone !== '' && { timezone }),
         ...(instagram !== undefined && { instagram: instagram || null }),
@@ -239,6 +252,7 @@ async function updateMyProfile(req, res) {
         ...(address_street !== undefined && { address_street }),
         ...(address_city !== undefined && { address_city }),
         ...(address_postcode !== undefined && { address_postcode }),
+        ...(normalizedAddressCountry !== undefined && { address_country: normalizedAddressCountry || null }),
         ...(parsedLanguages !== undefined && { languages: parsedLanguages }),
         ...(parsedPendingLanguages !== undefined && { pending_languages: parsedPendingLanguages }),
         ...(timezone !== undefined && timezone !== null && timezone !== '' && { timezone }),

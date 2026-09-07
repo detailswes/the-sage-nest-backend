@@ -1,0 +1,59 @@
+{
+  "countries": {
+    "italy": {
+      "label": "Italia",
+      "selectionType": "double",
+      "levels": ["region", "province"],
+      "regions": [
+        { "region": "Abruzzo", "provinces": ["Chieti", "L'Aquila", "Pescara", "Teramo"] },
+        { "region": "Basilicata", "provinces": ["Matera", "Potenza"] },
+        { "region": "Calabria", "provinces": ["Catanzaro", "Cosenza", "Crotone", "Reggio Calabria", "Vibo Valentia"] },
+        { "region": "Campania", "provinces": ["Avellino", "Benevento", "Caserta", "Napoli", "Salerno"] },
+        { "region": "Emilia-Romagna", "provinces": ["Bologna", "Ferrara", "Forlì-Cesena", "Modena", "Parma", "Piacenza", "Ravenna", "Reggio Emilia", "Rimini"] },
+        { "region": "Friuli-Venezia Giulia", "provinces": ["Gorizia", "Pordenone", "Trieste", "Udine"] },
+        { "region": "Lazio", "provinces": ["Frosinone", "Latina", "Rieti", "Roma", "Viterbo"] },
+        { "region": "Liguria", "provinces": ["Genova", "Imperia", "La Spezia", "Savona"] },
+        { "region": "Lombardia", "provinces": ["Bergamo", "Brescia", "Como", "Cremona", "Lecco", "Lodi", "Mantova", "Milano", "Monza e della Brianza", "Pavia", "Sondrio", "Varese"] },
+        { "region": "Marche", "provinces": ["Ancona", "Ascoli Piceno", "Fermo", "Macerata", "Pesaro e Urbino"] },
+        { "region": "Molise", "provinces": ["Campobasso", "Isernia"] },
+        { "region": "Piemonte", "provinces": ["Alessandria", "Asti", "Biella", "Cuneo", "Novara", "Torino", "Verbano-Cusio-Ossola", "Vercelli"] },
+        { "region": "Puglia", "provinces": ["Bari", "Barletta-Andria-Trani", "Brindisi", "Foggia", "Lecce", "Taranto"] },
+        { "region": "Sardegna", "provinces": ["Cagliari", "Nuoro", "Oristano", "Sassari", "Sud Sardegna"] },
+        { "region": "Sicilia", "provinces": ["Agrigento", "Caltanissetta", "Catania", "Enna", "Messina", "Palermo", "Ragusa", "Siracusa", "Trapani"] },
+        { "region": "Toscana", "provinces": ["Arezzo", "Firenze", "Grosseto", "Livorno", "Lucca", "Massa-Carrara", "Pisa", "Pistoia", "Prato", "Siena"] },
+        { "region": "Trentino-Alto Adige", "provinces": ["Trento", "Bolzano"] },
+        { "region": "Umbria", "provinces": ["Perugia", "Terni"] },
+        { "region": "Valle d'Aosta", "provinces": ["Aosta"] },
+        { "region": "Veneto", "provinces": ["Belluno", "Padova", "Rovigo", "Treviso", "Venezia", "Verona", "Vicenza"] }
+      ]
+    },
+    "denmark": {
+      "label": "Danmark",
+      "selectionType": "double",
+      "levels": ["region", "landsdel"],
+      "note": "Denmark has no legal/administrative 'province' equivalent. Level 1 = Region (official, 5 total). Level 2 = Landsdel (statistical grouping by Danmarks Statistik, not legally binding, used here only to mirror the region->province UX pattern).",
+      "regions": [
+        {
+          "region": "Hovedstaden",
+          "landsdele": ["Byen København", "Københavns omegn", "Nordsjælland", "Bornholm"]
+        },
+        {
+          "region": "Sjælland",
+          "landsdele": ["Østsjælland", "Vest- og Sydsjælland"]
+        },
+        {
+          "region": "Syddanmark",
+          "landsdele": ["Fyn", "Sydjylland"]
+        },
+        {
+          "region": "Midtjylland",
+          "landsdele": ["Østjylland", "Vestjylland"]
+        },
+        {
+          "region": "Nordjylland",
+          "landsdele": ["Nordjylland"]
+        }
+      ]
+    }
+  }
+}

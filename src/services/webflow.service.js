@@ -1,5 +1,6 @@
 const prisma = require('../prisma/client');
 const { sendWebflowSyncFailureAlert } = require('../utils/email');
+const { countryName } = require('../utils/countryName');
 
 const WEBFLOW_API_BASE      = 'https://api.webflow.com/v2';
 const EXPERTS_COLLECTION_ID  = process.env.WEBFLOW_EXPERTS_COLLECTION_ID;
@@ -451,8 +452,12 @@ async function buildExpertFields(expert, slug) {
     if (ids) fields['certification-2'] = ids;
   }
 
-  // Google Maps link — built from available address parts
-  const addressParts = [expert.address_street, expert.address_city, expert.address_postcode]
+  // Google Maps link — built from available address parts. Country (practice
+  // country, falling back to the registered/DAC7 country) is appended as its
+  // English display name so the map search geocodes to the right place.
+  const mapCountryCode = expert.address_country || expert.business_info?.address_country || null;
+  const mapCountry = mapCountryCode ? countryName(mapCountryCode, 'en') : null;
+  const addressParts = [expert.address_street, expert.address_city, expert.address_postcode, mapCountry]
     .filter(Boolean);
   if (addressParts.length) {
     fields['google-maps-link'] = `https://www.google.com/maps/search/${encodeURIComponent(addressParts.join(', '))}`;
@@ -628,6 +633,7 @@ async function syncExpert(expertId) {
       user:           { select: { name: true, language: true } },
       services:       { orderBy: { sort_order: 'asc' } },
       certifications: { select: { name: true } },
+      business_info:  { select: { address_country: true } },
     },
   });
   if (!expert) return;
