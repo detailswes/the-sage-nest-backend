@@ -87,6 +87,11 @@ model Expert {
   address_city               String?
   address_postcode           String?
   address_street             String?
+  // Practice-address country (ISO-3166-1 alpha-2, lowercase — same convention
+  // as BusinessInfo.address_country). Required on every profile save; existing
+  // rows backfilled from business_info in the add-column migration. Shown to
+  // parents only for in-person sessions, but collected for all delivery modes.
+  address_country            String?
   languages                  String[]            @default([])
   position                   String?
   session_format             SessionFormat?
@@ -440,6 +445,7 @@ model ExpertProfileDraft {
   address_street    String?
   address_city      String?
   address_postcode  String?
+  address_country   String?
   languages         String[]       @default([])
   pending_languages String[]       @default([])
   timezone          String?

@@ -1185,6 +1185,7 @@ async function deleteAccount(req, res) {
           address_street:            null,
           address_city:              null,
           address_postcode:          null,
+          address_country:           null,
           languages:                 [],
           pending_languages:         [],
           instagram:                 null,
@@ -1745,6 +1746,7 @@ async function exportMyData(req, res) {
           address_street: true,
           address_city: true,
           address_postcode: true,
+          address_country: true,
           instagram: true,
           facebook: true,
           linkedin: true,
@@ -1831,6 +1833,7 @@ async function exportMyData(req, res) {
           address_street: expert.address_street,
           address_city: expert.address_city,
           address_postcode: expert.address_postcode,
+          address_country: expert.address_country,
           social_links: {
             instagram: expert.instagram,
             facebook: expert.facebook,

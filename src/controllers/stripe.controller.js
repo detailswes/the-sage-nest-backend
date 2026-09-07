@@ -8,6 +8,7 @@ const {
 } = require('../utils/email');
 const { getLegalDocLinks } = require('../utils/legalDocLinks');
 const { usesExpertAddress, isHomeVisit } = require('../constants/format');
+const { practiceAddressLine } = require('../utils/countryName');
 const { syncExpertCurrencyOnReturn, syncExpertCurrencyFromWebhook } = require('../services/expertCurrency.service');
 const { PAYOUT_SETTLEMENT_MS } = require('../constants/payouts');
 
@@ -186,7 +187,7 @@ async function processStripeEvent(event) {
         where: { stripe_payment_intent_id: pi.id },
         include: {
           parent:  { select: { name: true, email: true, phone: true, language: true, timezone: true, notify_booking_confirmation: true } },
-          expert:  { select: { address_street: true, address_city: true, address_postcode: true, timezone: true, notify_new_booking: true, user: { select: { name: true, email: true, language: true } } } },
+          expert:  { select: { address_street: true, address_city: true, address_postcode: true, address_country: true, business_info: { select: { address_country: true } }, timezone: true, notify_new_booking: true, user: { select: { name: true, email: true, language: true } } } },
           service: { select: { title: true } },
           consent: {
             select: {
@@ -233,8 +234,9 @@ async function processStripeEvent(event) {
         logAudit(booking.parent_id, 'BOOKING_CONFIRMED', 'PARENT', booking.parent_id,
           `Booking #${booking.id} confirmed · payment received`);
 
-        // Fire-and-forget: parent confirmation + expert new-booking notification
-        const expertAddress = [booking.expert.address_street, booking.expert.address_city, booking.expert.address_postcode].filter(Boolean).join(', ');
+        // Fire-and-forget: parent confirmation + expert new-booking notification.
+        // Practice address is localised per recipient (country name follows the
+        // email language), so it is rebuilt inside each send block below.
         // Billing details are a per-booking snapshot (spec v1.7 §8) — collected
         // fresh for every booking, never read live from the parent's profile.
         const parentAddress = [
@@ -243,6 +245,7 @@ async function processStripeEvent(event) {
         ].filter(Boolean).join(', ');
         if (booking.parent.notify_booking_confirmation !== false) {
           const confirmationLanguage = booking.consent?.language || booking.parent.language || 'en';
+          const parentExpertAddress = practiceAddressLine(booking.expert, confirmationLanguage);
           getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
             sendBookingConfirmationEmail({
               to:              booking.parent.email,
@@ -252,7 +255,7 @@ async function processStripeEvent(event) {
               format:          booking.format,
               scheduledAt:     booking.scheduled_at,
               durationMinutes: booking.duration_minutes,
-              location:        usesExpertAddress(booking.format) ? (expertAddress || undefined) : undefined,
+              location:        usesExpertAddress(booking.format) ? (parentExpertAddress || undefined) : undefined,
               language:        confirmationLanguage,
               amount:          booking.amount,
               currency:        booking.currency,
@@ -266,6 +269,7 @@ async function processStripeEvent(event) {
 
         if (booking.expert.notify_new_booking !== false) {
           const expertLanguage = booking.expert.user.language || 'en';
+          const notifyExpertAddress = practiceAddressLine(booking.expert, expertLanguage);
           getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
             sendNewBookingNotificationEmail({
               to:              booking.expert.user.email,
@@ -279,7 +283,7 @@ async function processStripeEvent(event) {
               format:          booking.format,
               scheduledAt:     booking.scheduled_at,
               durationMinutes: booking.duration_minutes,
-              location:        usesExpertAddress(booking.format) ? (expertAddress || undefined) : undefined,
+              location:        usesExpertAddress(booking.format) ? (notifyExpertAddress || undefined) : undefined,
               amount:          booking.amount,
               currency:        booking.currency,
               bookingId:       booking.id,

@@ -2,35 +2,20 @@ const prisma = require('../prisma/client');
 const webflowService = require('../services/webflow.service');
 const { PRICE_LIMITS } = require('../constants/currency');
 const { SERVICE_FORMATS } = require('../constants/format');
+const { countryKeyFromIso, sanitizeHomeVisitAreas } = require('../constants/homeVisitAreas');
 const { logAudit } = require('../utils/auditLog');
 
 const VALID_FORMATS    = SERVICE_FORMATS;
 const VALID_CLUSTERS   = ['FOR_PARENTS', 'FOR_BABY', 'FOR_FAMILY', 'PACKAGE', 'GIFT', 'EVENT'];
 
-// Postal codes / areas an expert covers for a HOME_VISIT service. Free text
-// (not a validated postcode format) since coverage isn't limited to one
-// country's postcode shape — trimmed, deduped case-insensitively, and capped
-// so the list stays a short "where I travel to" summary rather than free-form
-// text.
-const MAX_HOME_VISIT_AREAS = 30;
-const MAX_AREA_LENGTH      = 20;
-
-function sanitizeHomeVisitAreas(areas) {
-  if (!Array.isArray(areas)) return [];
-  const seen = new Set();
-  const result = [];
-  for (const raw of areas) {
-    if (typeof raw !== 'string') continue;
-    const trimmed = raw.trim();
-    if (!trimmed || trimmed.length > MAX_AREA_LENGTH) continue;
-    const key = trimmed.toLowerCase();
-    if (seen.has(key)) continue;
-    seen.add(key);
-    result.push(trimmed);
-    if (result.length >= MAX_HOME_VISIT_AREAS) break;
-  }
-  return result;
-}
+// Areas an expert covers for a HOME_VISIT service are picked from a fixed
+// region → province/landsdel dataset scoped to their practice-address country
+// (see constants/homeVisitAreas.js). Home visit is only offered where that
+// dataset exists — currently Italy and Denmark.
+const HOME_VISIT_COUNTRY_ERROR =
+  'Home visit services are only available for experts whose practice address is in Italy or Denmark.';
+const HOME_VISIT_AREAS_ERROR =
+  'Select at least one region and province you cover for home visit services.';
 
 async function getExpertIdForUser(userId) {
   const expert = await prisma.expert.findUnique({ where: { user_id: userId } });
@@ -74,18 +59,22 @@ async function createService(req, res) {
     return res.status(400).json({ error: 'Invalid cluster. Must be FOR_PARENTS, FOR_BABY, FOR_FAMILY, PACKAGE, GIFT, or EVENT.' });
   }
 
-  let sanitizedAreas = [];
-  if (format === 'HOME_VISIT') {
-    sanitizedAreas = sanitizeHomeVisitAreas(home_visit_areas);
-    if (sanitizedAreas.length === 0) {
-      return res.status(400).json({ error: 'At least one postal code or area is required for home visit services.' });
-    }
-  }
-
   try {
     const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
     if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
     const expert_id = expert.id;
+
+    let sanitizedAreas = [];
+    if (format === 'HOME_VISIT') {
+      const countryKey = countryKeyFromIso(expert.address_country);
+      if (!countryKey) {
+        return res.status(400).json({ error: HOME_VISIT_COUNTRY_ERROR });
+      }
+      sanitizedAreas = sanitizeHomeVisitAreas(home_visit_areas, countryKey);
+      if (sanitizedAreas.length === 0) {
+        return res.status(400).json({ error: HOME_VISIT_AREAS_ERROR });
+      }
+    }
 
     // Currency is never taken from the request — it's anchored to the
     // expert's confirmed Stripe account currency (see expertCurrency.service.js).
@@ -191,10 +180,22 @@ async function updateService(req, res) {
     const effectiveFormat = format !== undefined ? (format || null) : service.format;
     let sanitizedAreas;
     if (effectiveFormat === 'HOME_VISIT') {
-      const sourceAreas = home_visit_areas !== undefined ? home_visit_areas : service.home_visit_areas;
-      sanitizedAreas = sanitizeHomeVisitAreas(sourceAreas);
-      if (sanitizedAreas.length === 0) {
-        return res.status(400).json({ error: 'At least one postal code or area is required for home visit services.' });
+      // Only (re)validate the area list when this request actually touches it
+      // (or the format). A partial update that leaves both alone — an
+      // is_active toggle, a price edit — must not trip over a legacy
+      // free-text list that predates the region/province picker.
+      if (home_visit_areas !== undefined || format !== undefined) {
+        const countryKey = countryKeyFromIso(expert.address_country);
+        if (!countryKey) {
+          return res.status(400).json({ error: HOME_VISIT_COUNTRY_ERROR });
+        }
+        // Legacy free-text areas won't survive sanitisation — the expert has
+        // to re-pick them from the dropdowns when they next edit the service.
+        const sourceAreas = home_visit_areas !== undefined ? home_visit_areas : service.home_visit_areas;
+        sanitizedAreas = sanitizeHomeVisitAreas(sourceAreas, countryKey);
+        if (sanitizedAreas.length === 0) {
+          return res.status(400).json({ error: HOME_VISIT_AREAS_ERROR });
+        }
       }
     } else if (home_visit_areas !== undefined || (format !== undefined && service.home_visit_areas.length > 0)) {
       sanitizedAreas = [];

@@ -6,6 +6,7 @@ const { getConsentWording, getHealthConsentWording, HEALTH_CONSENT_VERSION } = r
 const { normalizeFiscalCode, isValidItalianFiscalCode } = require("../utils/fiscalCode");
 const { getLegalDocLinks } = require("../utils/legalDocLinks");
 const { SERVICE_FORMATS, usesExpertAddress, isHomeVisit } = require("../constants/format");
+const { practiceAddressLine } = require("../utils/countryName");
 const { upsertMarketingConsent, syncMarketingConsentToBrevo } = require("../utils/marketingConsent");
 const { createRefundWithFallback } = require("../utils/stripeRefund");
 const { PAYOUT_SETTLEMENT_MS } = require("../constants/payouts");
@@ -468,6 +469,7 @@ async function getBookingById(req, res) {
         expert: {
           include: {
             user: { select: { id: true, name: true, account_deleted: true } },
+            business_info: { select: { address_country: true } },
           },
         },
         service: true,
@@ -509,6 +511,8 @@ async function getMyBookings(req, res) {
             address_street: true,
             address_city: true,
             address_postcode: true,
+            address_country: true,
+            business_info: { select: { address_country: true } },
             user: { select: { name: true, account_deleted: true } },
           },
         },
@@ -937,6 +941,8 @@ async function rescheduleBooking(req, res) {
             address_street: true,
             address_city: true,
             address_postcode: true,
+            address_country: true,
+            business_info: { select: { address_country: true } },
             timezone: true,
             user: { select: { name: true, email: true, language: true } },
           },
@@ -1068,15 +1074,9 @@ async function rescheduleBooking(req, res) {
     );
 
     // ── Notify parent (updated confirmation) ───────────────────────────────
-    const expertAddress = [
-      booking.expert.address_street,
-      booking.expert.address_city,
-      booking.expert.address_postcode,
-    ]
-      .filter(Boolean)
-      .join(", ");
     if (booking.parent.notify_reschedule !== false) {
       const confirmationLanguage = existingConsent?.language || booking.parent.language || "en";
+      const expertAddress = practiceAddressLine(booking.expert, confirmationLanguage);
       getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
         sendBookingConfirmationEmail({
           to: booking.parent.email,
@@ -1366,6 +1366,8 @@ async function verifyPayment(req, res) {
             address_street: true,
             address_city: true,
             address_postcode: true,
+            address_country: true,
+            business_info: { select: { address_country: true } },
             timezone: true,
             notify_new_booking: true,
             user: { select: { name: true, email: true, language: true } },
@@ -1430,14 +1432,8 @@ async function verifyPayment(req, res) {
       `Booking #${booking.id} confirmed (reconciled)`,
     );
 
-    // Fire confirmation emails (same as webhook handler)
-    const expertAddressVerify = [
-      booking.expert.address_street,
-      booking.expert.address_city,
-      booking.expert.address_postcode,
-    ]
-      .filter(Boolean)
-      .join(", ");
+    // Fire confirmation emails (same as webhook handler). Practice address is
+    // localised per recipient (country name follows the email language).
     // Billing details are a per-booking snapshot (spec v1.7 §8) — collected
     // fresh for every booking, never read live from the parent's profile.
     const parentAddressVerify = [
@@ -1451,6 +1447,7 @@ async function verifyPayment(req, res) {
       .join(", ");
     if (booking.parent.notify_booking_confirmation !== false) {
       const confirmationLanguage = booking.consent?.language || booking.parent.language || "en";
+      const expertAddressVerify = practiceAddressLine(booking.expert, confirmationLanguage);
       getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
         sendBookingConfirmationEmail({
           to: booking.parent.email,
@@ -1482,6 +1479,7 @@ async function verifyPayment(req, res) {
 
     if (booking.expert.notify_new_booking !== false) {
       const expertLanguage = booking.expert.user.language || "en";
+      const expertAddressVerify = practiceAddressLine(booking.expert, expertLanguage);
       getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
         sendNewBookingNotificationEmail({
           to: booking.expert.user.email,
