@@ -1063,7 +1063,7 @@ async function approveProfileDraft(req, res) {
       });
     }
 
-    await logAudit(req.user.id, "APPROVE_PROFILE_DRAFT", "Expert", parseInt(id));
+    await logAudit(req.user.id, "APPROVE_PROFILE_DRAFT", "EXPERT", parseInt(id));
     // Only sync to Webflow for APPROVED experts — drafts can exist on PENDING profiles
     if (expert.status === "APPROVED") {
       webflowService.syncExpert(parseInt(id))
@@ -1095,7 +1095,7 @@ async function rejectProfileDraft(req, res) {
       },
     });
 
-    await logAudit(req.user.id, "REJECT_PROFILE_DRAFT", "Expert", parseInt(id), note);
+    await logAudit(req.user.id, "REJECT_PROFILE_DRAFT", "EXPERT", parseInt(id), note);
     return res.json({ message: "Draft rejected" });
   } catch (err) {
     console.error(err);

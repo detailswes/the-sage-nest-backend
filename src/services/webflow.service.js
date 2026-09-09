@@ -14,11 +14,23 @@ const LANGUAGES_COL_ID      = process.env.WEBFLOW_LANGUAGES_COLLECTION_ID;
 const LOCATIONS_COL_ID      = process.env.WEBFLOW_LOCATIONS_COLLECTION_ID;
 const CERTIFICATIONS_COL_ID = process.env.WEBFLOW_CERTIFICATIONS_COLLECTION_ID;
 const CATEGORIES_COL_ID     = process.env.WEBFLOW_CATEGORIES_COLLECTION_ID;
+const SESSION_TYPES_COL_ID  = process.env.WEBFLOW_SESSION_TYPES_COLLECTION_ID;
 
 // Public-site labels for each delivery format.
 const SERVICE_FORMAT_LABELS = {
   ONLINE:     'Online',
   IN_PERSON:  'In-Person',
+  HOME_VISIT: 'Home Visit',
+};
+
+// Expert-level Session Types collection uses its own labels (spaces, not hyphens) —
+// a separate map from SERVICE_FORMAT_LABELS since the two collections' item names
+// don't match ("In Person" here vs "In-Person" on the Services collection's Format
+// field). BOTH has no item of its own: an expert offering multiple formats gets all
+// three linked instead (client preference — clearer than a single "Multiple" tag).
+const SESSION_TYPE_LABELS = {
+  ONLINE:     'Online',
+  IN_PERSON:  'In Person',
   HOME_VISIT: 'Home Visit',
 };
 
@@ -428,6 +440,25 @@ async function buildExpertFields(expert, slug) {
       return null;
     });
     if (id) fields['online-2'] = id;
+  }
+
+  // Session Types (MultiReference → Session Types Experts collection). BOTH links all
+  // three formats rather than a single "Multiple" tag (client preference — clearer on
+  // the card). Always set (even to []) so switching away from a format, or off BOTH,
+  // clears whatever was linked before rather than leaving stale tags on the card.
+  if (SESSION_TYPES_COL_ID) {
+    const formats = expert.session_format === 'BOTH'
+      ? ['ONLINE', 'IN_PERSON', 'HOME_VISIT']
+      : (expert.session_format ? [expert.session_format] : []);
+    const ids = [];
+    for (const format of formats) {
+      const id = await resolveSingleRefId(SESSION_TYPES_COL_ID, SESSION_TYPE_LABELS[format]).catch(err => {
+        console.error(`[Webflow] Could not resolve session type "${SESSION_TYPE_LABELS[format]}":`, err.message);
+        return null;
+      });
+      if (id) ids.push(id);
+    }
+    fields['session-types'] = ids;
   }
 
   // Languages (Multi-reference → Language Experts collection — auto-creates missing languages)
