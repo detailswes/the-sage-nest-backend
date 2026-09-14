@@ -46,6 +46,8 @@ const {
   markTransferResolved,
   approveProfileDraft,
   rejectProfileDraft,
+  approveService,
+  rejectService,
   sendParentPasswordReset,
   resendParentVerification,
   manuallyVerifyParent,
@@ -83,6 +85,10 @@ router.post('/experts/:id/request-changes', requestChanges);   // send revision 
 // ── Profile draft review ──────────────────────────────────────────────────────
 router.post('/experts/:id/draft/approve', approveProfileDraft);
 router.post('/experts/:id/draft/reject',  rejectProfileDraft);
+
+// ── Service review ─────────────────────────────────────────────────────────
+router.post('/services/:id/approve', approveService);
+router.post('/services/:id/reject',  rejectService);
 
 // ── Support tools ─────────────────────────────────────────────────────────────
 router.post('/experts/:id/send-password-reset',  sendPasswordReset);

@@ -27,6 +27,59 @@
         { "region": "Veneto", "provinces": ["Belluno", "Padova", "Rovigo", "Treviso", "Venezia", "Verona", "Vicenza"] }
       ]
     },
+    "united_kingdom": {
+      "label": "United Kingdom",
+      "selectionType": "double",
+      "levels": ["region", "county"],
+      "note": "The UK has no single nationwide 'province' equivalent. Level 1 = the 4 constituent countries (England, Scotland, Wales, Northern Ireland). Level 2 varies by country: England uses the 48 ceremonial counties, Scotland/Wales/Northern Ireland use their council/principal areas (the closest functional equivalent to a province), mirroring the region->province UX pattern used for Italy and the region->landsdel pattern used for Denmark.",
+      "regions": [
+        {
+          "region": "England",
+          "counties": [
+            "Bedfordshire", "Berkshire", "Bristol", "Buckinghamshire", "Cambridgeshire",
+            "Cheshire", "City of London", "Cornwall", "Cumbria", "Derbyshire",
+            "Devon", "Dorset", "Durham", "East Riding of Yorkshire", "East Sussex",
+            "Essex", "Gloucestershire", "Greater London", "Greater Manchester", "Hampshire",
+            "Herefordshire", "Hertfordshire", "Isle of Wight", "Kent", "Lancashire",
+            "Leicestershire", "Lincolnshire", "Merseyside", "Norfolk", "North Yorkshire",
+            "Northamptonshire", "Northumberland", "Nottinghamshire", "Oxfordshire", "Rutland",
+            "Shropshire", "Somerset", "South Yorkshire", "Staffordshire", "Suffolk",
+            "Surrey", "Tyne and Wear", "Warwickshire", "West Midlands", "West Sussex",
+            "West Yorkshire", "Wiltshire", "Worcestershire"
+          ]
+        },
+        {
+          "region": "Scotland",
+          "counties": [
+            "Aberdeen City", "Aberdeenshire", "Angus", "Argyll and Bute", "City of Edinburgh",
+            "Clackmannanshire", "Dumfries and Galloway", "Dundee City", "East Ayrshire", "East Dunbartonshire",
+            "East Lothian", "East Renfrewshire", "Falkirk", "Fife", "Glasgow City",
+            "Highland", "Inverclyde", "Midlothian", "Moray", "Na h-Eileanan Siar (Western Isles)",
+            "North Ayrshire", "North Lanarkshire", "Orkney Islands", "Perth and Kinross", "Renfrewshire",
+            "Scottish Borders", "Shetland Islands", "South Ayrshire", "South Lanarkshire", "Stirling",
+            "West Dunbartonshire", "West Lothian"
+          ]
+        },
+        {
+          "region": "Wales",
+          "counties": [
+            "Blaenau Gwent", "Bridgend", "Caerphilly", "Cardiff", "Carmarthenshire",
+            "Ceredigion", "Conwy", "Denbighshire", "Flintshire", "Gwynedd",
+            "Isle of Anglesey", "Merthyr Tydfil", "Monmouthshire", "Neath Port Talbot", "Newport",
+            "Pembrokeshire", "Powys", "Rhondda Cynon Taf", "Swansea", "Torfaen",
+            "Vale of Glamorgan", "Wrexham"
+          ]
+        },
+        {
+          "region": "Northern Ireland",
+          "counties": [
+            "Antrim and Newtownabbey", "Ards and North Down", "Armagh Banbridge and Craigavon", "Belfast",
+            "Causeway Coast and Glens", "Derry City and Strabane", "Fermanagh and Omagh",
+            "Lisburn and Castlereagh", "Mid and East Antrim", "Mid Ulster", "Newry Mourne and Down"
+          ]
+        }
+      ]
+    },
     "denmark": {
       "label": "Danmark",
       "selectionType": "double",

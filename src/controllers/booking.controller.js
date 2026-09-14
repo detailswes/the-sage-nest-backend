@@ -140,7 +140,7 @@ async function createBooking(req, res) {
     if (!service || service.expert_id !== expert.id) {
       return res.status(404).json({ error: "Service not found" });
     }
-    if (!service.is_active) {
+    if (!service.is_active || service.review_status !== "APPROVED") {
       return res
         .status(400)
         .json({ error: "This service is no longer available" });

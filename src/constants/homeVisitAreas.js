@@ -1,10 +1,11 @@
 // Server-side validation for the home-visit area picker. Experts choose a
-// region and then a province (Italy) / landsdel (Denmark) from a fixed
-// dataset; each pair is stored in Service.home_visit_areas as "Region — Sub".
+// region and then a province (Italy) / landsdel (Denmark) / county (UK) from
+// a fixed dataset; each pair is stored in Service.home_visit_areas as
+// "Region — Sub".
 //
-// The dataset keeps the two second-level concepts under different keys
-// ("provinces" vs "landsdele") on purpose — they are not equivalent — so the
-// helpers here read whichever one a region entry carries.
+// The dataset keeps these second-level concepts under different keys
+// ("provinces" vs "landsdele" vs "counties") on purpose — they are not
+// equivalent — so the helpers here read whichever one a region entry carries.
 
 const data = require('./location-data.json');
 
@@ -12,6 +13,7 @@ const data = require('./location-data.json');
 const ISO_TO_COUNTRY_KEY = {
   it: 'italy',
   dk: 'denmark',
+  gb: 'united_kingdom',
 };
 
 // Spaced em dash — never present inside a region or province name.
@@ -28,7 +30,7 @@ function countryKeyFromIso(iso) {
 const isHomeVisitCountrySupported = (iso) => Boolean(countryKeyFromIso(iso));
 
 function subLevelList(regionEntry) {
-  return regionEntry.provinces || regionEntry.landsdele || [];
+  return regionEntry.provinces || regionEntry.landsdele || regionEntry.counties || [];
 }
 
 function isValidArea(countryKey, value) {

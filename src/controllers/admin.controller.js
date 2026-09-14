@@ -967,7 +967,7 @@ async function getExpertDetail(req, res) {
         certifications: { orderBy: { created_at: "asc" } },
         insurance: true,
         business_info: true,
-        services: { orderBy: { sort_order: "asc" } },
+        services: { orderBy: { sort_order: "asc" }, include: { draft: true } },
         profile_draft: true,
         _count: { select: { bookings: true } },
       },
@@ -1097,6 +1097,96 @@ async function rejectProfileDraft(req, res) {
 
     await logAudit(req.user.id, "REJECT_PROFILE_DRAFT", "EXPERT", parseInt(id), note);
     return res.json({ message: "Draft rejected" });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── Service review ───────────────────────────────────────────────────────────
+// A brand-new service carries its own review_status directly (no live version
+// to protect yet). Editing an already-APPROVED service instead stages the
+// proposed content in a ServiceDraft row, leaving the live row — what parents
+// and booking see — untouched until approved. Both endpoints below detect
+// which case applies so the admin UI only ever needs one Approve/Reject action
+// per service, regardless of which case it's showing.
+
+async function approveService(req, res) {
+  const { id } = req.params;
+  try {
+    const service = await prisma.service.findUnique({
+      where: { id: parseInt(id) },
+      include: { draft: true, expert: { select: { id: true, status: true, webflow_item_id: true } } },
+    });
+    if (!service) return res.status(404).json({ error: "Service not found" });
+
+    let updated;
+    if (service.draft) {
+      const draft = service.draft;
+      [updated] = await prisma.$transaction([
+        prisma.service.update({
+          where: { id: service.id },
+          data: {
+            title: draft.title ?? service.title,
+            description: draft.description !== null ? draft.description : service.description,
+            duration_minutes: draft.duration_minutes ?? service.duration_minutes,
+            price: draft.price ?? service.price,
+            format: draft.format !== null ? draft.format : service.format,
+            cluster: draft.cluster !== null ? draft.cluster : service.cluster,
+            home_visit_areas: draft.home_visit_areas,
+          },
+        }),
+        prisma.serviceDraft.delete({ where: { service_id: service.id } }),
+      ]);
+      await logAudit(req.user.id, "APPROVE_SERVICE_DRAFT", "SERVICE", service.id);
+    } else if (service.review_status === "PENDING_REVIEW") {
+      updated = await prisma.service.update({
+        where: { id: service.id },
+        data: { review_status: "APPROVED", reviewed_at: new Date(), rejection_note: null },
+      });
+      await logAudit(req.user.id, "APPROVE_SERVICE", "SERVICE", service.id);
+    } else {
+      return res.status(404).json({ error: "Nothing pending review for this service." });
+    }
+
+    if (service.expert.status === "APPROVED" && service.expert.webflow_item_id && updated.is_active) {
+      webflowService.syncService(service.id, service.expert.id, service.expert.webflow_item_id)
+        .catch(err => console.error("[Webflow] Sync after service approve failed:", err.message));
+    }
+    return res.json({ message: "Service approved" });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+async function rejectService(req, res) {
+  const { id } = req.params;
+  const { note } = req.body;
+  try {
+    const service = await prisma.service.findUnique({
+      where: { id: parseInt(id) },
+      include: { draft: true },
+    });
+    if (!service) return res.status(404).json({ error: "Service not found" });
+
+    if (service.draft) {
+      await prisma.serviceDraft.update({
+        where: { service_id: service.id },
+        data: { status: "REJECTED", rejection_note: note || null, reviewed_at: new Date() },
+      });
+      await logAudit(req.user.id, "REJECT_SERVICE_DRAFT", "SERVICE", service.id, note);
+    } else if (service.review_status === "PENDING_REVIEW") {
+      await prisma.service.update({
+        where: { id: service.id },
+        data: { review_status: "REJECTED", rejection_note: note || null, reviewed_at: new Date() },
+      });
+      await logAudit(req.user.id, "REJECT_SERVICE", "SERVICE", service.id, note);
+    } else {
+      return res.status(404).json({ error: "Nothing pending review for this service." });
+    }
+
+    return res.json({ message: "Service rejected" });
   } catch (err) {
     console.error(err);
     return res.status(500).json({ error: "Server error" });
@@ -3595,7 +3685,7 @@ async function markTransferResolved(req, res) {
 // Each notification type is a simple query; add new types here as needed.
 async function getAdminNotifications(req, res) {
   try {
-    const [pendingDrafts, expertsWithPendingLanguages] = await Promise.all([
+    const [pendingDrafts, expertsWithPendingLanguages, pendingServices, pendingServiceDrafts] = await Promise.all([
       prisma.expertProfileDraft.findMany({
         where: { status: "PENDING_REVIEW" },
         include: { expert: { include: { user: { select: { name: true } } } } },
@@ -3604,6 +3694,16 @@ async function getAdminNotifications(req, res) {
       prisma.expert.findMany({
         where: { pending_languages: { isEmpty: false } },
         include: { user: { select: { name: true } } },
+      }),
+      prisma.service.findMany({
+        where: { review_status: "PENDING_REVIEW" },
+        include: { expert: { include: { user: { select: { name: true } } } } },
+        orderBy: { submitted_at: "desc" },
+      }),
+      prisma.serviceDraft.findMany({
+        where: { status: "PENDING_REVIEW" },
+        include: { service: { include: { expert: { include: { user: { select: { name: true } } } } } } },
+        orderBy: { submitted_at: "desc" },
       }),
     ]);
 
@@ -3630,7 +3730,27 @@ async function getAdminNotifications(req, res) {
       };
     });
 
-    return res.json([...draftNotifications, ...languageNotifications]);
+    const serviceNotifications = pendingServices.map((svc) => ({
+      id:        `service_${svc.id}`,
+      type:      "SERVICE_PENDING",
+      title:     "New service awaiting review",
+      body:      `${svc.expert.user.name} added a service: "${svc.title}".`,
+      href:      `/dashboard/admin/experts/${svc.expert_id}?tab=services`,
+      expertId:  svc.expert_id,
+      createdAt: svc.submitted_at,
+    }));
+
+    const serviceDraftNotifications = pendingServiceDrafts.map((draft) => ({
+      id:        `service_draft_${draft.id}`,
+      type:      "SERVICE_DRAFT_PENDING",
+      title:     "Service edit awaiting review",
+      body:      `${draft.service.expert.user.name} proposed changes to "${draft.service.title}".`,
+      href:      `/dashboard/admin/experts/${draft.service.expert_id}?tab=services`,
+      expertId:  draft.service.expert_id,
+      createdAt: draft.submitted_at,
+    }));
+
+    return res.json([...draftNotifications, ...languageNotifications, ...serviceNotifications, ...serviceDraftNotifications]);
   } catch (err) {
     console.error("[getAdminNotifications]", err);
     return res.status(500).json({ error: "Server error" });
@@ -3828,6 +3948,8 @@ module.exports = {
   markTransferResolved,
   approveProfileDraft,
   rejectProfileDraft,
+  approveService,
+  rejectService,
   sendParentPasswordReset,
   resendParentVerification,
   manuallyVerifyParent,
