@@ -136,25 +136,55 @@ model Expert {
 }
 
 model Service {
-  id                  Int                @id @default(autoincrement())
+  id                  Int                  @id @default(autoincrement())
   expert_id           Int
   title               String
   duration_minutes    Int
-  price               Decimal            @db.Decimal(10, 2)
-  is_active           Boolean            @default(true)
+  price               Decimal              @db.Decimal(10, 2)
+  is_active           Boolean              @default(true)
   cluster             ServiceCluster?
   description         String?
   format              ServiceFormat?
-  home_visit_areas    String[]           @default([])
-  sort_order          Int                @default(0)
-  currency            String             @default("EUR")
+  home_visit_areas    String[]             @default([])
+  sort_order          Int                  @default(0)
+  currency            String               @default("EUR")
+  review_status       ServiceReviewStatus  @default(PENDING_REVIEW)
+  rejection_note      String?
+  submitted_at        DateTime             @default(now())
+  reviewed_at         DateTime?
   webflow_item_id     String?
   webflow_slug        String?
-  webflow_sync_status WebflowSyncStatus  @default(UNSYNCED)
+  webflow_sync_status WebflowSyncStatus    @default(UNSYNCED)
   webflow_synced_at   DateTime?
   webflow_sync_error  String?
   bookings            Booking[]
-  expert              Expert             @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+  expert              Expert               @relation(fields: [expert_id], references: [id], onDelete: Cascade)
+  draft               ServiceDraft?
+}
+
+// Shadow row for a proposed edit to an already-APPROVED service — the live
+// Service row (and what parents/booking see) stays untouched until an admin
+// approves this draft (merge + delete) or rejects it (flip status in place),
+// mirroring ExpertProfileDraft's lifecycle. A brand-new (never-approved)
+// service has no live version to protect, so it carries review_status
+// directly on its own row instead of going through this table.
+model ServiceDraft {
+  id                Int             @id @default(autoincrement())
+  service_id        Int             @unique
+  title             String?
+  description       String?
+  duration_minutes  Int?
+  price             Decimal?        @db.Decimal(10, 2)
+  format            ServiceFormat?
+  cluster           ServiceCluster?
+  home_visit_areas  String[]        @default([])
+  status            DraftStatus     @default(PENDING_REVIEW)
+  submitted_at      DateTime        @default(now())
+  reviewed_at       DateTime?
+  rejection_note    String?
+  service           Service         @relation(fields: [service_id], references: [id], onDelete: Cascade)
+
+  @@map("service_drafts")
 }
 
 model Qualification {
@@ -582,6 +612,12 @@ enum NotificationType {
 
 enum DraftStatus {
   PENDING_REVIEW
+  REJECTED
+}
+
+enum ServiceReviewStatus {
+  PENDING_REVIEW
+  APPROVED
   REJECTED
 }
 

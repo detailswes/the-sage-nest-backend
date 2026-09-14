@@ -313,7 +313,7 @@ async function getExpertById(req, res) {
       where: { id: parseInt(id) },
       include: {
         user: { select: { name: true, email: true } },
-        services: { where: { is_active: true }, orderBy: { sort_order: 'asc' } },
+        services: { where: { is_active: true, review_status: 'APPROVED' }, orderBy: { sort_order: 'asc' } },
         availability: true,
         qualifications: { orderBy: { created_at: 'asc' } },
         certifications: { orderBy: { created_at: 'asc' } },
@@ -761,7 +761,7 @@ async function listExperts(_req, res) {
           select: { name: true },
         },
         services: {
-          where:   { is_active: true },
+          where:   { is_active: true, review_status: 'APPROVED' },
           select:  { id: true, title: true, price: true, duration_minutes: true, format: true, cluster: true, currency: true },
           orderBy: { id: 'asc' },
         },
