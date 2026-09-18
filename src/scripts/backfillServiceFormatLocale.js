@@ -28,18 +28,20 @@
 const path = require('path');
 const fs   = require('fs');
 
-// Webflow credentials are commented out in .env for local dev (so running the app
-// locally never accidentally syncs dev data to the live site). This script needs
-// them, so read the commented WEBFLOW_* lines directly and set them in-process only
-// — .env on disk is never modified, and nothing here echoes the values back to the
-// terminal.
+// Locally, Webflow credentials are commented out in .env (so running the app locally
+// never accidentally syncs dev data to the live site) — read those commented
+// WEBFLOW_* lines directly and set them in-process only, .env on disk is never
+// modified. On Render there's no .env file at all; real env vars are already set
+// directly by the platform, so this step is skipped and process.env is used as-is.
 const envPath = path.join(__dirname, '../../.env');
-const envRaw  = fs.readFileSync(envPath, 'utf8');
-for (const line of envRaw.split('\n')) {
-  const m = line.match(/^#\s*(WEBFLOW_[A-Z_]+)=(.*)$/);
-  if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
+if (fs.existsSync(envPath)) {
+  const envRaw = fs.readFileSync(envPath, 'utf8');
+  for (const line of envRaw.split('\n')) {
+    const m = line.match(/^#\s*(WEBFLOW_[A-Z_]+)=(.*)$/);
+    if (m && !process.env[m[1]]) process.env[m[1]] = m[2].trim();
+  }
+  require('dotenv').config({ path: envPath });
 }
-require('dotenv').config({ path: envPath });
 
 const prisma        = require('../prisma/client');
 const webflowService = require('../services/webflow.service');
