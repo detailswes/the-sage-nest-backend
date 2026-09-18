@@ -16,12 +16,16 @@ const CERTIFICATIONS_COL_ID = process.env.WEBFLOW_CERTIFICATIONS_COLLECTION_ID;
 const CATEGORIES_COL_ID     = process.env.WEBFLOW_CATEGORIES_COLLECTION_ID;
 const SESSION_TYPES_COL_ID  = process.env.WEBFLOW_SESSION_TYPES_COLLECTION_ID;
 
-// Public-site labels for each delivery format.
+// Public-site labels for each delivery format, per Webflow locale.
 const SERVICE_FORMAT_LABELS = {
-  ONLINE:     'Online',
-  IN_PERSON:  'In-Person',
-  HOME_VISIT: 'Home Visit',
+  EN: { ONLINE: 'Online', IN_PERSON: 'In-Person', HOME_VISIT: 'Home Visit' },
+  IT: { ONLINE: 'Online', IN_PERSON: 'Di persona', HOME_VISIT: 'Visita a domicilio' },
 };
+
+function serviceFormatLabel(format, localeKey) {
+  const labels = SERVICE_FORMAT_LABELS[localeKey] || SERVICE_FORMAT_LABELS.EN;
+  return labels[format] || format;
+}
 
 // Expert-level Session Types collection uses its own labels (spaces, not hyphens) —
 // a separate map from SERVICE_FORMAT_LABELS since the two collections' item names
@@ -518,11 +522,8 @@ async function buildServiceFields(service, expertId, expertWebflowItemId) {
   // paragraphs — only the Webflow copy is flattened.
   if (service.description)      fields['description'] = flattenForSingleLine(service.description);
   if (service.duration_minutes) fields['duration']    = formatDuration(service.duration_minutes);
-  // Lookup rather than a two-way ternary so a new mode can never fall through
-  // to the wrong label. NOTE: the Webflow 'format' field must accept
-  // "Home Visit" — if it is an option/select field there, the option needs
-  // adding on the Webflow side before home-visit services will sync.
-  if (service.format)           fields['format']      = SERVICE_FORMAT_LABELS[service.format] || service.format;
+  // 'format' is locale-dependent (see serviceFormatLabel) and is set per-locale
+  // in syncService's localeFieldData below, not here.
   if (expertWebflowItemId)      fields['expert']      = expertWebflowItemId;
 
   // Postal codes / areas covered for a Home Visit service. Always set (not just
@@ -819,7 +820,11 @@ async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverr
     let itemId = service.webflow_item_id;
 
     if (!locales) {
-      const localeFieldData = { ...fieldData, 'booking-url': withLangParam(fieldData['booking-url'], activeLocale) };
+      const localeFieldData = {
+        ...fieldData,
+        'booking-url': withLangParam(fieldData['booking-url'], activeLocale),
+        ...(service.format ? { format: serviceFormatLabel(service.format, activeLocale) } : {}),
+      };
       itemId = await syncWithRetry(
         () => upsertWebflowItem(SERVICES_COLLECTION_ID, itemId, fieldData.slug, localeFieldData),
         { entityType: 'service', entityId: serviceId, payload: localeFieldData },
@@ -850,7 +855,11 @@ async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverr
         for (const localeKey of ['EN', 'IT']) {
           const cmsLocaleId = locales[localeKey];
           if (!cmsLocaleId) continue;
-          const localeFieldData = { ...fieldData, 'booking-url': withLangParam(fieldData['booking-url'], localeKey) };
+          const localeFieldData = {
+            ...fieldData,
+            'booking-url': withLangParam(fieldData['booking-url'], localeKey),
+            ...(service.format ? { format: serviceFormatLabel(service.format, localeKey) } : {}),
+          };
           itemId = await syncWithRetry(
             () => upsertWebflowItem(SERVICES_COLLECTION_ID, itemId, fieldData.slug, localeFieldData, {
               cmsLocaleId,
@@ -870,7 +879,11 @@ async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverr
         // and re-writing it here would silently overwrite that translation with
         // source-language content. Leave it alone permanently once created.
         const cmsLocaleId     = locales[activeLocale];
-        const localeFieldData = { ...fieldData, 'booking-url': withLangParam(fieldData['booking-url'], activeLocale) };
+        const localeFieldData = {
+          ...fieldData,
+          'booking-url': withLangParam(fieldData['booking-url'], activeLocale),
+          ...(service.format ? { format: serviceFormatLabel(service.format, activeLocale) } : {}),
+        };
         itemId = await syncWithRetry(
           () => upsertWebflowItem(SERVICES_COLLECTION_ID, itemId, fieldData.slug, localeFieldData, {
             cmsLocaleId,
@@ -1100,4 +1113,7 @@ module.exports = {
   // logic's own slug generation exactly, so re-exported rather than duplicated.
   expertSlug,
   serviceSlug,
+  // Exported for backfillServiceFormatLocale.js — must match the live sync's own per-locale
+  // label mapping exactly, so re-exported rather than duplicated.
+  serviceFormatLabel,
 };
