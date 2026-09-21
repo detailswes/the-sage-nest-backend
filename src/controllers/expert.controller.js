@@ -731,6 +731,17 @@ async function saveBusinessInfo(req, res) {
       },
     });
 
+    // Seed the practice-address country from the registered country so
+    // features that depend on it (home-visit areas) work without a separate
+    // profile save. Only fills an empty value — an expert who practises in a
+    // different country keeps whatever they set in their profile.
+    if (!expert.address_country) {
+      await prisma.expert.update({
+        where: { id: expert.id },
+        data:  { address_country: info.address_country },
+      });
+    }
+
     return res.json({ ...info, iban: decryptIban(info.iban) });
   } catch (err) {
     console.error(err);
