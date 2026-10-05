@@ -110,6 +110,10 @@ function userPayload(user) {
 // dot-separated labels (rejects stray commas/spaces/consecutive dots like
 // "user@host,.com").
 const EMAIL_REGEX = /^[a-zA-Z0-9.!#$%&'*+/=?^_`{|}~-]+@[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?(?:\.[a-zA-Z0-9](?:[a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?)+$/;
+// Emails are stored and looked up lowercase so "A@x.com" and "a@x.com" are one account.
+function normalizeEmail(email) {
+  return typeof email === "string" ? email.trim().toLowerCase() : email;
+}
 function validateEmailFormat(email) {
   return EMAIL_REGEX.test(email);
 }
@@ -136,8 +140,9 @@ function validatePasswordStrength(password) {
 // ─── Register ───────────────────────────────────────────────────────────────
 async function register(req, res) {
   const {
-    email, password, role, name, phone, timezone, termsAccepted, marketingConsent, returnTo, language,
+    email: rawEmail, password, role, name, phone, timezone, termsAccepted, marketingConsent, returnTo, language,
   } = req.body;
+  const email = normalizeEmail(rawEmail);
 
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
@@ -378,7 +383,8 @@ async function verifyEmail(req, res) {
 
 // ─── Login ───────────────────────────────────────────────────────────────────
 async function login(req, res) {
-  const { email, password } = req.body;
+  const { email: rawEmail, password } = req.body;
+  const email = normalizeEmail(rawEmail);
 
   if (!email || !password) {
     return res.status(400).json({ error: "Email and password are required" });
@@ -624,7 +630,8 @@ async function logout(req, res) {
 
 // ─── Resend Verification Email ────────────────────────────────────────────────
 async function resendVerification(req, res) {
-  const { email, returnTo } = req.body;
+  const { email: rawEmail, returnTo } = req.body;
+  const email = normalizeEmail(rawEmail);
   if (!email) {
     return res.status(400).json({ error: "Email is required" });
   }
@@ -676,7 +683,8 @@ async function resendVerification(req, res) {
 
 // ─── Forgot Password ──────────────────────────────────────────────────────────
 async function forgotPassword(req, res) {
-  const { email } = req.body;
+  const { email: rawEmail } = req.body;
+  const email = normalizeEmail(rawEmail);
   if (!email) {
     return res.status(400).json({ error: "Email is required" });
   }
@@ -857,7 +865,8 @@ async function updateLanguagePreference(req, res) {
 
 // ─── Update Email — triggers re-verification ─────────────────────────────────
 async function updateEmail(req, res) {
-  const { email, password } = req.body;
+  const { email: rawEmail, password } = req.body;
+  const email = normalizeEmail(rawEmail);
 
   if (!email || !password) {
     return res.status(400).json({ error: "New email and current password are required" });
