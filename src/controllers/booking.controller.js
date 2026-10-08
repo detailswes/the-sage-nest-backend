@@ -19,6 +19,7 @@ const {
   sendExpertCancelledSessionEmail,
   sendExpertCancellationConfirmationEmail,
   sendImLateNotification,
+  sendEventFullyBookedEmail,
 } = require("../utils/email");
 
 // Billing details are a per-booking snapshot on BookingConsent (spec v1.7 §8) —
@@ -47,6 +48,10 @@ async function getExpertIdForUser(userId) {
 // Returns: { bookingId, clientSecret }
 //
 const WITHDRAWAL_WINDOW_MS = 14 * 24 * 60 * 60 * 1000;
+
+// Thrown inside the createBooking transaction when an event has no spots
+// left — distinguishes "event full" from a generic P2002 slot conflict.
+class EventFullError extends Error {}
 
 async function createBooking(req, res) {
   const {
@@ -112,27 +117,6 @@ async function createBooking(req, res) {
       });
     }
 
-    // Verify the connected account has card_payments active — required for
-    // on_behalf_of (destination charge with expert as Merchant of Record).
-    try {
-      const stripeAccount = await stripe.v2.core.accounts.retrieve(
-        expert.stripe_account_id,
-        { include: ["configuration.merchant"] },
-      );
-      if (stripeAccount.configuration?.merchant?.capabilities?.card_payments?.status !== "active") {
-        return res.status(400).json({
-          error:
-            "This expert's payment account is not fully activated yet. They may need to complete their Stripe onboarding. Please try again later or choose another specialist.",
-        });
-      }
-    } catch (e) {
-      console.warn(
-        "[createBooking] Could not retrieve Stripe account capabilities:",
-        e.message,
-      );
-      // If Stripe is unreachable, let the PI creation fail naturally with a clear error.
-    }
-
     // ── Load service ────────────────────────────────────────────────────────
     const service = await prisma.service.findUnique({
       where: { id: parseInt(serviceId) },
@@ -163,6 +147,49 @@ async function createBooking(req, res) {
       });
     }
 
+    const isEvent = service.cluster === "EVENT";
+    const isFreeBooking = Number(service.price) === 0;
+
+    // Fast pre-check for an obviously-full event — saves the Stripe round
+    // trip below. The authoritative check (final race guard) is re-run
+    // inside the transaction right before the booking commits.
+    if (isEvent) {
+      const bookedCount = await prisma.booking.count({
+        where: {
+          service_id: service.id,
+          status: { in: ["PENDING", "CONFIRMED", "PENDING_PAYMENT"] },
+        },
+      });
+      if (service.capacity && bookedCount >= service.capacity) {
+        return res.status(409).json({ error: "This event is fully booked." });
+      }
+    }
+
+    // Verify the connected account has card_payments active — required for
+    // on_behalf_of (destination charge with expert as Merchant of Record).
+    // Irrelevant for a free booking: nothing is ever charged, so a lagging
+    // or unconfirmed capability must not block it.
+    if (!isFreeBooking) {
+      try {
+        const stripeAccount = await stripe.v2.core.accounts.retrieve(
+          expert.stripe_account_id,
+          { include: ["configuration.merchant"] },
+        );
+        if (stripeAccount.configuration?.merchant?.capabilities?.card_payments?.status !== "active") {
+          return res.status(400).json({
+            error:
+              "This expert's payment account is not fully activated yet. They may need to complete their Stripe onboarding. Please try again later or choose another specialist.",
+          });
+        }
+      } catch (e) {
+        console.warn(
+          "[createBooking] Could not retrieve Stripe account capabilities:",
+          e.message,
+        );
+        // If Stripe is unreachable, let the PI creation fail naturally with a clear error.
+      }
+    }
+
     // ── Verify booking-level consent ─────────────────────────────────────────
     // Every booking is its own contract — a past acceptance (even of the same
     // T&C version) never satisfies this booking. The checkbox must be freshly
@@ -177,8 +204,9 @@ async function createBooking(req, res) {
     }
 
     const [currentTcDoc, currentPpDoc, currentCancellationDoc] = await Promise.all([
+      // Events run on their own terms, separate from the 1:1 session T&Cs.
       prisma.legalDocument.findFirst({
-        where: { type: "TERMS_CONDITIONS" },
+        where: { type: isEvent ? "EVENT_TERMS" : "TERMS_CONDITIONS" },
         orderBy: { effective_from: "desc" },
       }),
       prisma.legalDocument.findFirst({
@@ -191,11 +219,11 @@ async function createBooking(req, res) {
       }),
     ]);
 
-    // Withdrawal (14-day cooling-off) consent is required whenever the session
-    // would take place within the statutory withdrawal period — recomputed here
-    // server-side, never trusted from the client.
+    // Withdrawal (14-day cooling-off) consent and invoicing only make sense
+    // where money actually changes hands — a free booking has nothing to
+    // withdraw from and nothing to invoice.
     const withdrawalApplicable =
-      scheduledDate.getTime() - Date.now() <= WITHDRAWAL_WINDOW_MS;
+      !isFreeBooking && scheduledDate.getTime() - Date.now() <= WITHDRAWAL_WINDOW_MS;
     if (withdrawalApplicable && withdrawalAccepted !== true) {
       return res.status(400).json({
         error:
@@ -211,26 +239,29 @@ async function createBooking(req, res) {
     // the parent profile, snapshotted verbatim onto BookingConsent below.
     const isItalianExpert = expert.business_info?.address_country === "it";
 
-    const invoiceHolder = (billingInvoiceHolder || "").trim();
-    if (!invoiceHolder) {
-      return res.status(400).json({ error: "Invoice holder name is required." });
-    }
-
+    let invoiceHolder = "";
     let normalizedFiscalCode = null;
-    if (isItalianExpert) {
-      if (!(billingAddress || "").trim() || !(billingPostcode || "").trim() ||
-          !(billingTown || "").trim() || !(billingProvince || "").trim()) {
-        return res.status(400).json({
-          error: "Address, postcode, town, and province are required for this expert's invoicing.",
-        });
+    if (!isFreeBooking) {
+      invoiceHolder = (billingInvoiceHolder || "").trim();
+      if (!invoiceHolder) {
+        return res.status(400).json({ error: "Invoice holder name is required." });
       }
-      if (billingNoFiscalCode !== true) {
-        normalizedFiscalCode = normalizeFiscalCode(billingFiscalCode);
-        if (!normalizedFiscalCode) {
-          return res.status(400).json({ error: "Please enter your fiscal code — it is required on the invoice." });
+
+      if (isItalianExpert) {
+        if (!(billingAddress || "").trim() || !(billingPostcode || "").trim() ||
+            !(billingTown || "").trim() || !(billingProvince || "").trim()) {
+          return res.status(400).json({
+            error: "Address, postcode, town, and province are required for this expert's invoicing.",
+          });
         }
-        if (!isValidItalianFiscalCode(normalizedFiscalCode)) {
-          return res.status(400).json({ error: "This does not look like a valid fiscal code. Please check it for a typo." });
+        if (billingNoFiscalCode !== true) {
+          normalizedFiscalCode = normalizeFiscalCode(billingFiscalCode);
+          if (!normalizedFiscalCode) {
+            return res.status(400).json({ error: "Please enter your fiscal code — it is required on the invoice." });
+          }
+          if (!isValidItalianFiscalCode(normalizedFiscalCode)) {
+            return res.status(400).json({ error: "This does not look like a valid fiscal code. Please check it for a typo." });
+          }
         }
       }
     }
@@ -279,8 +310,11 @@ async function createBooking(req, res) {
     }
 
     // ── Create booking + release lock atomically ────────────────────────────
-    // Both in one transaction: @@unique([expert_id, scheduled_at]) is the final
-    // race-condition guard; the lock is consumed only once the booking is committed.
+    // Both in one transaction: @@unique([expert_id, scheduled_at, parent_id])
+    // is the final race-condition guard against this same parent double-
+    // booking; the capacity re-check just below is the guard against an
+    // event overselling past its last spot. The lock is consumed only once
+    // the booking is committed.
     const platformFee = (Number(service.price) * 0.2).toFixed(2);
     const currency = (service.currency || "EUR").toLowerCase();
 
@@ -289,8 +323,21 @@ async function createBooking(req, res) {
     const healthConsentWording = healthConsentRequired ? getHealthConsentWording(consentLanguage, healthConsentFlow) : null;
 
     let booking;
+    let eventNowFull = false;
     try {
-      booking = await prisma.$transaction(async (tx) => {
+      ({ booking, eventNowFull } = await prisma.$transaction(async (tx) => {
+        if (isEvent && service.capacity) {
+          const bookedCount = await tx.booking.count({
+            where: {
+              service_id: service.id,
+              status: { in: ["PENDING", "CONFIRMED", "PENDING_PAYMENT"] },
+            },
+          });
+          if (bookedCount >= service.capacity) {
+            throw new EventFullError();
+          }
+        }
+
         const created = await tx.booking.create({
           data: {
             expert_id: expert.id,
@@ -299,14 +346,31 @@ async function createBooking(req, res) {
             scheduled_at: scheduledDate,
             duration_minutes: service.duration_minutes,
             format,
-            status: "PENDING_PAYMENT",
+            status: isFreeBooking ? "CONFIRMED" : "PENDING_PAYMENT",
             amount: service.price,
             currency: currency.toUpperCase(),
             platform_fee: platformFee,
-            payment_expires_at: new Date(now.getTime() + 30 * 60 * 1000),
+            payment_expires_at: isFreeBooking ? null : new Date(now.getTime() + 30 * 60 * 1000),
           },
         });
         await tx.slotLock.delete({ where: { id: lock.id } });
+
+        // This booking may have just taken the event's last spot — stop
+        // accepting new ones automatically rather than relying on the expert
+        // to notice and deactivate it manually.
+        let justFilled = false;
+        if (isEvent && service.capacity) {
+          const newCount = await tx.booking.count({
+            where: {
+              service_id: service.id,
+              status: { in: ["PENDING", "CONFIRMED", "PENDING_PAYMENT"] },
+            },
+          });
+          if (newCount >= service.capacity) {
+            await tx.service.update({ where: { id: service.id }, data: { is_active: false } });
+            justFilled = true;
+          }
+        }
 
         // Durable per-version ledger (still used by admin acceptance counts) —
         // kept alongside, but no longer what gates the checkbox on the frontend.
@@ -341,14 +405,14 @@ async function createBooking(req, res) {
             privacy_policy_version_displayed: currentPpDoc?.version ?? null,
             marketing_consent: marketingConsent === true,
             language: consentLanguage,
-            billing_invoice_holder: invoiceHolder,
-            billing_address: isItalianExpert ? (billingAddress || "").trim() : null,
-            billing_postcode: isItalianExpert ? (billingPostcode || "").trim() : null,
-            billing_town: isItalianExpert ? (billingTown || "").trim() : null,
-            billing_province: isItalianExpert ? (billingProvince || "").trim() : null,
-            billing_country: isItalianExpert ? (billingCountry || "").trim() || null : null,
+            billing_invoice_holder: isFreeBooking ? null : invoiceHolder,
+            billing_address: !isFreeBooking && isItalianExpert ? (billingAddress || "").trim() : null,
+            billing_postcode: !isFreeBooking && isItalianExpert ? (billingPostcode || "").trim() : null,
+            billing_town: !isFreeBooking && isItalianExpert ? (billingTown || "").trim() : null,
+            billing_province: !isFreeBooking && isItalianExpert ? (billingProvince || "").trim() : null,
+            billing_country: !isFreeBooking && isItalianExpert ? (billingCountry || "").trim() || null : null,
             billing_fiscal_code: normalizedFiscalCode,
-            billing_no_fiscal_code: isItalianExpert && billingNoFiscalCode === true,
+            billing_no_fiscal_code: !isFreeBooking && isItalianExpert && billingNoFiscalCode === true,
             health_consent_required: healthConsentRequired,
             health_consent_flow: healthConsentRequired ? healthConsentFlow : null,
             health_consent_given: healthConsentRequired && healthConsentGiven === true,
@@ -366,9 +430,12 @@ async function createBooking(req, res) {
           await upsertMarketingConsent(tx, req.user.id, { consent: true, source: "BOOKING" });
         }
 
-        return created;
-      });
+        return { booking: created, eventNowFull: justFilled };
+      }));
     } catch (err) {
+      if (err instanceof EventFullError) {
+        return res.status(409).json({ error: "This event is fully booked." });
+      }
       if (err.code === "P2002") {
         return res
           .status(409)
@@ -382,6 +449,102 @@ async function createBooking(req, res) {
 
     if (marketingConsent === true) {
       syncMarketingConsentToBrevo(req.user.id, true);
+    }
+
+    // ── Event just filled its last spot ─────────────────────────────────────
+    // is_active was already flipped off inside the transaction above — this
+    // fires regardless of whether the booking that filled it is free or still
+    // waiting on payment, since the capacity count (and therefore is_active)
+    // already treats a PENDING_PAYMENT booking as occupying its spot.
+    if (eventNowFull) {
+      prisma.expert.findUnique({
+        where: { id: expert.id },
+        select: { timezone: true, user: { select: { email: true, language: true } } },
+      }).then((fullExpert) => {
+        if (!fullExpert) return;
+        const expertLanguage = fullExpert.user.language || "en";
+        return sendEventFullyBookedEmail({
+          to: fullExpert.user.email,
+          expertName: expert.user.name,
+          serviceTitle: service.title,
+          scheduledAt: scheduledDate,
+          timezone: fullExpert.timezone,
+          language: expertLanguage,
+        });
+      }).catch((e) => console.error("[Email] Event-full notification failed:", e.message));
+    }
+
+    // ── Free booking: nothing to charge, so there's no PaymentIntent and no
+    // webhook to confirm it later — the booking is already CONFIRMED, so send
+    // the same notifications the webhook sends for a paid booking, right now.
+    if (isFreeBooking) {
+      const fullBooking = await prisma.booking.findUnique({
+        where: { id: booking.id },
+        include: {
+          parent: { select: { name: true, email: true, phone: true, language: true, timezone: true, notify_booking_confirmation: true } },
+          expert: { select: { address_street: true, address_city: true, address_postcode: true, address_country: true, business_info: { select: { address_country: true } }, timezone: true, notify_new_booking: true, user: { select: { name: true, email: true, language: true } } } },
+          service: { select: { title: true } },
+          consent: { select: { language: true, withdrawal_applicable: true } },
+        },
+      });
+
+      const parentConfirmationLanguage = fullBooking.consent?.language || fullBooking.parent.language || "en";
+      if (fullBooking.parent.notify_booking_confirmation !== false) {
+        const parentExpertAddress = practiceAddressLine(fullBooking.expert, parentConfirmationLanguage);
+        getLegalDocLinks(parentConfirmationLanguage).then((legalLinks) => {
+          sendBookingConfirmationEmail({
+            to: fullBooking.parent.email,
+            name: fullBooking.parent.name,
+            expertName: fullBooking.expert.user.name,
+            serviceTitle: fullBooking.service.title,
+            format: fullBooking.format,
+            scheduledAt: fullBooking.scheduled_at,
+            durationMinutes: fullBooking.duration_minutes,
+            location: usesExpertAddress(fullBooking.format) ? (parentExpertAddress || undefined) : undefined,
+            language: parentConfirmationLanguage,
+            amount: fullBooking.amount,
+            currency: fullBooking.currency,
+            userTimezone: fullBooking.parent.timezone || fullBooking.expert.timezone,
+            withdrawalApplicable: fullBooking.consent?.withdrawal_applicable,
+            bookingId: fullBooking.id,
+            isEvent,
+            ...legalLinks,
+          });
+        }).catch((e) => console.error("[Email] Free-booking parent confirmation failed:", e.message));
+      }
+
+      if (fullBooking.expert.notify_new_booking !== false) {
+        const expertLanguage = fullBooking.expert.user.language || "en";
+        const notifyExpertAddress = practiceAddressLine(fullBooking.expert, expertLanguage);
+        getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
+          sendNewBookingNotificationEmail({
+            to: fullBooking.expert.user.email,
+            expertName: fullBooking.expert.user.name,
+            parentName: fullBooking.parent.name,
+            parentEmail: fullBooking.parent.email,
+            parentPhone: isHomeVisit(fullBooking.format) ? fullBooking.parent.phone : null,
+            serviceTitle: fullBooking.service.title,
+            format: fullBooking.format,
+            scheduledAt: fullBooking.scheduled_at,
+            durationMinutes: fullBooking.duration_minutes,
+            location: usesExpertAddress(fullBooking.format) ? (notifyExpertAddress || undefined) : undefined,
+            amount: fullBooking.amount,
+            currency: fullBooking.currency,
+            bookingId: fullBooking.id,
+            timezone: fullBooking.expert.timezone,
+            language: expertLanguage,
+            policyUrl,
+            isEvent,
+          });
+        }).catch((e) => console.error("[Email] Free-booking expert notification failed:", e.message));
+      }
+
+      console.log(`[createBooking] Free booking ${booking.id} confirmed — no payment required`);
+      return res.status(201).json({
+        bookingId: booking.id,
+        confirmed: true,
+        currency: currency.toUpperCase(),
+      });
     }
 
     // ── Create Stripe PaymentIntent (Destination Charge) ───────────────────
@@ -685,7 +848,7 @@ async function cancelBooking(req, res) {
       include: {
         parent: { select: { name: true, email: true, language: true, timezone: true } },
         expert: { include: { user: { select: { name: true, email: true, language: true } } } },
-        service: { select: { title: true } },
+        service: { select: { id: true, title: true, cluster: true, capacity: true, is_active: true } },
       },
     });
 
@@ -736,6 +899,21 @@ async function cancelBooking(req, res) {
       },
     });
     console.log(`[cancelBooking] booking=${booking.id} marked CANCELLED`);
+
+    // An event auto-deactivates once full (see createBooking) — cancelling an
+    // attendee's spot should reopen it for new sign-ups, same as the client
+    // asked: "the spot should reopen and spots left should update."
+    if (booking.service.cluster === "EVENT" && !booking.service.is_active && booking.service.capacity) {
+      const stillBookedCount = await prisma.booking.count({
+        where: {
+          service_id: booking.service.id,
+          status: { in: ["PENDING", "CONFIRMED", "PENDING_PAYMENT"] },
+        },
+      });
+      if (stillBookedCount < booking.service.capacity) {
+        await prisma.service.update({ where: { id: booking.service.id }, data: { is_active: true } });
+      }
+    }
 
     // ── Initiate Stripe refund based on tier ────────────────────────────────
     // Idempotency key: stable per booking + refund tier so a network-timeout
@@ -947,7 +1125,7 @@ async function rescheduleBooking(req, res) {
             user: { select: { name: true, email: true, language: true } },
           },
         },
-        service: { select: { title: true, duration_minutes: true } },
+        service: { select: { title: true, duration_minutes: true, cluster: true } },
       },
     });
 
@@ -964,6 +1142,13 @@ async function rescheduleBooking(req, res) {
       return res
         .status(400)
         .json({ error: "This booking has already been rescheduled once" });
+    }
+    if (booking.service.cluster === "EVENT") {
+      // An event happens at one fixed time for every attendee — an individual
+      // can't move it without leaving the event they actually signed up for.
+      return res.status(400).json({
+        error: "Event bookings can't be rescheduled. Please cancel and book another event if you can no longer attend this date.",
+      });
     }
 
     // Enforce the 12 h window using the same boundary as cancellation
@@ -1215,6 +1400,51 @@ async function getCalendarBookings(req, res) {
   }
 }
 
+// ─── GET /bookings/events/:serviceId/attendees — expert's attendee list ──────
+//
+// Every parent currently booked into one event (any non-cancelled booking).
+// Attendees never see each other — this is an expert-only view.
+async function getEventAttendees(req, res) {
+  const { serviceId } = req.params;
+
+  try {
+    const expertId = await getExpertIdForUser(req.user.id);
+    if (!expertId) return res.status(404).json({ error: "Expert profile not found" });
+
+    const service = await prisma.service.findUnique({ where: { id: parseInt(serviceId) } });
+    if (!service || service.expert_id !== expertId) {
+      return res.status(404).json({ error: "Service not found" });
+    }
+    if (service.cluster !== "EVENT") {
+      return res.status(400).json({ error: "This service is not an event." });
+    }
+
+    const bookings = await prisma.booking.findMany({
+      where: {
+        service_id: service.id,
+        status: { in: ["PENDING", "CONFIRMED", "PENDING_PAYMENT", "CANCELLED", "REFUNDED"] },
+      },
+      orderBy: { created_at: "asc" },
+      select: {
+        id: true,
+        status: true,
+        amount: true,
+        currency: true,
+        created_at: true,
+        parent: { select: { name: true, email: true } },
+      },
+    });
+
+    return res.json({
+      service: { id: service.id, title: service.title, capacity: service.capacity, eventStartsAt: service.event_starts_at },
+      attendees: bookings,
+    });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
 // ─── PATCH /bookings/:id/complete — save expert session note (status unchanged) ─
 // Status is managed automatically by the markCompletedBookings cron job.
 async function markBookingComplete(req, res) {
@@ -1373,7 +1603,7 @@ async function verifyPayment(req, res) {
             user: { select: { name: true, email: true, language: true } },
           },
         },
-        service: { select: { title: true } },
+        service: { select: { title: true, cluster: true } },
         consent: { select: { language: true, withdrawal_applicable: true, ...BILLING_SNAPSHOT_SELECT } },
       },
     });
@@ -1447,6 +1677,7 @@ async function verifyPayment(req, res) {
       .join(", ");
     if (booking.parent.notify_booking_confirmation !== false) {
       const confirmationLanguage = booking.consent?.language || booking.parent.language || "en";
+      const isEventBooking = booking.service.cluster === "EVENT";
       const expertAddressVerify = practiceAddressLine(booking.expert, confirmationLanguage);
       getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
         sendBookingConfirmationEmail({
@@ -1467,6 +1698,7 @@ async function verifyPayment(req, res) {
           userTimezone: booking.parent.timezone || booking.expert.timezone,
           withdrawalApplicable: booking.consent?.withdrawal_applicable,
           bookingId: booking.id,
+          isEvent: isEventBooking,
           ...legalLinks,
         });
       }).catch((e) =>
@@ -1506,6 +1738,7 @@ async function verifyPayment(req, res) {
           parentAddress: parentAddressVerify || undefined,
           parentFiscalCode: booking.consent?.billing_fiscal_code || undefined,
           parentInvoiceHolder: booking.consent?.billing_invoice_holder || undefined,
+          isEvent: booking.service.cluster === "EVENT",
         });
       }).catch((e) =>
         console.error(
@@ -1554,45 +1787,14 @@ async function markSessionLinkSent(req, res) {
 //
 // Always issues a full refund regardless of timing, then emails the parent.
 //
-async function expertCancelBooking(req, res) {
-  const { id } = req.params;
+// Shared by expertCancelBooking (one booking, HTTP) and expertCancelEvent
+// (every attendee of an event, looped) — everything from issuing the refund
+// through notifying the parent/expert. Expects `booking` already loaded with
+// the includes both callers use. Returns { stripeRefund, platformFunded } or
+// throws (caller decides how to translate that into a response).
+async function performExpertCancellation(booking, actingUserId, { sendExpertConfirmation = true } = {}) {
   const cancelledAt = new Date();
-
-  try {
-    const booking = await prisma.booking.findUnique({
-      where: { id: parseInt(id) },
-      include: {
-        parent: {
-          select: { name: true, email: true, notify_expert_cancellation: true, timezone: true, language: true },
-        },
-        expert: {
-          select: {
-            user_id: true,
-            timezone: true,
-            user: { select: { name: true, email: true, language: true } },
-          },
-        },
-        service: { select: { title: true } },
-        consent: { select: { language: true } },
-      },
-    });
-
-    if (!booking) return res.status(404).json({ error: "Booking not found" });
-
-    // Only the expert who owns this booking can cancel it
-    if (booking.expert.user_id !== req.user.id) {
-      return res.status(403).json({ error: "Access denied" });
-    }
-
-    if (!["CONFIRMED", "PENDING_PAYMENT"].includes(booking.status)) {
-      return res
-        .status(400)
-        .json({
-          error: `Booking cannot be cancelled (current status: ${booking.status})`,
-        });
-    }
-
-    let stripeRefund = null;
+  let stripeRefund = null;
     let platformFunded = false;
     const refundedAmount = parseFloat(booking.amount) || 0;
 
@@ -1678,11 +1880,27 @@ async function expertCancelBooking(req, res) {
     });
 
     console.log(
-      `[expertCancelBooking] booking=${booking.id} cancelled by expert user=${req.user.id} refund=${stripeRefund?.id || "none"} platform_funded=${platformFunded}`,
+      `[expertCancelBooking] booking=${booking.id} cancelled by expert user=${actingUserId} refund=${stripeRefund?.id || "none"} platform_funded=${platformFunded}`,
     );
 
+    // Same as a parent self-cancelling: freeing one attendee's spot on an
+    // event that auto-deactivated when full should reopen it, unless the
+    // caller is cancelling the whole event (expertCancelEvent forces
+    // is_active back to false once its loop finishes).
+    if (booking.service.cluster === "EVENT" && !booking.service.is_active && booking.service.capacity) {
+      const stillBookedCount = await prisma.booking.count({
+        where: {
+          service_id: booking.service.id,
+          status: { in: ["PENDING", "CONFIRMED", "PENDING_PAYMENT"] },
+        },
+      });
+      if (stillBookedCount < booking.service.capacity) {
+        await prisma.service.update({ where: { id: booking.service.id }, data: { is_active: true } });
+      }
+    }
+
     logAudit(
-      req.user.id,
+      actingUserId,
       "BOOKING_CANCELLED_BY_EXPERT",
       "PARENT",
       booking.parent_id,
@@ -1690,7 +1908,7 @@ async function expertCancelBooking(req, res) {
     );
     if (platformFunded) {
       logAudit(
-        req.user.id,
+        actingUserId,
         "REFUND_PLATFORM_FUNDED",
         "PARENT",
         booking.expert_id,
@@ -1725,8 +1943,10 @@ async function expertCancelBooking(req, res) {
 
     // Confirm to the expert what their cancellation caused — same trigger
     // point as the parent email above (only after the refund has succeeded),
-    // independent of the parent's own notification preference.
-    if (booking.status === "CONFIRMED" && stripeRefund) {
+    // independent of the parent's own notification preference. Suppressed
+    // for a bulk whole-event cancel, which sends one summary instead of one
+    // email per attendee.
+    if (sendExpertConfirmation && booking.status === "CONFIRMED" && stripeRefund) {
       sendExpertCancellationConfirmationEmail({
         to: booking.expert.user.email,
         expertName: booking.expert.user.name,
@@ -1741,9 +1961,119 @@ async function expertCancelBooking(req, res) {
       );
     }
 
+    return { stripeRefund, platformFunded };
+}
+
+// ─── POST /bookings/:id/expert-cancel — expert cancels a confirmed booking ────
+//
+// Always issues a full refund regardless of timing, then emails the parent.
+//
+async function expertCancelBooking(req, res) {
+  const { id } = req.params;
+
+  try {
+    const booking = await prisma.booking.findUnique({
+      where: { id: parseInt(id) },
+      include: {
+        parent: {
+          select: { name: true, email: true, notify_expert_cancellation: true, timezone: true, language: true },
+        },
+        expert: {
+          select: {
+            user_id: true,
+            timezone: true,
+            user: { select: { name: true, email: true, language: true } },
+          },
+        },
+        service: { select: { id: true, title: true, cluster: true, capacity: true, is_active: true } },
+        consent: { select: { language: true } },
+      },
+    });
+
+    if (!booking) return res.status(404).json({ error: "Booking not found" });
+
+    // Only the expert who owns this booking can cancel it
+    if (booking.expert.user_id !== req.user.id) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+
+    if (!["CONFIRMED", "PENDING_PAYMENT"].includes(booking.status)) {
+      return res
+        .status(400)
+        .json({
+          error: `Booking cannot be cancelled (current status: ${booking.status})`,
+        });
+    }
+
+    await performExpertCancellation(booking, req.user.id);
     return res.json({ success: true });
   } catch (err) {
     console.error("[expertCancelBooking] Error:", err);
+    return res.status(500).json({ error: "Server error" });
+  }
+}
+
+// ─── POST /services/:serviceId/cancel-event — expert cancels an entire event ──
+//
+// Cancels every still-active booking against this event, refunding each
+// attendee through the same path as a single expert-cancel (one booking's
+// refund failing never blocks the others). Leaves the service deactivated —
+// the event is off, not merely down one attendee.
+async function expertCancelEvent(req, res) {
+  const { serviceId } = req.params;
+
+  try {
+    const service = await prisma.service.findUnique({ where: { id: parseInt(serviceId) } });
+    if (!service) return res.status(404).json({ error: "Service not found" });
+
+    const expertId = await getExpertIdForUser(req.user.id);
+    if (!expertId || service.expert_id !== expertId) {
+      return res.status(403).json({ error: "Access denied" });
+    }
+    if (service.cluster !== "EVENT") {
+      return res.status(400).json({ error: "This service is not an event." });
+    }
+
+    const bookings = await prisma.booking.findMany({
+      where: { service_id: service.id, status: { in: ["PENDING", "CONFIRMED", "PENDING_PAYMENT"] } },
+      include: {
+        parent: {
+          select: { name: true, email: true, notify_expert_cancellation: true, timezone: true, language: true },
+        },
+        expert: {
+          select: {
+            user_id: true,
+            timezone: true,
+            user: { select: { name: true, email: true, language: true } },
+          },
+        },
+        service: { select: { id: true, title: true, cluster: true, capacity: true, is_active: true } },
+        consent: { select: { language: true } },
+      },
+    });
+
+    let cancelled = 0;
+    let failed = 0;
+    for (const booking of bookings) {
+      try {
+        await performExpertCancellation(booking, req.user.id, { sendExpertConfirmation: false });
+        cancelled += 1;
+      } catch (err) {
+        failed += 1;
+        console.error(`[expertCancelEvent] booking=${booking.id} failed:`, err.message);
+      }
+    }
+
+    // The whole event is off — force this regardless of what the per-booking
+    // reactivation logic did while the loop was running.
+    await prisma.service.update({ where: { id: service.id }, data: { is_active: false } });
+
+    logAudit(req.user.id, "EVENT_CANCELLED_BY_EXPERT", "SERVICE", service.id,
+      `Event #${service.id} cancelled — ${cancelled} attendee(s) refunded${failed ? `, ${failed} failed and need manual follow-up` : ""}.`);
+
+    return res.json({ success: true, cancelled, failed });
+  } catch (err) {
+    console.error("[expertCancelEvent] Error:", err);
     return res.status(500).json({ error: "Server error" });
   }
 }
@@ -1809,6 +2139,8 @@ module.exports = {
   abandonBooking,
   rescheduleBooking,
   expertCancelBooking,
+  expertCancelEvent,
+  getEventAttendees,
   getUpcomingAppointments,
   getPastAppointments,
   getCalendarBookings,

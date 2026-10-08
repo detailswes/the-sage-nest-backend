@@ -7,6 +7,10 @@ const { logAudit } = require('../utils/auditLog');
 
 const VALID_FORMATS    = SERVICE_FORMATS;
 const VALID_CLUSTERS   = ['FOR_PARENTS', 'FOR_BABY', 'FOR_FAMILY', 'PACKAGE', 'GIFT', 'EVENT'];
+// Events are always a single scheduled occurrence, delivered online or
+// in-person — "home visit" has no meaning for a one-off group gathering.
+const EVENT_FORMATS = ['ONLINE', 'IN_PERSON'];
+const EVENT_FORMAT_ERROR = `Events must be delivered as one of: ${EVENT_FORMATS.join(', ')}.`;
 
 // Areas an expert covers for a HOME_VISIT service are picked from a fixed
 // region → province/landsdel/county dataset scoped to their practice-address
@@ -37,9 +41,12 @@ function logCurrencyRejection(actorUserId, serviceId, attempted, expected) {
 }
 
 async function createService(req, res) {
-  const { title, description, duration_minutes, price, format, cluster, home_visit_areas } = req.body;
+  const {
+    title, description, duration_minutes, price, format, cluster, home_visit_areas,
+    event_starts_at, capacity,
+  } = req.body;
 
-  if (!title || !description || !duration_minutes || !price || !format || !cluster) {
+  if (!title || !description || !duration_minutes || price === undefined || price === null || price === '' || !format || !cluster) {
     return res.status(400).json({ error: 'title, description, duration_minutes, price, format, and cluster are required.' });
   }
   if (title.trim().length > 80) {
@@ -57,6 +64,27 @@ async function createService(req, res) {
   }
   if (!VALID_CLUSTERS.includes(cluster)) {
     return res.status(400).json({ error: 'Invalid cluster. Must be FOR_PARENTS, FOR_BABY, FOR_FAMILY, PACKAGE, GIFT, or EVENT.' });
+  }
+
+  const isEvent = cluster === 'EVENT';
+  if (isEvent && !EVENT_FORMATS.includes(format)) {
+    return res.status(400).json({ error: EVENT_FORMAT_ERROR });
+  }
+
+  let eventStartsAtDate = null;
+  let capacityVal = null;
+  if (isEvent) {
+    eventStartsAtDate = new Date(event_starts_at);
+    if (!event_starts_at || isNaN(eventStartsAtDate.getTime())) {
+      return res.status(400).json({ error: 'A valid event date and time is required.' });
+    }
+    if (eventStartsAtDate <= new Date()) {
+      return res.status(400).json({ error: 'Event date and time must be in the future.' });
+    }
+    capacityVal = parseInt(capacity);
+    if (isNaN(capacityVal) || capacityVal < 1 || capacityVal > 1000) {
+      return res.status(400).json({ error: 'Number of spots must be between 1 and 1000.' });
+    }
   }
 
   try {
@@ -89,8 +117,11 @@ async function createService(req, res) {
 
     const priceVal = parseFloat(price);
     const limits   = PRICE_LIMITS[currency] || PRICE_LIMITS.EUR;
-    if (isNaN(priceVal) || priceVal < limits.min || priceVal > limits.max) {
-      return res.status(400).json({ error: `Price for ${currency} must be between ${limits.min} and ${limits.max}.` });
+    // Events may be free — the per-currency minimum exists to keep 1:1 session
+    // pricing sane, but has no bearing on a complimentary workshop.
+    const minPrice = isEvent ? 0 : limits.min;
+    if (isNaN(priceVal) || priceVal < minPrice || priceVal > limits.max) {
+      return res.status(400).json({ error: `Price for ${currency} must be between ${minPrice} and ${limits.max}.` });
     }
 
     // Place new service at the end of the expert's current list
@@ -111,6 +142,8 @@ async function createService(req, res) {
         format: format || null,
         home_visit_areas: sanitizedAreas,
         cluster: cluster || null,
+        event_starts_at: isEvent ? eventStartsAtDate : null,
+        capacity: isEvent ? capacityVal : null,
         is_active: false,
         sort_order,
         review_status: 'PENDING_REVIEW',
@@ -145,7 +178,10 @@ async function listServices(req, res) {
 
 async function updateService(req, res) {
   const { id } = req.params;
-  const { title, description, duration_minutes, price, currency, is_active, format, cluster, home_visit_areas } = req.body;
+  const {
+    title, description, duration_minutes, price, currency, is_active, format, cluster, home_visit_areas,
+    event_starts_at, capacity,
+  } = req.body;
 
   if (title !== undefined && title.trim().length > 80) {
     return res.status(400).json({ error: 'Service title must be 80 characters or fewer.' });
@@ -206,6 +242,39 @@ async function updateService(req, res) {
       sanitizedAreas = [];
     }
 
+    const effectiveCluster = cluster !== undefined ? (cluster || null) : service.cluster;
+    const isEvent = effectiveCluster === 'EVENT';
+    if (isEvent && !EVENT_FORMATS.includes(effectiveFormat)) {
+      return res.status(400).json({ error: EVENT_FORMAT_ERROR });
+    }
+
+    let eventStartsAtDate;
+    if (event_starts_at !== undefined) {
+      eventStartsAtDate = new Date(event_starts_at);
+      if (isNaN(eventStartsAtDate.getTime())) {
+        return res.status(400).json({ error: 'A valid event date and time is required.' });
+      }
+      if (eventStartsAtDate <= new Date()) {
+        return res.status(400).json({ error: 'Event date and time must be in the future.' });
+      }
+    }
+    const effectiveEventStartsAt = event_starts_at !== undefined ? eventStartsAtDate : service.event_starts_at;
+    if (isEvent && !effectiveEventStartsAt) {
+      return res.status(400).json({ error: 'A valid event date and time is required.' });
+    }
+
+    let capacityVal;
+    if (capacity !== undefined) {
+      capacityVal = parseInt(capacity);
+      if (isNaN(capacityVal) || capacityVal < 1 || capacityVal > 1000) {
+        return res.status(400).json({ error: 'Number of spots must be between 1 and 1000.' });
+      }
+    }
+    const effectiveCapacity = capacity !== undefined ? capacityVal : service.capacity;
+    if (isEvent && !effectiveCapacity) {
+      return res.status(400).json({ error: 'Number of spots must be between 1 and 1000.' });
+    }
+
     // Currency is locked to the expert's confirmed account currency. The only
     // change ever accepted is realigning a stale service onto that currency
     // (e.g. after a Stripe currency change unpublished it) — anything else,
@@ -231,8 +300,9 @@ async function updateService(req, res) {
     if (price !== undefined) {
       const limits   = PRICE_LIMITS[effectiveCurrency] || PRICE_LIMITS.EUR;
       const priceVal = parseFloat(price);
-      if (isNaN(priceVal) || priceVal < limits.min || priceVal > limits.max) {
-        return res.status(400).json({ error: `Price for ${effectiveCurrency} must be between ${limits.min} and ${limits.max}.` });
+      const minPrice = isEvent ? 0 : limits.min;
+      if (isNaN(priceVal) || priceVal < minPrice || priceVal > limits.max) {
+        return res.status(400).json({ error: `Price for ${effectiveCurrency} must be between ${minPrice} and ${limits.max}.` });
       }
     }
 
@@ -265,6 +335,14 @@ async function updateService(req, res) {
       ...(format !== undefined       && { format: format || null }),
       ...(sanitizedAreas !== undefined && { home_visit_areas: sanitizedAreas }),
       ...(cluster !== undefined      && { cluster: cluster || null }),
+      ...(event_starts_at !== undefined && { event_starts_at: eventStartsAtDate }),
+      ...(capacity !== undefined     && { capacity: capacityVal }),
+      // Switching away from EVENT leaves these fields meaningless — clear
+      // them rather than letting a stale date/capacity sit dormant (and
+      // silently reappear if the service is ever switched back).
+      ...(!isEvent && (service.event_starts_at != null || service.capacity != null) && {
+        event_starts_at: null, capacity: null,
+      }),
     };
     const hasContentFields = Object.keys(contentData).length > 0;
     const operationalData = {
@@ -284,6 +362,7 @@ async function updateService(req, res) {
       const hasChange = Object.entries(contentData).some(([key, value]) => {
         if (key === 'home_visit_areas') return JSON.stringify(value) !== JSON.stringify(service.home_visit_areas);
         if (key === 'price') return value !== Number(service.price);
+        if (key === 'event_starts_at') return value?.getTime() !== service.event_starts_at?.getTime();
         return value !== service[key];
       });
       updated = await prisma.service.update({
@@ -332,6 +411,8 @@ async function updateService(req, res) {
             format: service.draft.format,
             cluster: service.draft.cluster,
             home_visit_areas: service.draft.home_visit_areas,
+            event_starts_at: service.draft.event_starts_at,
+            capacity: service.draft.capacity,
           }
         : {
             title: service.title,
@@ -341,6 +422,8 @@ async function updateService(req, res) {
             format: service.format,
             cluster: service.cluster,
             home_visit_areas: service.home_visit_areas,
+            event_starts_at: service.event_starts_at,
+            capacity: service.capacity,
           };
       const proposedContent = { ...draftBaseline, ...contentData };
       serviceDraft = await prisma.serviceDraft.upsert({

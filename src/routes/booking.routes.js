@@ -9,6 +9,8 @@ const {
   abandonBooking,
   rescheduleBooking,
   expertCancelBooking,
+  expertCancelEvent,
+  getEventAttendees,
   getUpcomingAppointments,
   getPastAppointments,
   getCalendarBookings,
@@ -37,6 +39,8 @@ router.patch('/:id/link-sent',       markSessionLinkSent);     // PATCH  /bookin
 router.patch('/:id/complete',        markBookingComplete);     // PATCH  /bookings/:id/complete
 router.patch('/:id/expert-note',     saveExpertNote);          // PATCH  /bookings/:id/expert-note
 router.post('/:id/expert-cancel',    expertCancelBooking);     // POST   /bookings/:id/expert-cancel
+router.post('/events/:serviceId/cancel', expertCancelEvent);   // POST   /bookings/events/:serviceId/cancel
+router.get('/events/:serviceId/attendees', getEventAttendees); // GET    /bookings/events/:serviceId/attendees
 
 // ── Shared ────────────────────────────────────────────────────────────────────
 router.get('/:id',             getBookingById);          // GET    /bookings/:id

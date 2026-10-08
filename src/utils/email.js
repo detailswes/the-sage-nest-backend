@@ -51,6 +51,10 @@ const {
   expertCancellationConfirmationEmailSubject,
 } = require("./email_templates/expertCancellationConfirmationEmail");
 const {
+  eventFullyBookedEmailHtml,
+  eventFullyBookedEmailSubject,
+} = require("./email_templates/eventFullyBookedEmail");
+const {
   parentSuspendedEmailHtml,
   parentSuspendedEmailSubject,
 } = require("./email_templates/parentSuspendedEmail");
@@ -378,6 +382,7 @@ const sendBookingConfirmationEmail = ({
   termsUrl,
   policyUrl,
   privacyUrl,
+  isEvent,
 }) => {
   const lang = language === "it" ? "it" : "en";
   return sendEmail({
@@ -407,6 +412,7 @@ const sendBookingConfirmationEmail = ({
       termsUrl,
       policyUrl,
       privacyUrl,
+      isEvent: !!isEvent,
     }),
   });
 };
@@ -551,6 +557,7 @@ const sendNewBookingNotificationEmail = ({
   policyUrl,
   parentAddress,
   parentFiscalCode,
+  isEvent,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const text =
@@ -582,6 +589,7 @@ const sendNewBookingNotificationEmail = ({
       policyUrl,
       parentAddress,
       parentFiscalCode,
+      isEvent: !!isEvent,
     }),
   });
 };
@@ -1016,6 +1024,43 @@ const sendExpertCancellationConfirmationEmail = ({
   });
 };
 
+/**
+ * Sent to the expert the moment an event's last spot is booked and it
+ * auto-deactivates — purely informational.
+ * @param {{
+ *   to: string, expertName: string, serviceTitle: string,
+ *   scheduledAt: Date, timezone?: string | null, language?: 'en' | 'it'
+ * }} param0
+ */
+const sendEventFullyBookedEmail = ({
+  to,
+  expertName,
+  serviceTitle,
+  scheduledAt,
+  timezone,
+  language,
+}) => {
+  const lang = language === "it" ? "it" : "en";
+  return sendEmail({
+    to,
+    subject: eventFullyBookedEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone }),
+    text:
+      lang === "it"
+        ? `Ciao ${expertName?.split(' ')[0] || 'there'}, il tuo evento "${serviceTitle}" ha raggiunto il numero massimo di posti ed è stato disattivato automaticamente.`
+        : `Hi ${expertName?.split(' ')[0] || 'there'}, your event "${serviceTitle}" has reached its number of spots and has been automatically deactivated.`,
+    html: eventFullyBookedEmailHtml({
+      expertName,
+      serviceTitle,
+      scheduledAt,
+      timezone,
+      language: lang,
+      clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
+    }),
+  });
+};
+
 // ─── Parent suspension emails ─────────────────────────────────────────────────
 
 const sendParentSuspendedEmail = ({ to, parentName, cancelledBookingCount, language }) => {
@@ -1338,6 +1383,7 @@ module.exports = {
   sendPasswordChangedEmail,
   sendExpertCancelledSessionEmail,
   sendExpertCancellationConfirmationEmail,
+  sendEventFullyBookedEmail,
   sendParentSuspendedEmail,
   sendPlatformCancellationEmailToExpert,
   sendAdminPayoutAlert,

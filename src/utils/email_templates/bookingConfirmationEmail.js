@@ -17,6 +17,9 @@ const COPY = {
     paymentHeading: "Payment",
     payment: (amountStr, expertName) =>
       `Your payment of <strong>${amountStr}</strong> has been processed securely via Stripe. Your session is provided by <strong>${expertName}</strong>, who is responsible for the service and appears as the merchant for this transaction; Sage Nest operates the platform through which the booking and payment are made.`,
+    paymentFreeHeading: "Price",
+    paymentFree: (expertName) => `This is a free event — no payment is required. It's provided by <strong>${expertName}</strong>.`,
+    freeLabel: "Free",
     withdrawalHeading: "Your Right of Withdrawal",
     cancellationHeading: "Cancellation & Rescheduling",
     cancellationIntro: "We understand that life happens and plans sometimes change. To honour the commitment made by both you and your expert — who has dedicated this time exclusively for you — the following cancellation policy applies:",
@@ -28,6 +31,10 @@ const COPY = {
     reschedule: "Need to change your time? You can reschedule your session once, free of charge, as long as you do so more than 12 hours before your session — simply use the Reschedule option in your dashboard.",
     expertCancel: "If your expert cancels for any reason, you will always receive a full refund, regardless of timing.",
     fullPolicy: (url) => `The full policy is available here: <a href="${url}" style="color:#445446;text-decoration:underline;font-weight:600;">Cancellation and Rescheduling Policy</a>`,
+    eventHeading: "Event Terms",
+    // Placeholder until the client supplies the actual event-specific terms —
+    // replace eventTermsPlaceholder once that copy is confirmed.
+    eventTermsPlaceholder: "This event is governed by its own terms and cancellation conditions, separate from our standard 1:1 session policy. [Event terms text pending — to be added once confirmed.]",
     button: "View booking in your dashboard",
     termsLine: (termsUrl, privacyUrl) =>
       `This booking is governed by the Sage Nest <a href="${termsUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">Consumer Terms &amp; Conditions</a> you accepted when you booked and the applicable <a href="${privacyUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">Privacy Policy</a>. Links open the same language version you accepted.`,
@@ -49,6 +56,9 @@ const COPY = {
     paymentHeading: "Pagamento",
     payment: (amountStr, expertName) =>
       `Il tuo pagamento di <strong>${amountStr}</strong> è stato elaborato in modo sicuro tramite Stripe. La tua sessione è fornita da <strong>${expertName}</strong>, che è responsabile del servizio e figura come esercente della transazione; Sage Nest gestisce la piattaforma attraverso la quale vengono effettuati la prenotazione e il pagamento.`,
+    paymentFreeHeading: "Prezzo",
+    paymentFree: (expertName) => `Questo è un evento gratuito — non è richiesto alcun pagamento. È offerto da <strong>${expertName}</strong>.`,
+    freeLabel: "Gratis",
     withdrawalHeading: "Il Tuo Diritto di Recesso",
     cancellationHeading: "Cancellazione e Modifica della Prenotazione",
     cancellationIntro: "Sappiamo che la vita è piena di imprevisti e i piani possono cambiare. Allo stesso tempo, il tuo Professionista ha riservato questo tempo esclusivamente a te: per rispettare l'impegno di entrambi, si applicano le seguenti condizioni di cancellazione:",
@@ -60,6 +70,8 @@ const COPY = {
     reschedule: "Devi cambiare orario? Puoi modificare la tua prenotazione una sola volta, gratuitamente, purché tu lo faccia più di 12 ore prima della sessione — usa semplicemente l'opzione Modifica prenotazione nella tua dashboard.",
     expertCancel: "Se il tuo Professionista cancella per qualsiasi motivo, riceverai sempre un rimborso completo, indipendentemente dal momento.",
     fullPolicy: (url) => `Le condizioni complete sono disponibili qui: <a href="${url}" style="color:#445446;text-decoration:underline;font-weight:600;">Condizioni di Cancellazione e Modifica della Prenotazione</a>`,
+    eventHeading: "Condizioni dell'Evento",
+    eventTermsPlaceholder: "Questo evento è regolato da condizioni proprie, separate dalla nostra normale politica per le sessioni individuali. [Testo delle condizioni dell'evento in attesa di conferma.]",
     button: "Visualizza la prenotazione nella tua dashboard",
     termsLine: (termsUrl, privacyUrl) =>
       `La presente prenotazione è disciplinata dai <a href="${termsUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">Termini e Condizioni Consumatori</a> di Sage Nest che hai accettato al momento della prenotazione e dalla relativa <a href="${privacyUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">Informativa sulla privacy</a>. I link aprono la stessa versione linguistica che hai accettato.`,
@@ -123,12 +135,14 @@ const bookingConfirmationEmailHtml = ({
   termsUrl,
   policyUrl,
   privacyUrl,
+  isEvent,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const t = COPY[lang];
 
   const { dateStr, timeStr, tzLabel } = formatDateTime(scheduledAt, userTimezone, lang);
-  const priceStr = formatPrice(amount, currency, lang);
+  const isFree = Number(amount) === 0;
+  const priceStr = isFree ? t.freeLabel : formatPrice(amount, currency, lang);
 
   const durationLabel =
     durationMinutes < 60
@@ -237,16 +251,19 @@ const bookingConfirmationEmailHtml = ({
           </div>` : ""}
 
           <!-- Payment -->
-          <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.paymentHeading}</p>
+          <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${isFree ? t.paymentFreeHeading : t.paymentHeading}</p>
           <p style="margin:0 0 24px;font-size:14px;color:#5e6d5b;line-height:1.6;">
-            ${t.payment(priceStr || "", expertName)}
+            ${isFree ? t.paymentFree(expertName) : t.payment(priceStr || "", expertName)}
           </p>
 
           <!-- Right of withdrawal -->
           <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.withdrawalHeading}</p>
           ${withdrawalBlockHtml({ withdrawalApplicable, language: lang, termsUrl })}
 
-          <!-- Cancellation & rescheduling -->
+          <!-- Cancellation & rescheduling (events: their own terms instead) -->
+          ${isEvent ? `
+          <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.eventHeading}</p>
+          <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.eventTermsPlaceholder}</p>` : `
           <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.cancellationHeading}</p>
           <p style="margin:0 0 12px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.cancellationIntro}</p>
           <ul style="margin:0 0 12px;padding-left:20px;">
@@ -254,7 +271,7 @@ const bookingConfirmationEmailHtml = ({
           </ul>
           <p style="margin:0 0 8px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.reschedule}</p>
           <p style="margin:0 0 12px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.expertCancel}</p>
-          <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.fullPolicy(policyUrl)}</p>
+          <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.fullPolicy(policyUrl)}</p>`}
 
           <!-- Button -->
           <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">

@@ -188,7 +188,7 @@ async function processStripeEvent(event) {
         include: {
           parent:  { select: { name: true, email: true, phone: true, language: true, timezone: true, notify_booking_confirmation: true } },
           expert:  { select: { address_street: true, address_city: true, address_postcode: true, address_country: true, business_info: { select: { address_country: true } }, timezone: true, notify_new_booking: true, user: { select: { name: true, email: true, language: true } } } },
-          service: { select: { title: true } },
+          service: { select: { title: true, cluster: true } },
           consent: {
             select: {
               language: true, withdrawal_applicable: true,
@@ -245,6 +245,7 @@ async function processStripeEvent(event) {
         ].filter(Boolean).join(', ');
         if (booking.parent.notify_booking_confirmation !== false) {
           const confirmationLanguage = booking.consent?.language || booking.parent.language || 'en';
+          const isEventBooking = booking.service.cluster === 'EVENT';
           const parentExpertAddress = practiceAddressLine(booking.expert, confirmationLanguage);
           getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
             sendBookingConfirmationEmail({
@@ -262,6 +263,7 @@ async function processStripeEvent(event) {
               userTimezone:    booking.parent.timezone || booking.expert.timezone,
               withdrawalApplicable: booking.consent?.withdrawal_applicable,
               bookingId:       booking.id,
+              isEvent:         isEventBooking,
               ...legalLinks,
             });
           }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));
@@ -293,6 +295,7 @@ async function processStripeEvent(event) {
               parentAddress:      parentAddress || undefined,
               parentFiscalCode:   booking.consent?.billing_fiscal_code || undefined,
               parentInvoiceHolder: booking.consent?.billing_invoice_holder || undefined,
+              isEvent:            booking.service.cluster === 'EVENT',
             });
           }).catch((e) => console.error('[Email] Expert notification email failed:', e.message));
         }

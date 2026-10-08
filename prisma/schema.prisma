@@ -146,6 +146,8 @@ model Service {
   description         String?
   format              ServiceFormat?
   home_visit_areas    String[]             @default([])
+  event_starts_at     DateTime?
+  capacity            Int?
   sort_order          Int                  @default(0)
   currency            String               @default("EUR")
   review_status       ServiceReviewStatus  @default(PENDING_REVIEW)
@@ -178,6 +180,8 @@ model ServiceDraft {
   format            ServiceFormat?
   cluster           ServiceCluster?
   home_visit_areas  String[]        @default([])
+  event_starts_at   DateTime?
+  capacity          Int?
   status            DraftStatus     @default(PENDING_REVIEW)
   submitted_at      DateTime        @default(now())
   reviewed_at       DateTime?
@@ -309,7 +313,7 @@ model Booking {
   late_notifications       LateNotification[]
   consent                  BookingConsent?
 
-  @@unique([expert_id, scheduled_at])
+  @@unique([expert_id, scheduled_at, parent_id])
 }
 
 model LegalDocument {
@@ -502,7 +506,7 @@ model SlotLock {
   expert     Expert   @relation(fields: [expert_id], references: [id], onDelete: Cascade)
   parent     User     @relation("ParentSlotLocks", fields: [parent_id], references: [id], onDelete: Cascade)
 
-  @@unique([expert_id, slot_start])
+  @@unique([expert_id, slot_start, parent_id])
 }
 
 model LateNotification {
