@@ -26,6 +26,56 @@ async function getExpertIdForUser(userId) {
   return expert ? expert.id : null;
 }
 
+// An event sets its own date/time directly rather than drawing from the
+// expert's weekly availability, so nothing else automatically keeps it off
+// their calendar the way normal service bookings do (those are generated
+// from — and therefore already exclude — each other). Checked whenever an
+// event's date or duration is set: true overlap (not just an exact-start
+// match) against the expert's confirmed/pending bookings, and against any
+// other event of theirs. `excludeServiceId` leaves the service being saved
+// (and its own attendees' bookings) out of its own conflict check.
+async function findEventConflictError(expertId, startDate, durationMinutes, excludeServiceId) {
+  const endDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000);
+  // 8 hours is the longest a booking or event can run (duration is capped at
+  // 480 minutes elsewhere) — so nothing starting earlier than this could
+  // still be running into our start time.
+  const windowStart = new Date(startDate.getTime() - 8 * 60 * 60 * 1000);
+
+  const [bookings, otherEvents] = await Promise.all([
+    prisma.booking.findMany({
+      where: {
+        expert_id: expertId,
+        status: { in: ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'] },
+        scheduled_at: { gte: windowStart, lt: endDate },
+        ...(excludeServiceId != null ? { service_id: { not: excludeServiceId } } : {}),
+      },
+      select: { scheduled_at: true, duration_minutes: true },
+    }),
+    prisma.service.findMany({
+      where: {
+        expert_id: expertId,
+        cluster: 'EVENT',
+        event_starts_at: { gte: windowStart, lt: endDate },
+        ...(excludeServiceId != null ? { id: { not: excludeServiceId } } : {}),
+      },
+      select: { event_starts_at: true, duration_minutes: true },
+    }),
+  ]);
+
+  const overlaps = (otherStart, otherDuration) => {
+    const otherEnd = new Date(otherStart.getTime() + otherDuration * 60 * 1000);
+    return otherStart < endDate && otherEnd > startDate;
+  };
+
+  if (bookings.some((b) => overlaps(b.scheduled_at, b.duration_minutes))) {
+    return 'This time conflicts with an existing booking on your calendar. Please choose a different date and time.';
+  }
+  if (otherEvents.some((e) => overlaps(e.event_starts_at, e.duration_minutes))) {
+    return 'This time conflicts with another event you have scheduled. Please choose a different date and time.';
+  }
+  return null;
+}
+
 // Logged whenever a request tries to write a currency other than the
 // expert's confirmed account currency — covers both explicit picks and stale
 // records slipping through an edit. Kept in the audit trail so a pattern of
@@ -91,6 +141,11 @@ async function createService(req, res) {
     const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
     if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
     const expert_id = expert.id;
+
+    if (isEvent) {
+      const conflictError = await findEventConflictError(expert_id, eventStartsAtDate, dur, null);
+      if (conflictError) return res.status(409).json({ error: conflictError });
+    }
 
     let sanitizedAreas = [];
     if (format === 'HOME_VISIT') {
@@ -273,6 +328,12 @@ async function updateService(req, res) {
     const effectiveCapacity = capacity !== undefined ? capacityVal : service.capacity;
     if (isEvent && !effectiveCapacity) {
       return res.status(400).json({ error: 'Number of spots must be between 1 and 1000.' });
+    }
+
+    if (isEvent) {
+      const effectiveDurationMinutes = duration_minutes !== undefined ? parseInt(duration_minutes) : service.duration_minutes;
+      const conflictError = await findEventConflictError(expert_id, effectiveEventStartsAt, effectiveDurationMinutes, service.id);
+      if (conflictError) return res.status(409).json({ error: conflictError });
     }
 
     // Currency is locked to the expert's confirmed account currency. The only
