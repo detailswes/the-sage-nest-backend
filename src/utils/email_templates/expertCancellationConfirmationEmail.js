@@ -12,6 +12,7 @@ const COPY = {
     labels: { parentName: "Parent Name", service: "Service", date: "Date", time: "Time", bookingRef: "Booking Ref" },
     consequenceHeading: "What happens next",
     consequence: "The parent has been notified and has received a full refund. No payout will be made for this booking.",
+    consequenceFree: "The parent has been notified of the cancellation. This was a free booking, so no refund was needed and no payout will be made.",
     reminder: "We know cancelling is sometimes unavoidable. Where possible, offering to reschedule instead helps parents keep the support they need — each booking can be rescheduled once. Repeated cancellations may be reviewed under your Expert Agreement (clause 9.3).",
     button: "Go to your dashboard",
     closing: (email) => `If this cancellation was made in error, or you have any questions, write to us at <a href="mailto:${email}" style="color:#445446;">${email}</a>.`,
@@ -30,6 +31,7 @@ const COPY = {
     labels: { parentName: "Nome del Genitore", service: "Servizio", date: "Data", time: "Orario", bookingRef: "Riferimento Prenotazione" },
     consequenceHeading: "Cosa succede ora",
     consequence: "Il genitore è stato informato e ha ricevuto un rimborso integrale. Per questa prenotazione non verrà corrisposto alcun compenso.",
+    consequenceFree: "Il genitore è stato informato della cancellazione. Si trattava di una prenotazione gratuita, quindi non è stato necessario alcun rimborso e non verrà corrisposto alcun compenso.",
     reminder: "Sappiamo che a volte cancellare è inevitabile. Quando possibile, proporre una modifica della prenotazione aiuta i genitori a mantenere il supporto di cui hanno bisogno — ogni prenotazione può essere modificata una sola volta. Cancellazioni ripetute possono essere esaminate ai sensi del tuo Contratto per Esperti (articolo 9.3).",
     button: "Vai alla tua dashboard",
     closing: (email) => `Se questa cancellazione è avvenuta per errore, o per qualsiasi domanda, scrivici a <a href="mailto:${email}" style="color:#445446;">${email}</a>.`,
@@ -65,6 +67,7 @@ const expertCancellationConfirmationEmailHtml = ({
   clientUrl,
   contactEmail,
   supportEmail,
+  isFree = false,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const t = COPY[lang];
@@ -139,7 +142,7 @@ const expertCancellationConfirmationEmailHtml = ({
           <!-- Consequence box -->
           <div style="background:#FFF7ED;border:1px solid #FCD34D;border-radius:8px;padding:16px;margin-bottom:24px;">
             <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#92400E;">${t.consequenceHeading}</p>
-            <p style="margin:0;font-size:13px;color:#92400E;line-height:1.6;">${t.consequence}</p>
+            <p style="margin:0;font-size:13px;color:#92400E;line-height:1.6;">${isFree ? t.consequenceFree : t.consequence}</p>
           </div>
 
           <!-- Reschedule reminder -->

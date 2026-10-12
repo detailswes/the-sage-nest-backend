@@ -1,4 +1,5 @@
 const prisma = require('../prisma/client');
+const { zonedToUTC } = require('../utils/timezone');
 
 async function getExpertIdForUser(userId) {
   const expert = await prisma.expert.findUnique({ where: { user_id: userId } });
@@ -35,27 +36,6 @@ function minutesToTime(mins) {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
-
-// ─── Helper: convert a calendar date + local time in an IANA timezone to UTC ─
-// e.g. zonedToUTC(2026, 3, 31, 9, 0, 'Europe/Berlin') → 2026-03-31T07:00:00Z
-function zonedToUTC(year, month, day, hours, minutes, timezone) {
-  // Treat inputs as UTC to get a starting guess
-  const guess = new Date(Date.UTC(year, month - 1, day, hours, minutes, 0, 0));
-
-  // Find what that UTC instant looks like in the target timezone
-  const parts = {};
-  new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    year: 'numeric', month: 'numeric', day: 'numeric',
-    hour: 'numeric', minute: 'numeric', hour12: false,
-  }).formatToParts(guess).forEach(({ type, value }) => {
-    parts[type] = parseInt(value, 10);
-  });
-
-  const zonedHour   = parts.hour === 24 ? 0 : (parts.hour || 0);
-  const diffMinutes = (hours * 60 + minutes) - (zonedHour * 60 + (parts.minute || 0));
-  return new Date(guess.getTime() + diffMinutes * 60 * 1000);
 }
 
 // ─── GET /availability/slots — public slot generation ────────────────────────
@@ -512,9 +492,18 @@ const SLOT_LOCK_MINUTES = 10;
 
 // ─── POST /availability/lock-slot ────────────────────────────────────────────
 // Atomically reserves a slot for the requesting parent for SLOT_LOCK_MINUTES.
-// @@unique([expert_id, slot_start]) means concurrent inserts → one P2002 → 409.
+//
+// Capacity model: for a normal 1:1 service, "capacity" is 1 — one booking or
+// held lock at a given expert+time fills it entirely, same as before. For an
+// EVENT service, many parents can hold/book the same expert+time up to the
+// service's `capacity`. @@unique([expert_id, slot_start, parent_id]) only
+// stops the *same* parent double-locking the same slot; different parents no
+// longer collide at the DB level, so the count check below is what enforces
+// the 1:1 exclusivity as well as the event cap — it is the soft reservation
+// layer, backstopped by the same count re-checked inside createBooking's
+// transaction at the moment the booking actually commits.
 async function lockSlot(req, res) {
-  const { expertId, slotStart } = req.body;
+  const { expertId, slotStart, serviceId } = req.body;
   if (!expertId || !slotStart) {
     return res.status(400).json({ error: 'expertId and slotStart are required' });
   }
@@ -541,24 +530,45 @@ async function lockSlot(req, res) {
       return res.status(400).json({ error: "This slot is inside the expert's minimum notice window. Please choose a later time." });
     }
 
-    // Reject immediately if the slot already has an active booking — this fires
-    // before the lock is created so no timer is started for an impossible slot.
-    const existingBooking = await prisma.booking.findFirst({
-      where: {
-        expert_id:    expertIdInt,
-        scheduled_at: slotStartDate,
-        status:       { in: ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'] },
-      },
-      select: { id: true },
-    });
-    if (existingBooking) {
-      return res.status(409).json({ error: 'This slot is no longer available. Please go back and choose another time.' });
+    let capacity = 1;
+    let isEvent = false;
+    if (serviceId) {
+      const service = await prisma.service.findUnique({
+        where: { id: parseInt(serviceId) },
+        select: { expert_id: true, cluster: true, capacity: true },
+      });
+      if (service && service.expert_id === expertIdInt && service.cluster === 'EVENT' && service.capacity) {
+        capacity = service.capacity;
+        isEvent = true;
+      }
     }
 
-    // Release any existing lock this parent holds for this expert (slot change)
+    // Release any existing lock this parent holds for this expert (slot
+    // change) before counting, so a parent re-locking (e.g. retrying) never
+    // counts against their own prior hold.
     await prisma.slotLock.deleteMany({
       where: { expert_id: expertIdInt, parent_id: req.user.id },
     });
+
+    const [bookedCount, activeLockCount] = await Promise.all([
+      prisma.booking.count({
+        where: {
+          expert_id:    expertIdInt,
+          scheduled_at: slotStartDate,
+          status:       { in: ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'] },
+        },
+      }),
+      prisma.slotLock.count({
+        where: { expert_id: expertIdInt, slot_start: slotStartDate, expires_at: { gt: now } },
+      }),
+    ]);
+    if (bookedCount + activeLockCount >= capacity) {
+      return res.status(409).json({
+        error: isEvent
+          ? 'This event is fully booked.'
+          : 'This slot is no longer available. Please go back and choose another time.',
+      });
+    }
 
     const lock = await prisma.slotLock.create({
       data: { expert_id: expertIdInt, slot_start: slotStartDate, parent_id: req.user.id, expires_at: expiresAt },
@@ -566,21 +576,7 @@ async function lockSlot(req, res) {
     return res.status(201).json({ lockId: lock.id, expiresAt: lock.expires_at });
   } catch (err) {
     if (err.code === 'P2002') {
-      // A lock exists — check if it's expired and we can claim it
-      const existing = await prisma.slotLock.findUnique({
-        where: { expert_id_slot_start: { expert_id: expertIdInt, slot_start: slotStartDate } },
-      });
-      if (existing && existing.expires_at <= now) {
-        try {
-          await prisma.slotLock.delete({ where: { id: existing.id } });
-          const lock = await prisma.slotLock.create({
-            data: { expert_id: expertIdInt, slot_start: slotStartDate, parent_id: req.user.id, expires_at: expiresAt },
-          });
-          return res.status(201).json({ lockId: lock.id, expiresAt: lock.expires_at });
-        } catch (_) {
-          // Race: another request claimed the expired slot first
-        }
-      }
+      // Same parent racing itself (e.g. a double-click) — safe to ask them to retry.
       return res.status(409).json({ error: 'This slot is currently reserved. Please select a different time.' });
     }
     console.error('[lockSlot]', err);

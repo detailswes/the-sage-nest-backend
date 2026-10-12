@@ -4,9 +4,18 @@ const { PRICE_LIMITS } = require('../constants/currency');
 const { SERVICE_FORMATS } = require('../constants/format');
 const { countryKeyFromIso, sanitizeHomeVisitAreas } = require('../constants/homeVisitAreas');
 const { logAudit } = require('../utils/auditLog');
+const { zonedToUTC, parseWallClockDateTime } = require('../utils/timezone');
 
 const VALID_FORMATS    = SERVICE_FORMATS;
 const VALID_CLUSTERS   = ['FOR_PARENTS', 'FOR_BABY', 'FOR_FAMILY', 'PACKAGE', 'GIFT', 'EVENT'];
+// Events are always a single scheduled occurrence, delivered online or
+// in-person — "home visit" has no meaning for a one-off group gathering.
+const EVENT_FORMATS = ['ONLINE', 'IN_PERSON'];
+const EVENT_FORMAT_ERROR = `Events must be delivered as one of: ${EVENT_FORMATS.join(', ')}.`;
+// Minimum lead time between "now" and an event's start — stops an expert
+// from publishing something nobody could realistically book in time.
+const EVENT_MIN_LEAD_TIME_MS = 24 * 60 * 60 * 1000;
+const EVENT_LEAD_TIME_ERROR = 'Event date and time must be at least 24 hours from now.';
 
 // Areas an expert covers for a HOME_VISIT service are picked from a fixed
 // region → province/landsdel/county dataset scoped to their practice-address
@@ -20,6 +29,56 @@ const HOME_VISIT_AREAS_ERROR =
 async function getExpertIdForUser(userId) {
   const expert = await prisma.expert.findUnique({ where: { user_id: userId } });
   return expert ? expert.id : null;
+}
+
+// An event sets its own date/time directly rather than drawing from the
+// expert's weekly availability, so nothing else automatically keeps it off
+// their calendar the way normal service bookings do (those are generated
+// from — and therefore already exclude — each other). Checked whenever an
+// event's date or duration is set: true overlap (not just an exact-start
+// match) against the expert's confirmed/pending bookings, and against any
+// other event of theirs. `excludeServiceId` leaves the service being saved
+// (and its own attendees' bookings) out of its own conflict check.
+async function findEventConflictError(expertId, startDate, durationMinutes, excludeServiceId) {
+  const endDate = new Date(startDate.getTime() + durationMinutes * 60 * 1000);
+  // 8 hours is the longest a booking or event can run (duration is capped at
+  // 480 minutes elsewhere) — so nothing starting earlier than this could
+  // still be running into our start time.
+  const windowStart = new Date(startDate.getTime() - 8 * 60 * 60 * 1000);
+
+  const [bookings, otherEvents] = await Promise.all([
+    prisma.booking.findMany({
+      where: {
+        expert_id: expertId,
+        status: { in: ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'] },
+        scheduled_at: { gte: windowStart, lt: endDate },
+        ...(excludeServiceId != null ? { service_id: { not: excludeServiceId } } : {}),
+      },
+      select: { scheduled_at: true, duration_minutes: true },
+    }),
+    prisma.service.findMany({
+      where: {
+        expert_id: expertId,
+        cluster: 'EVENT',
+        event_starts_at: { gte: windowStart, lt: endDate },
+        ...(excludeServiceId != null ? { id: { not: excludeServiceId } } : {}),
+      },
+      select: { event_starts_at: true, duration_minutes: true },
+    }),
+  ]);
+
+  const overlaps = (otherStart, otherDuration) => {
+    const otherEnd = new Date(otherStart.getTime() + otherDuration * 60 * 1000);
+    return otherStart < endDate && otherEnd > startDate;
+  };
+
+  if (bookings.some((b) => overlaps(b.scheduled_at, b.duration_minutes))) {
+    return 'This time conflicts with an existing booking on your calendar. Please choose a different date and time.';
+  }
+  if (otherEvents.some((e) => overlaps(e.event_starts_at, e.duration_minutes))) {
+    return 'This time conflicts with another event you have scheduled. Please choose a different date and time.';
+  }
+  return null;
 }
 
 // Logged whenever a request tries to write a currency other than the
@@ -37,9 +96,12 @@ function logCurrencyRejection(actorUserId, serviceId, attempted, expected) {
 }
 
 async function createService(req, res) {
-  const { title, description, duration_minutes, price, format, cluster, home_visit_areas } = req.body;
+  const {
+    title, description, duration_minutes, price, format, cluster, home_visit_areas,
+    event_starts_at, capacity, event_location, event_city,
+  } = req.body;
 
-  if (!title || !description || !duration_minutes || !price || !format || !cluster) {
+  if (!title || !description || !duration_minutes || price === undefined || price === null || price === '' || !format || !cluster) {
     return res.status(400).json({ error: 'title, description, duration_minutes, price, format, and cluster are required.' });
   }
   if (title.trim().length > 80) {
@@ -59,10 +121,55 @@ async function createService(req, res) {
     return res.status(400).json({ error: 'Invalid cluster. Must be FOR_PARENTS, FOR_BABY, FOR_FAMILY, PACKAGE, GIFT, or EVENT.' });
   }
 
+  const isEvent = cluster === 'EVENT';
+  if (isEvent && !EVENT_FORMATS.includes(format)) {
+    return res.status(400).json({ error: EVENT_FORMAT_ERROR });
+  }
+
+  let eventStartsAtDate = null;
+  let eventWallClock = null;
+  let capacityVal = null;
+  if (isEvent) {
+    // The client sends a plain wall-clock string ("YYYY-MM-DDTHH:mm") with no
+    // timezone info — it must be interpreted against the expert's registered
+    // timezone (fetched below), never the browser's, so the conversion to an
+    // absolute UTC instant happens once we have that.
+    eventWallClock = parseWallClockDateTime(event_starts_at);
+    if (!eventWallClock) {
+      return res.status(400).json({ error: 'A valid event date and time is required.' });
+    }
+    capacityVal = parseInt(capacity);
+    if (isNaN(capacityVal) || capacityVal < 1 || capacityVal > 1000) {
+      return res.status(400).json({ error: 'Number of spots must be between 1 and 1000.' });
+    }
+    // In-person events happen at a venue the expert names per event — it has
+    // no connection to their registered practice address.
+    if (format === 'IN_PERSON') {
+      if (!(event_location || '').trim()) {
+        return res.status(400).json({ error: 'Venue address is required for in-person events.' });
+      }
+      if (!(event_city || '').trim()) {
+        return res.status(400).json({ error: 'City is required for in-person events.' });
+      }
+    }
+  }
+
   try {
     const expert = await prisma.expert.findUnique({ where: { user_id: req.user.id } });
     if (!expert) return res.status(404).json({ error: 'Expert profile not found' });
     const expert_id = expert.id;
+
+    if (isEvent) {
+      eventStartsAtDate = zonedToUTC(
+        eventWallClock.year, eventWallClock.month, eventWallClock.day,
+        eventWallClock.hour, eventWallClock.minute, expert.timezone || 'UTC',
+      );
+      if (eventStartsAtDate.getTime() < Date.now() + EVENT_MIN_LEAD_TIME_MS) {
+        return res.status(400).json({ error: EVENT_LEAD_TIME_ERROR });
+      }
+      const conflictError = await findEventConflictError(expert_id, eventStartsAtDate, dur, null);
+      if (conflictError) return res.status(409).json({ error: conflictError });
+    }
 
     let sanitizedAreas = [];
     if (format === 'HOME_VISIT') {
@@ -89,8 +196,11 @@ async function createService(req, res) {
 
     const priceVal = parseFloat(price);
     const limits   = PRICE_LIMITS[currency] || PRICE_LIMITS.EUR;
-    if (isNaN(priceVal) || priceVal < limits.min || priceVal > limits.max) {
-      return res.status(400).json({ error: `Price for ${currency} must be between ${limits.min} and ${limits.max}.` });
+    // Events may be free — the per-currency minimum exists to keep 1:1 session
+    // pricing sane, but has no bearing on a complimentary workshop.
+    const minPrice = isEvent ? 0 : limits.min;
+    if (isNaN(priceVal) || priceVal < minPrice || priceVal > limits.max) {
+      return res.status(400).json({ error: `Price for ${currency} must be between ${minPrice} and ${limits.max}.` });
     }
 
     // Place new service at the end of the expert's current list
@@ -111,6 +221,10 @@ async function createService(req, res) {
         format: format || null,
         home_visit_areas: sanitizedAreas,
         cluster: cluster || null,
+        event_starts_at: isEvent ? eventStartsAtDate : null,
+        capacity: isEvent ? capacityVal : null,
+        event_location: isEvent && format === 'IN_PERSON' ? event_location.trim() : null,
+        event_city: isEvent && format === 'IN_PERSON' ? event_city.trim() : null,
         is_active: false,
         sort_order,
         review_status: 'PENDING_REVIEW',
@@ -145,7 +259,10 @@ async function listServices(req, res) {
 
 async function updateService(req, res) {
   const { id } = req.params;
-  const { title, description, duration_minutes, price, currency, is_active, format, cluster, home_visit_areas } = req.body;
+  const {
+    title, description, duration_minutes, price, currency, is_active, format, cluster, home_visit_areas,
+    event_starts_at, capacity, event_location, event_city,
+  } = req.body;
 
   if (title !== undefined && title.trim().length > 80) {
     return res.status(400).json({ error: 'Service title must be 80 characters or fewer.' });
@@ -206,6 +323,77 @@ async function updateService(req, res) {
       sanitizedAreas = [];
     }
 
+    const effectiveCluster = cluster !== undefined ? (cluster || null) : service.cluster;
+    const isEvent = effectiveCluster === 'EVENT';
+    if (isEvent && !EVENT_FORMATS.includes(effectiveFormat)) {
+      return res.status(400).json({ error: EVENT_FORMAT_ERROR });
+    }
+
+    let eventStartsAtDate;
+    if (event_starts_at !== undefined) {
+      // Same plain wall-clock string as createService — reinterpreted against
+      // the expert's registered timezone, not the browser's.
+      const wallClock = parseWallClockDateTime(event_starts_at);
+      if (!wallClock) {
+        return res.status(400).json({ error: 'A valid event date and time is required.' });
+      }
+      eventStartsAtDate = zonedToUTC(
+        wallClock.year, wallClock.month, wallClock.day,
+        wallClock.hour, wallClock.minute, expert.timezone || 'UTC',
+      );
+      if (eventStartsAtDate.getTime() < Date.now() + EVENT_MIN_LEAD_TIME_MS) {
+        return res.status(400).json({ error: EVENT_LEAD_TIME_ERROR });
+      }
+    }
+    const effectiveEventStartsAt = event_starts_at !== undefined ? eventStartsAtDate : service.event_starts_at;
+    if (isEvent && !effectiveEventStartsAt) {
+      return res.status(400).json({ error: 'A valid event date and time is required.' });
+    }
+
+    let capacityVal;
+    if (capacity !== undefined) {
+      capacityVal = parseInt(capacity);
+      if (isNaN(capacityVal) || capacityVal < 1 || capacityVal > 1000) {
+        return res.status(400).json({ error: 'Number of spots must be between 1 and 1000.' });
+      }
+      // Dropping capacity below what's already booked would leave the event
+      // oversold relative to its own stated limit — block it rather than
+      // silently creating a service that reads "12 of 8 spots booked".
+      if (capacityVal < service.capacity) {
+        const bookedCount = await prisma.booking.count({
+          where: { service_id: service.id, status: { in: ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'] } },
+        });
+        if (capacityVal < bookedCount) {
+          return res.status(400).json({
+            error: `Number of spots can't be lower than ${bookedCount} — that many people are already booked.`,
+          });
+        }
+      }
+    }
+    const effectiveCapacity = capacity !== undefined ? capacityVal : service.capacity;
+    if (isEvent && !effectiveCapacity) {
+      return res.status(400).json({ error: 'Number of spots must be between 1 and 1000.' });
+    }
+
+    // In-person events happen at a venue the expert names per event — it has
+    // no connection to their registered practice address.
+    const effectiveEventLocation = event_location !== undefined ? (event_location || '').trim() : service.event_location;
+    const effectiveEventCity = event_city !== undefined ? (event_city || '').trim() : service.event_city;
+    if (isEvent && effectiveFormat === 'IN_PERSON') {
+      if (!effectiveEventLocation) {
+        return res.status(400).json({ error: 'Venue address is required for in-person events.' });
+      }
+      if (!effectiveEventCity) {
+        return res.status(400).json({ error: 'City is required for in-person events.' });
+      }
+    }
+
+    if (isEvent) {
+      const effectiveDurationMinutes = duration_minutes !== undefined ? parseInt(duration_minutes) : service.duration_minutes;
+      const conflictError = await findEventConflictError(expert_id, effectiveEventStartsAt, effectiveDurationMinutes, service.id);
+      if (conflictError) return res.status(409).json({ error: conflictError });
+    }
+
     // Currency is locked to the expert's confirmed account currency. The only
     // change ever accepted is realigning a stale service onto that currency
     // (e.g. after a Stripe currency change unpublished it) — anything else,
@@ -231,8 +419,9 @@ async function updateService(req, res) {
     if (price !== undefined) {
       const limits   = PRICE_LIMITS[effectiveCurrency] || PRICE_LIMITS.EUR;
       const priceVal = parseFloat(price);
-      if (isNaN(priceVal) || priceVal < limits.min || priceVal > limits.max) {
-        return res.status(400).json({ error: `Price for ${effectiveCurrency} must be between ${limits.min} and ${limits.max}.` });
+      const minPrice = isEvent ? 0 : limits.min;
+      if (isNaN(priceVal) || priceVal < minPrice || priceVal > limits.max) {
+        return res.status(400).json({ error: `Price for ${effectiveCurrency} must be between ${minPrice} and ${limits.max}.` });
       }
     }
 
@@ -265,6 +454,21 @@ async function updateService(req, res) {
       ...(format !== undefined       && { format: format || null }),
       ...(sanitizedAreas !== undefined && { home_visit_areas: sanitizedAreas }),
       ...(cluster !== undefined      && { cluster: cluster || null }),
+      ...(event_starts_at !== undefined && { event_starts_at: eventStartsAtDate }),
+      ...(capacity !== undefined     && { capacity: capacityVal }),
+      ...(event_location !== undefined && { event_location: (event_location || '').trim() || null }),
+      ...(event_city !== undefined     && { event_city: (event_city || '').trim() || null }),
+      // Switching away from EVENT leaves these fields meaningless — clear
+      // them rather than letting a stale date/capacity/venue sit dormant
+      // (and silently reappear if the service is ever switched back).
+      ...(!isEvent && (service.event_starts_at != null || service.capacity != null || service.event_location != null || service.event_city != null) && {
+        event_starts_at: null, capacity: null, event_location: null, event_city: null,
+      }),
+      // Still an event, but no longer in-person — the venue is meaningless
+      // on its own, so clear it even though the event itself stays.
+      ...(isEvent && effectiveFormat !== 'IN_PERSON' && (service.event_location != null || service.event_city != null) && {
+        event_location: null, event_city: null,
+      }),
     };
     const hasContentFields = Object.keys(contentData).length > 0;
     const operationalData = {
@@ -284,6 +488,7 @@ async function updateService(req, res) {
       const hasChange = Object.entries(contentData).some(([key, value]) => {
         if (key === 'home_visit_areas') return JSON.stringify(value) !== JSON.stringify(service.home_visit_areas);
         if (key === 'price') return value !== Number(service.price);
+        if (key === 'event_starts_at') return value?.getTime() !== service.event_starts_at?.getTime();
         return value !== service[key];
       });
       updated = await prisma.service.update({
@@ -332,6 +537,10 @@ async function updateService(req, res) {
             format: service.draft.format,
             cluster: service.draft.cluster,
             home_visit_areas: service.draft.home_visit_areas,
+            event_starts_at: service.draft.event_starts_at,
+            capacity: service.draft.capacity,
+            event_location: service.draft.event_location,
+            event_city: service.draft.event_city,
           }
         : {
             title: service.title,
@@ -341,6 +550,10 @@ async function updateService(req, res) {
             format: service.format,
             cluster: service.cluster,
             home_visit_areas: service.home_visit_areas,
+            event_starts_at: service.event_starts_at,
+            capacity: service.capacity,
+            event_location: service.event_location,
+            event_city: service.event_city,
           };
       const proposedContent = { ...draftBaseline, ...contentData };
       serviceDraft = await prisma.serviceDraft.upsert({

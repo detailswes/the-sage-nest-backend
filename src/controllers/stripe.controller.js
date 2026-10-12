@@ -10,7 +10,7 @@ const { getLegalDocLinks } = require('../utils/legalDocLinks');
 const { usesExpertAddress, isHomeVisit } = require('../constants/format');
 const { practiceAddressLine } = require('../utils/countryName');
 const { syncExpertCurrencyOnReturn, syncExpertCurrencyFromWebhook } = require('../services/expertCurrency.service');
-const { PAYOUT_SETTLEMENT_MS } = require('../constants/payouts');
+const { PAYOUT_HOLD_MS } = require('../constants/payouts');
 
 // ─── Step 1 & 2: Expert clicks connect — create Stripe onboarding link ────────
 //
@@ -79,14 +79,14 @@ async function createConnectLink(req, res) {
         .catch((e) => console.error('[Stripe] account update failed:', e.message));
     }
 
-    // Automatic daily payouts with a 7-day settlement delay: Stripe releases
-    // each expert's cleared balance to their bank on its own schedule, waiting
-    // 7 days first so refunds/disputes can be settled before funds leave. No
-    // manual payout release needed. Payout scheduling isn't part of the v2 Core
-    // Accounts schema — fall back to the v1 endpoint, which still accepts v2
-    // account IDs.
+    // Manual payouts: the expert's share stays in her Stripe balance until
+    // jobs/processPayouts.js releases it after the session has ended. Stripe's
+    // automatic schedule can't be used — its delay_days counts from the payment
+    // date, so a booking made well ahead of the session would be paid out before
+    // it takes place. Payout scheduling isn't part of the v2 Core Accounts
+    // schema — fall back to the v1 endpoint, which still accepts v2 account IDs.
     await stripe.accounts.update(accountId, {
-      settings: { payouts: { schedule: { interval: 'daily', delay_days: 7 } } },
+      settings: { payouts: { schedule: { interval: 'manual' } } },
     }).catch((e) => console.error('[Stripe] payout schedule update failed:', e.message));
 
     const accountLink = await stripe.v2.core.accountLinks.create({
@@ -188,7 +188,7 @@ async function processStripeEvent(event) {
         include: {
           parent:  { select: { name: true, email: true, phone: true, language: true, timezone: true, notify_booking_confirmation: true } },
           expert:  { select: { address_street: true, address_city: true, address_postcode: true, address_country: true, business_info: { select: { address_country: true } }, timezone: true, notify_new_booking: true, user: { select: { name: true, email: true, language: true } } } },
-          service: { select: { title: true } },
+          service: { select: { title: true, cluster: true, event_location: true, event_city: true } },
           consent: {
             select: {
               language: true, withdrawal_applicable: true,
@@ -208,14 +208,13 @@ async function processStripeEvent(event) {
       console.log(`[Webhook] Found booking ${booking.id} with status=${booking.status}`);
 
       if (booking.status === 'PENDING_PAYMENT') {
-        // transfer_due_at = when Stripe's automatic payout has almost certainly
-        // settled the expert's share to their bank (session end + settlement
-        // buffer). Used only to flip transfer_status → 'completed' for the
-        // refund logic; no money moves at this time.
+        // transfer_due_at = earliest time jobs/processPayouts.js may pay the
+        // expert's share out to their bank (session end + hold). No money moves
+        // at this time.
         const sessionEndTime = new Date(
           booking.scheduled_at.getTime() + booking.duration_minutes * 60 * 1000
         );
-        const transferDueAt = new Date(sessionEndTime.getTime() + PAYOUT_SETTLEMENT_MS);
+        const transferDueAt = new Date(sessionEndTime.getTime() + PAYOUT_HOLD_MS);
 
         await prisma.booking.update({
           where: { id: booking.id },
@@ -245,7 +244,12 @@ async function processStripeEvent(event) {
         ].filter(Boolean).join(', ');
         if (booking.parent.notify_booking_confirmation !== false) {
           const confirmationLanguage = booking.consent?.language || booking.parent.language || 'en';
-          const parentExpertAddress = practiceAddressLine(booking.expert, confirmationLanguage);
+          const isEventBooking = booking.service.cluster === 'EVENT';
+          // An in-person event happens at a venue the expert names per event —
+          // never the expert's registered practice address.
+          const parentExpertAddress = isEventBooking
+            ? [booking.service.event_location, booking.service.event_city].filter(Boolean).join(', ')
+            : practiceAddressLine(booking.expert, confirmationLanguage);
           getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
             sendBookingConfirmationEmail({
               to:              booking.parent.email,
@@ -262,6 +266,7 @@ async function processStripeEvent(event) {
               userTimezone:    booking.parent.timezone || booking.expert.timezone,
               withdrawalApplicable: booking.consent?.withdrawal_applicable,
               bookingId:       booking.id,
+              isEvent:         isEventBooking,
               ...legalLinks,
             });
           }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));
@@ -269,7 +274,9 @@ async function processStripeEvent(event) {
 
         if (booking.expert.notify_new_booking !== false) {
           const expertLanguage = booking.expert.user.language || 'en';
-          const notifyExpertAddress = practiceAddressLine(booking.expert, expertLanguage);
+          const notifyExpertAddress = booking.service.cluster === 'EVENT'
+            ? [booking.service.event_location, booking.service.event_city].filter(Boolean).join(', ')
+            : practiceAddressLine(booking.expert, expertLanguage);
           getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
             sendNewBookingNotificationEmail({
               to:              booking.expert.user.email,
@@ -293,6 +300,7 @@ async function processStripeEvent(event) {
               parentAddress:      parentAddress || undefined,
               parentFiscalCode:   booking.consent?.billing_fiscal_code || undefined,
               parentInvoiceHolder: booking.consent?.billing_invoice_holder || undefined,
+              isEvent:            booking.service.cluster === 'EVENT',
             });
           }).catch((e) => console.error('[Email] Expert notification email failed:', e.message));
         }

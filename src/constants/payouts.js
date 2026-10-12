@@ -1,21 +1,18 @@
-// ─── Payout settlement timing ────────────────────────────────────────────────
-// Expert payouts are handled by Stripe: every connected account is put on an
-// automatic daily payout schedule with a 7-day settlement delay when it is
-// created (see stripe.controller.js → createConnectLink).
+// ─── Payout hold timing ──────────────────────────────────────────────────────
+// Parents pay via destination charges, so the expert's share lands in her Stripe
+// balance at payment time. Every connected account is on MANUAL payouts (set in
+// stripe.controller.js → createConnectLink), so nothing reaches her bank until
+// jobs/processPayouts.js releases it.
 //
-// This is how long after a session ends we assume that automatic payout has
-// almost certainly reached the expert's bank. Once past this point a booking's
-// transfer_status is flipped 'pending' → 'completed' (by markPayoutsSettled.js),
-// which the refund/cancellation code reads to decide whether the expert's share
-// can still be pulled back:
-//   • transfer_status !== 'completed' → reverse the transfer (funds still sat
-//     in the expert's Stripe balance)
-//   • transfer_status === 'completed' → funds have left to their bank, refunds
-//     need the platform-funded fallback / manual recovery
+// A booking becomes eligible for payout this long after its session ends. The
+// job then waits until the money is actually *available* in her Stripe balance
+// (new charges sit as "pending" for a few days) and pays it out the moment it is.
 //
-// 7 days is Stripe's delay_days; the extra buffer covers the pending→available
-// period on the underlying charge plus the gap until the next daily payout run.
-const PAYOUT_SETTLEMENT_DAYS = 9;
-const PAYOUT_SETTLEMENT_MS = PAYOUT_SETTLEMENT_DAYS * 24 * 60 * 60 * 1000;
+// transfer_status semantics (read by the refund/cancellation code):
+//   • 'pending'   → funds still sit in the expert's Stripe balance, the refund
+//                   can reverse the transfer out of that balance
+//   • 'completed' → payout created, funds have left to her bank
+const PAYOUT_HOLD_HOURS = 24;
+const PAYOUT_HOLD_MS = PAYOUT_HOLD_HOURS * 60 * 60 * 1000;
 
-module.exports = { PAYOUT_SETTLEMENT_DAYS, PAYOUT_SETTLEMENT_MS };
+module.exports = { PAYOUT_HOLD_HOURS, PAYOUT_HOLD_MS };

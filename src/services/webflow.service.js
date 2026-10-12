@@ -405,6 +405,22 @@ function flattenForSingleLine(text) {
   return text.replace(/[ \t]*(?:\r\n|\r|\n)+[ \t]*/g, ' ').trim();
 }
 
+// Webflow Link fields 400 ("Validation Error") on URLs with surrounding whitespace or no
+// scheme — both common in hand-typed social links (e.g. "https://instagram.com/x/ ").
+// Returns a clean absolute URL, or null when the value can't be made valid so the field
+// is omitted rather than failing the whole item sync.
+function cleanLinkUrl(value) {
+  const raw = (value || '').trim();
+  if (!raw) return null;
+  const url = /^https?:\/\//i.test(raw) ? raw : `https://${raw}`;
+  try {
+    new URL(url);
+    return /\s/.test(url) ? null : url;
+  } catch {
+    return null;
+  }
+}
+
 async function buildExpertFields(expert, slug) {
   const activeServices = (expert.services || []).filter(s => s.is_active);
   const cheapest = activeServices.length
@@ -532,6 +548,19 @@ async function buildServiceFields(service, expertId, expertWebflowItemId) {
   fields['postal-code-area'] = (service.format === 'HOME_VISIT' && service.home_visit_areas?.length)
     ? service.home_visit_areas.join(', ')
     : '';
+
+  // Venue for an in-person event — a one-off address the expert names per
+  // event, unrelated to their practice address. 'event-city' is split out
+  // separately so the events listing can filter by city. Always set (not
+  // just when truthy) so switching away from EVENT, or away from
+  // IN_PERSON, clears any stale venue left over in Webflow.
+  // NOTE: these two field slugs ('event-location', 'event-city') must exist
+  // on the Webflow Services collection as PlainText fields — if they don't,
+  // Webflow will reject the sync for every EVENT service (visible as
+  // webflow_sync_status=FAILED + an admin alert email), without affecting
+  // any other service's sync.
+  fields['event-location'] = (service.cluster === 'EVENT' && service.event_location) ? service.event_location : '';
+  fields['event-city']     = (service.cluster === 'EVENT' && service.event_city)     ? service.event_city     : '';
 
   // Category (Reference → Services Categories collection)
   if (service.cluster) {

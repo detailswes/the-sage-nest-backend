@@ -8,6 +8,7 @@ const COPY = {
     title: "New Booking – Sage Nest",
     greeting: (expertFirstName) =>
       `Hi ${expertFirstName},<br><br>You have a new booking. Here are the details:`,
+    eventBadge: "Event booking — one of possibly several attendees for this date.",
     bookingDetails: "Booking Details",
     labels: {
       parentName: "Parent Name",
@@ -58,6 +59,7 @@ const COPY = {
     title: "Nuova Prenotazione – Sage Nest",
     greeting: (expertFirstName) =>
       `Ciao ${expertFirstName},<br><br>hai una nuova prenotazione. Ecco i dettagli:`,
+    eventBadge: "Prenotazione per un evento — uno dei possibili più partecipanti a questa data.",
     bookingDetails: "Dettagli della Prenotazione",
     labels: {
       parentName: "Nome del Genitore",
@@ -149,6 +151,7 @@ const newBookingNotificationEmailHtml = ({
   parentAddress,
   parentFiscalCode,
   parentInvoiceHolder,
+  isEvent,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const t = COPY[lang];
@@ -187,6 +190,11 @@ const newBookingNotificationEmailHtml = ({
           <p style="margin:0 0 28px;font-size:15px;color:#445446;line-height:1.6;">
             ${t.greeting(expertFirstName)}
           </p>
+
+          ${isEvent ? `
+          <div style="background:#F5F3FF;border:1px solid #DDD6FE;border-radius:8px;padding:12px 16px;margin-bottom:24px;">
+            <p style="margin:0;font-size:13px;color:#5B21B6;line-height:1.5;">${t.eventBadge}</p>
+          </div>` : ""}
 
           <!-- Booking details card -->
           <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.bookingDetails}</p>

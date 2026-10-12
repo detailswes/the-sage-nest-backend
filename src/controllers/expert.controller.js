@@ -325,6 +325,28 @@ async function getExpertById(req, res) {
       },
     });
     if (!expert) return res.status(404).json({ error: 'Expert not found' });
+
+    // Public "spots left" for events — a live count, not a cached value, so
+    // it's correct even if someone else books between page loads. The final
+    // guard against overselling still lives in lockSlot/createBooking; this
+    // is purely informational.
+    const eventServices = expert.services.filter((s) => s.cluster === 'EVENT' && s.capacity);
+    if (eventServices.length > 0) {
+      const counts = await Promise.all(
+        eventServices.map((s) =>
+          prisma.booking.count({
+            where: { service_id: s.id, status: { in: ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'] } },
+          }),
+        ),
+      );
+      const countByServiceId = new Map(eventServices.map((s, i) => [s.id, counts[i]]));
+      expert.services = expert.services.map((s) =>
+        countByServiceId.has(s.id)
+          ? { ...s, spots_left: Math.max(0, s.capacity - countByServiceId.get(s.id)) }
+          : s,
+      );
+    }
+
     return res.json(expert);
   } catch (err) {
     console.error(err);

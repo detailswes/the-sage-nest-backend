@@ -1762,7 +1762,6 @@ async function exportMyData(req, res) {
           advance_booking_days: true,
           buffer_minutes: true,
           min_notice_hours: true,
-          created_at: true,
           business_info: {
             select: {
               entity_type: true,
@@ -1853,7 +1852,7 @@ async function exportMyData(req, res) {
             buffer_minutes: expert.buffer_minutes,
             min_notice_hours: expert.min_notice_hours,
           },
-          profile_created: expert.created_at,
+          profile_created: user.created_at,
         } : null,
         business_information: bi ? {
           entity_type: bi.entity_type,

@@ -51,6 +51,10 @@ const {
   expertCancellationConfirmationEmailSubject,
 } = require("./email_templates/expertCancellationConfirmationEmail");
 const {
+  eventFullyBookedEmailHtml,
+  eventFullyBookedEmailSubject,
+} = require("./email_templates/eventFullyBookedEmail");
+const {
   parentSuspendedEmailHtml,
   parentSuspendedEmailSubject,
 } = require("./email_templates/parentSuspendedEmail");
@@ -378,6 +382,7 @@ const sendBookingConfirmationEmail = ({
   termsUrl,
   policyUrl,
   privacyUrl,
+  isEvent,
 }) => {
   const lang = language === "it" ? "it" : "en";
   return sendEmail({
@@ -407,6 +412,7 @@ const sendBookingConfirmationEmail = ({
       termsUrl,
       policyUrl,
       privacyUrl,
+      isEvent: !!isEvent,
     }),
   });
 };
@@ -434,6 +440,7 @@ const sendBookingCancellationNotification = ({
   bookingId,
   timezone,
   language,
+  isEvent = false,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const text =
@@ -460,6 +467,7 @@ const sendBookingCancellationNotification = ({
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
       supportEmail: SUPPORT_EMAIL,
+      isEvent,
     }),
   });
 };
@@ -491,6 +499,7 @@ const sendParentCancellationConfirmationEmail = ({
   bookingId,
   timezone,
   language,
+  isEvent = false,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const text =
@@ -517,6 +526,7 @@ const sendParentCancellationConfirmationEmail = ({
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
       supportEmail: SUPPORT_EMAIL,
+      isEvent,
     }),
   });
 };
@@ -551,6 +561,7 @@ const sendNewBookingNotificationEmail = ({
   policyUrl,
   parentAddress,
   parentFiscalCode,
+  isEvent,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const text =
@@ -582,6 +593,7 @@ const sendNewBookingNotificationEmail = ({
       policyUrl,
       parentAddress,
       parentFiscalCode,
+      isEvent: !!isEvent,
     }),
   });
 };
@@ -946,14 +958,19 @@ const sendExpertCancelledSessionEmail = ({
 }) => {
   const lang = language === "it" ? "it" : "en";
   const locale = lang === "it" ? "it-IT" : "en-GB";
-  const amountStr = new Intl.NumberFormat(locale, { style: 'currency', currency }).format(Number(amount));
-  const text =
-    lang === "it"
-      ? `Ciao ${parentName.split(' ')[0]}, ci dispiace informarti che ${expertName.split(' ')[0]} ha dovuto cancellare la tua prossima sessione. Ti abbiamo rimborsato l'intero importo di ${amountStr}.`
-      : `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. A full refund of ${amountStr} has been issued to your original payment method.`;
+  const numericAmount = Number(amount) || 0;
+  const isFree = numericAmount === 0;
+  const amountStr = new Intl.NumberFormat(locale, { style: 'currency', currency }).format(numericAmount);
+  const text = isFree
+    ? (lang === "it"
+        ? `Ciao ${parentName.split(' ')[0]}, ci dispiace informarti che ${expertName.split(' ')[0]} ha dovuto cancellare la tua prossima sessione. Si trattava di una prenotazione gratuita, quindi non è stato necessario alcun rimborso.`
+        : `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. This was a free booking, so no refund was needed.`)
+    : (lang === "it"
+        ? `Ciao ${parentName.split(' ')[0]}, ci dispiace informarti che ${expertName.split(' ')[0]} ha dovuto cancellare la tua prossima sessione. Ti abbiamo rimborsato l'intero importo di ${amountStr}.`
+        : `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. A full refund of ${amountStr} has been issued to your original payment method.`);
   return sendEmail({
     to,
-    subject: expertCancelledSessionEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone }),
+    subject: expertCancelledSessionEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone, amount: numericAmount }),
     text,
     html: expertCancelledSessionEmailHtml({
       parentName,
@@ -992,21 +1009,63 @@ const sendExpertCancellationConfirmationEmail = ({
   bookingId,
   timezone,
   language,
+  isFree = false,
 }) => {
   const lang = language === "it" ? "it" : "en";
   return sendEmail({
     to,
     subject: expertCancellationConfirmationEmailSubject({ language: lang, serviceTitle, parentName, scheduledAt, timezone }),
-    text:
-      lang === "it"
-        ? `Ciao ${expertName?.split(' ')[0] || 'there'}, ti confermiamo la cancellazione della sessione (${serviceTitle}, prenotazione #${bookingId}) con ${parentName}. Il genitore è stato rimborsato integralmente; non verrà corrisposto alcun compenso per questa prenotazione.`
-        : `Hi ${expertName?.split(' ')[0] || 'there'}, this confirms that you have cancelled the session (${serviceTitle}, booking #${bookingId}) with ${parentName}. The parent has been refunded in full; no payout will be made for this booking.`,
+    text: isFree
+      ? (lang === "it"
+          ? `Ciao ${expertName?.split(' ')[0] || 'there'}, ti confermiamo la cancellazione della sessione (${serviceTitle}, prenotazione #${bookingId}) con ${parentName}. Si trattava di una prenotazione gratuita; non verrà corrisposto alcun compenso per questa prenotazione.`
+          : `Hi ${expertName?.split(' ')[0] || 'there'}, this confirms that you have cancelled the session (${serviceTitle}, booking #${bookingId}) with ${parentName}. This was a free booking; no payout will be made for it.`)
+      : (lang === "it"
+          ? `Ciao ${expertName?.split(' ')[0] || 'there'}, ti confermiamo la cancellazione della sessione (${serviceTitle}, prenotazione #${bookingId}) con ${parentName}. Il genitore è stato rimborsato integralmente; non verrà corrisposto alcun compenso per questa prenotazione.`
+          : `Hi ${expertName?.split(' ')[0] || 'there'}, this confirms that you have cancelled the session (${serviceTitle}, booking #${bookingId}) with ${parentName}. The parent has been refunded in full; no payout will be made for this booking.`),
     html: expertCancellationConfirmationEmailHtml({
       expertName,
       parentName,
       serviceTitle,
       scheduledAt,
       bookingId,
+      timezone,
+      language: lang,
+      clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
+      isFree,
+    }),
+  });
+};
+
+/**
+ * Sent to the expert the moment an event's last spot is booked and it
+ * auto-deactivates — purely informational.
+ * @param {{
+ *   to: string, expertName: string, serviceTitle: string,
+ *   scheduledAt: Date, timezone?: string | null, language?: 'en' | 'it'
+ * }} param0
+ */
+const sendEventFullyBookedEmail = ({
+  to,
+  expertName,
+  serviceTitle,
+  scheduledAt,
+  timezone,
+  language,
+}) => {
+  const lang = language === "it" ? "it" : "en";
+  return sendEmail({
+    to,
+    subject: eventFullyBookedEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone }),
+    text:
+      lang === "it"
+        ? `Ciao ${expertName?.split(' ')[0] || 'there'}, il tuo evento "${serviceTitle}" ha raggiunto il numero massimo di posti ed è stato disattivato automaticamente.`
+        : `Hi ${expertName?.split(' ')[0] || 'there'}, your event "${serviceTitle}" has reached its number of spots and has been automatically deactivated.`,
+    html: eventFullyBookedEmailHtml({
+      expertName,
+      serviceTitle,
+      scheduledAt,
       timezone,
       language: lang,
       clientUrl: process.env.CLIENT_URL,
@@ -1338,6 +1397,7 @@ module.exports = {
   sendPasswordChangedEmail,
   sendExpertCancelledSessionEmail,
   sendExpertCancellationConfirmationEmail,
+  sendEventFullyBookedEmail,
   sendParentSuspendedEmail,
   sendPlatformCancellationEmailToExpert,
   sendAdminPayoutAlert,

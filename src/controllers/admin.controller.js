@@ -1134,6 +1134,13 @@ async function approveService(req, res) {
             format: draft.format !== null ? draft.format : service.format,
             cluster: draft.cluster !== null ? draft.cluster : service.cluster,
             home_visit_areas: draft.home_visit_areas,
+            // Explicit-null check, not `??` — a draft legitimately proposes
+            // clearing these (e.g. switching away from EVENT), and `??`
+            // would wrongly fall back to the stale live value in that case.
+            event_starts_at: draft.event_starts_at !== null ? draft.event_starts_at : service.event_starts_at,
+            capacity: draft.capacity !== null ? draft.capacity : service.capacity,
+            event_location: draft.event_location !== null ? draft.event_location : service.event_location,
+            event_city: draft.event_city !== null ? draft.event_city : service.event_city,
           },
         }),
         prisma.serviceDraft.delete({ where: { service_id: service.id } }),
