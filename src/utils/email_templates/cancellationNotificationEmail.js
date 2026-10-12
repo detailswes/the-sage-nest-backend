@@ -17,6 +17,10 @@ const COPY = {
       `As the cancellation was made between 12 and 24 hours before the session, ${parentFirstName} has received a 50% refund of ${halfAmountStr}. The remaining 50% (${halfAmountStr}) will be transferred to you in line with the standard payout schedule.`,
     refundOutcome0: (totalAmountStr) =>
       `As the cancellation was made less than 12 hours before the session, no refund has been issued. The full amount (${totalAmountStr}) will be transferred to you in line with the standard payout schedule.`,
+    refundOutcome100Event: (parentFirstName, amountStr) =>
+      `As the cancellation was made at least 7 days before the event, ${parentFirstName} has received a full refund of ${amountStr}.`,
+    refundOutcome0Event: (totalAmountStr) =>
+      `As the cancellation was made less than 7 days before the event, no refund has been issued. The full amount (${totalAmountStr}) will be transferred to you in line with the standard payout schedule.`,
     body1: "We are sorry for the disruption to your schedule. You can view all your bookings and any updates in your Sage Nest expert dashboard.",
     body2: (email) => `If you have any questions, please do not hesitate to contact us at <a href="mailto:${email}" style="color:#445446;">${email}</a>.`,
     signoff: "The Sage Nest Team",
@@ -39,6 +43,10 @@ const COPY = {
       `Poiché la cancellazione è avvenuta tra 12 e 24 ore prima della sessione, ${parentFirstName} ha ricevuto un rimborso del 50% di ${halfAmountStr}. Il restante 50% (${halfAmountStr}) ti verrà trasferito secondo il consueto calendario dei pagamenti.`,
     refundOutcome0: (totalAmountStr) =>
       `Poiché la cancellazione è avvenuta meno di 12 ore prima della sessione, non è stato emesso alcun rimborso. L'importo completo (${totalAmountStr}) ti verrà trasferito secondo il consueto calendario dei pagamenti.`,
+    refundOutcome100Event: (parentFirstName, amountStr) =>
+      `Poiché la cancellazione è avvenuta almeno 7 giorni prima dell'evento, ${parentFirstName} ha ricevuto un rimborso integrale di ${amountStr}.`,
+    refundOutcome0Event: (totalAmountStr) =>
+      `Poiché la cancellazione è avvenuta meno di 7 giorni prima dell'evento, non è stato emesso alcun rimborso. L'importo completo (${totalAmountStr}) ti verrà trasferito secondo il consueto calendario dei pagamenti.`,
     body1: "Ci scusiamo per il disagio arrecato ai tuoi impegni. Puoi consultare tutte le tue prenotazioni e i relativi aggiornamenti nella tua dashboard esperti Sage Nest.",
     body2: (email) => `Per qualsiasi domanda, non esitare a contattarci a <a href="mailto:${email}" style="color:#445446;">${email}</a>.`,
     signoff: "Il team di Sage Nest",
@@ -75,6 +83,7 @@ const cancellationNotificationEmailHtml = ({
   clientUrl,
   contactEmail,
   supportEmail,
+  isEvent = false,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const t = COPY[lang];
@@ -89,8 +98,11 @@ const cancellationNotificationEmailHtml = ({
   const halfAmount = totalAmount * 0.5;
   const fmt = (n) => new Intl.NumberFormat(locale, { style: "currency", currency }).format(n);
 
-  const refundOutcome =
-    refundPercent === 100
+  const refundOutcome = isEvent
+    ? refundPercent === 100
+      ? t.refundOutcome100Event(parentFirstName, fmt(totalAmount))
+      : t.refundOutcome0Event(fmt(totalAmount))
+    : refundPercent === 100
       ? t.refundOutcome100(parentFirstName, fmt(totalAmount))
       : refundPercent === 50
       ? t.refundOutcome50(parentFirstName, fmt(halfAmount))

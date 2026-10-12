@@ -18,6 +18,10 @@ const COPY = {
       `As the cancellation was made between 12 and 24 hours before the session, you have received a 50% refund of ${halfAmountStr}.`,
     refundOutcome0: () =>
       `As the cancellation was made less than 12 hours before the session, no refund has been issued.`,
+    refundOutcome100Event: (amountStr) =>
+      `As the cancellation was made at least 7 days before the event, you have received a full refund of ${amountStr}.`,
+    refundOutcome0Event: () =>
+      `As the cancellation was made less than 7 days before the event, no refund has been issued.`,
     refundNote: "Please allow 5–10 business days for the refund to appear, depending on your bank.",
     findHeading: "Find Another Expert",
     findBody: "If you'd like to book with another expert, you can browse available specialists and find a time that works for you.",
@@ -46,6 +50,10 @@ const COPY = {
       `Poiché la cancellazione è avvenuta tra 12 e 24 ore prima della sessione, hai ricevuto un rimborso del 50% di ${halfAmountStr}.`,
     refundOutcome0: () =>
       `Poiché la cancellazione è avvenuta meno di 12 ore prima della sessione, non è stato emesso alcun rimborso.`,
+    refundOutcome100Event: (amountStr) =>
+      `Poiché la cancellazione è avvenuta almeno 7 giorni prima dell'evento, hai ricevuto un rimborso integrale di ${amountStr}.`,
+    refundOutcome0Event: () =>
+      `Poiché la cancellazione è avvenuta meno di 7 giorni prima dell'evento, non è stato emesso alcun rimborso.`,
     refundNote: "L'accredito potrà richiedere dai 5 ai 10 giorni lavorativi, a seconda della tua banca.",
     findHeading: "Trova un Altro Professionista",
     findBody: "Se desideri prenotare con un altro professionista, puoi consultare gli specialisti disponibili e scegliere l'orario più adatto a te.",
@@ -92,6 +100,7 @@ const parentCancellationConfirmationEmailHtml = ({
   clientUrl,
   contactEmail,
   supportEmail,
+  isEvent = false,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const t = COPY[lang];
@@ -107,8 +116,11 @@ const parentCancellationConfirmationEmailHtml = ({
   const halfAmount = totalAmount * 0.5;
   const fmt = (n) => new Intl.NumberFormat(locale, { style: "currency", currency }).format(n);
 
-  const refundOutcome =
-    refundPercent === 100
+  const refundOutcome = isEvent
+    ? refundPercent === 100
+      ? t.refundOutcome100Event(fmt(totalAmount))
+      : t.refundOutcome0Event()
+    : refundPercent === 100
       ? t.refundOutcome100(fmt(totalAmount))
       : refundPercent === 50
       ? t.refundOutcome50(fmt(halfAmount))

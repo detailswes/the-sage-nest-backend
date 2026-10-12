@@ -3,8 +3,10 @@ const { formatBookingRef } = require("../bookingRef");
 
 const COPY = {
   en: {
-    subject: ({ serviceTitle, dateStr }) =>
-      `Your session has been cancelled — full refund issued — ${serviceTitle} on ${dateStr}`,
+    subject: ({ serviceTitle, dateStr, isFree }) =>
+      isFree
+        ? `Your session has been cancelled — ${serviceTitle} on ${dateStr}`
+        : `Your session has been cancelled — full refund issued — ${serviceTitle} on ${dateStr}`,
     title: "Session Cancelled – Sage Nest",
     greeting: (parentFirstName, expertFirstName) =>
       `Hi ${parentFirstName},<br><br>We're sorry to let you know that <strong>${expertFirstName}</strong> has had to cancel your upcoming session.`,
@@ -13,6 +15,8 @@ const COPY = {
     refundHeading: "Full refund issued",
     refund: (amountStr) =>
       `A full refund of <strong>${amountStr}</strong> has been issued to your original payment method. Please allow 5–10 business days for it to appear, depending on your bank.`,
+    freeHeading: "No payment to refund",
+    freeBody: "This was a free booking, so no payment was taken and there is nothing to refund.",
     findHeading: "Find Another Expert",
     findBody: "We know your time and your family's wellbeing matter. If you'd like to book with another expert, you can browse available specialists and find a time that works for you.",
     findButton: "Find another expert",
@@ -24,8 +28,10 @@ const COPY = {
     transactional: (email) => `This is a transactional message about your booking, sent from ${email}.`,
   },
   it: {
-    subject: ({ serviceTitle, dateStr }) =>
-      `La tua sessione è stata cancellata — rimborso integrale effettuato — ${serviceTitle} il ${dateStr}`,
+    subject: ({ serviceTitle, dateStr, isFree }) =>
+      isFree
+        ? `La tua sessione è stata cancellata — ${serviceTitle} il ${dateStr}`
+        : `La tua sessione è stata cancellata — rimborso integrale effettuato — ${serviceTitle} il ${dateStr}`,
     title: "Sessione Cancellata – Sage Nest",
     greeting: (parentFirstName, expertFirstName) =>
       `Ciao ${parentFirstName},<br><br>ci dispiace informarti che <strong>${expertFirstName}</strong> ha dovuto cancellare la tua prossima sessione.`,
@@ -34,6 +40,8 @@ const COPY = {
     refundHeading: "Rimborso integrale effettuato",
     refund: (amountStr) =>
       `Ti abbiamo rimborsato l'intero importo di <strong>${amountStr}</strong> sul metodo di pagamento originale. L'accredito potrà richiedere dai 5 ai 10 giorni lavorativi, a seconda della tua banca.`,
+    freeHeading: "Nessun pagamento da rimborsare",
+    freeBody: "Si trattava di una prenotazione gratuita: non è stato effettuato alcun pagamento e non c'è nulla da rimborsare.",
     findHeading: "Trova un Altro Professionista",
     findBody: "Sappiamo quanto contino il tuo tempo e il benessere della tua famiglia. Se desideri prenotare con un altro professionista, puoi consultare gli specialisti disponibili e scegliere l'orario più adatto a te.",
     findButton: "Trova un altro professionista",
@@ -78,7 +86,9 @@ const expertCancelledSessionEmailHtml = ({
   const locale = lang === "it" ? "it-IT" : "en-GB";
   const parentFirstName = parentName?.split(" ")[0] || "there";
   const expertFirstName = expertName?.split(" ")[0] || "";
-  const amountStr = new Intl.NumberFormat(locale, { style: "currency", currency }).format(Number(amount));
+  const numericAmount = Number(amount) || 0;
+  const isFree = numericAmount === 0;
+  const amountStr = new Intl.NumberFormat(locale, { style: "currency", currency }).format(numericAmount);
   const logoUrl = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
   const dashboardUrl = `${clientUrl}/dashboard/parent/upcoming`;
   const findExpertUrl = `${clientUrl}/book`;
@@ -149,9 +159,9 @@ const expertCancelledSessionEmailHtml = ({
 
           <!-- Full refund box -->
           <div style="background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px;padding:16px;margin-bottom:28px;">
-            <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#065F46;">${t.refundHeading}</p>
+            <p style="margin:0 0 4px;font-size:13px;font-weight:700;color:#065F46;">${isFree ? t.freeHeading : t.refundHeading}</p>
             <p style="margin:0;font-size:13px;color:#065F46;line-height:1.6;">
-              ${t.refund(amountStr)}
+              ${isFree ? t.freeBody : t.refund(amountStr)}
             </p>
           </div>
 
@@ -190,10 +200,10 @@ const expertCancelledSessionEmailHtml = ({
 </html>`;
 };
 
-const expertCancelledSessionEmailSubject = ({ language, serviceTitle, scheduledAt, timezone }) => {
+const expertCancelledSessionEmailSubject = ({ language, serviceTitle, scheduledAt, timezone, amount }) => {
   const lang = language === "it" ? "it" : "en";
   const { dateStr } = formatDateTime(scheduledAt, timezone, lang);
-  return COPY[lang].subject({ serviceTitle, dateStr });
+  return COPY[lang].subject({ serviceTitle, dateStr, isFree: (Number(amount) || 0) === 0 });
 };
 
 module.exports = { expertCancelledSessionEmailHtml, expertCancelledSessionEmailSubject };

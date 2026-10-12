@@ -1139,6 +1139,8 @@ async function approveService(req, res) {
             // would wrongly fall back to the stale live value in that case.
             event_starts_at: draft.event_starts_at !== null ? draft.event_starts_at : service.event_starts_at,
             capacity: draft.capacity !== null ? draft.capacity : service.capacity,
+            event_location: draft.event_location !== null ? draft.event_location : service.event_location,
+            event_city: draft.event_city !== null ? draft.event_city : service.event_city,
           },
         }),
         prisma.serviceDraft.delete({ where: { service_id: service.id } }),

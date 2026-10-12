@@ -148,6 +148,8 @@ model Service {
   home_visit_areas    String[]             @default([])
   event_starts_at     DateTime?
   capacity            Int?
+  event_location      String?
+  event_city          String?
   sort_order          Int                  @default(0)
   currency            String               @default("EUR")
   review_status       ServiceReviewStatus  @default(PENDING_REVIEW)
@@ -182,6 +184,8 @@ model ServiceDraft {
   home_visit_areas  String[]        @default([])
   event_starts_at   DateTime?
   capacity          Int?
+  event_location    String?
+  event_city        String?
   status            DraftStatus     @default(PENDING_REVIEW)
   submitted_at      DateTime        @default(now())
   reviewed_at       DateTime?

@@ -4,6 +4,7 @@ const { PRICE_LIMITS } = require('../constants/currency');
 const { SERVICE_FORMATS } = require('../constants/format');
 const { countryKeyFromIso, sanitizeHomeVisitAreas } = require('../constants/homeVisitAreas');
 const { logAudit } = require('../utils/auditLog');
+const { zonedToUTC, parseWallClockDateTime } = require('../utils/timezone');
 
 const VALID_FORMATS    = SERVICE_FORMATS;
 const VALID_CLUSTERS   = ['FOR_PARENTS', 'FOR_BABY', 'FOR_FAMILY', 'PACKAGE', 'GIFT', 'EVENT'];
@@ -11,6 +12,10 @@ const VALID_CLUSTERS   = ['FOR_PARENTS', 'FOR_BABY', 'FOR_FAMILY', 'PACKAGE', 'G
 // in-person — "home visit" has no meaning for a one-off group gathering.
 const EVENT_FORMATS = ['ONLINE', 'IN_PERSON'];
 const EVENT_FORMAT_ERROR = `Events must be delivered as one of: ${EVENT_FORMATS.join(', ')}.`;
+// Minimum lead time between "now" and an event's start — stops an expert
+// from publishing something nobody could realistically book in time.
+const EVENT_MIN_LEAD_TIME_MS = 24 * 60 * 60 * 1000;
+const EVENT_LEAD_TIME_ERROR = 'Event date and time must be at least 24 hours from now.';
 
 // Areas an expert covers for a HOME_VISIT service are picked from a fixed
 // region → province/landsdel/county dataset scoped to their practice-address
@@ -93,7 +98,7 @@ function logCurrencyRejection(actorUserId, serviceId, attempted, expected) {
 async function createService(req, res) {
   const {
     title, description, duration_minutes, price, format, cluster, home_visit_areas,
-    event_starts_at, capacity,
+    event_starts_at, capacity, event_location, event_city,
   } = req.body;
 
   if (!title || !description || !duration_minutes || price === undefined || price === null || price === '' || !format || !cluster) {
@@ -122,18 +127,30 @@ async function createService(req, res) {
   }
 
   let eventStartsAtDate = null;
+  let eventWallClock = null;
   let capacityVal = null;
   if (isEvent) {
-    eventStartsAtDate = new Date(event_starts_at);
-    if (!event_starts_at || isNaN(eventStartsAtDate.getTime())) {
+    // The client sends a plain wall-clock string ("YYYY-MM-DDTHH:mm") with no
+    // timezone info — it must be interpreted against the expert's registered
+    // timezone (fetched below), never the browser's, so the conversion to an
+    // absolute UTC instant happens once we have that.
+    eventWallClock = parseWallClockDateTime(event_starts_at);
+    if (!eventWallClock) {
       return res.status(400).json({ error: 'A valid event date and time is required.' });
-    }
-    if (eventStartsAtDate <= new Date()) {
-      return res.status(400).json({ error: 'Event date and time must be in the future.' });
     }
     capacityVal = parseInt(capacity);
     if (isNaN(capacityVal) || capacityVal < 1 || capacityVal > 1000) {
       return res.status(400).json({ error: 'Number of spots must be between 1 and 1000.' });
+    }
+    // In-person events happen at a venue the expert names per event — it has
+    // no connection to their registered practice address.
+    if (format === 'IN_PERSON') {
+      if (!(event_location || '').trim()) {
+        return res.status(400).json({ error: 'Venue address is required for in-person events.' });
+      }
+      if (!(event_city || '').trim()) {
+        return res.status(400).json({ error: 'City is required for in-person events.' });
+      }
     }
   }
 
@@ -143,6 +160,13 @@ async function createService(req, res) {
     const expert_id = expert.id;
 
     if (isEvent) {
+      eventStartsAtDate = zonedToUTC(
+        eventWallClock.year, eventWallClock.month, eventWallClock.day,
+        eventWallClock.hour, eventWallClock.minute, expert.timezone || 'UTC',
+      );
+      if (eventStartsAtDate.getTime() < Date.now() + EVENT_MIN_LEAD_TIME_MS) {
+        return res.status(400).json({ error: EVENT_LEAD_TIME_ERROR });
+      }
       const conflictError = await findEventConflictError(expert_id, eventStartsAtDate, dur, null);
       if (conflictError) return res.status(409).json({ error: conflictError });
     }
@@ -199,6 +223,8 @@ async function createService(req, res) {
         cluster: cluster || null,
         event_starts_at: isEvent ? eventStartsAtDate : null,
         capacity: isEvent ? capacityVal : null,
+        event_location: isEvent && format === 'IN_PERSON' ? event_location.trim() : null,
+        event_city: isEvent && format === 'IN_PERSON' ? event_city.trim() : null,
         is_active: false,
         sort_order,
         review_status: 'PENDING_REVIEW',
@@ -235,7 +261,7 @@ async function updateService(req, res) {
   const { id } = req.params;
   const {
     title, description, duration_minutes, price, currency, is_active, format, cluster, home_visit_areas,
-    event_starts_at, capacity,
+    event_starts_at, capacity, event_location, event_city,
   } = req.body;
 
   if (title !== undefined && title.trim().length > 80) {
@@ -305,12 +331,18 @@ async function updateService(req, res) {
 
     let eventStartsAtDate;
     if (event_starts_at !== undefined) {
-      eventStartsAtDate = new Date(event_starts_at);
-      if (isNaN(eventStartsAtDate.getTime())) {
+      // Same plain wall-clock string as createService — reinterpreted against
+      // the expert's registered timezone, not the browser's.
+      const wallClock = parseWallClockDateTime(event_starts_at);
+      if (!wallClock) {
         return res.status(400).json({ error: 'A valid event date and time is required.' });
       }
-      if (eventStartsAtDate <= new Date()) {
-        return res.status(400).json({ error: 'Event date and time must be in the future.' });
+      eventStartsAtDate = zonedToUTC(
+        wallClock.year, wallClock.month, wallClock.day,
+        wallClock.hour, wallClock.minute, expert.timezone || 'UTC',
+      );
+      if (eventStartsAtDate.getTime() < Date.now() + EVENT_MIN_LEAD_TIME_MS) {
+        return res.status(400).json({ error: EVENT_LEAD_TIME_ERROR });
       }
     }
     const effectiveEventStartsAt = event_starts_at !== undefined ? eventStartsAtDate : service.event_starts_at;
@@ -324,10 +356,36 @@ async function updateService(req, res) {
       if (isNaN(capacityVal) || capacityVal < 1 || capacityVal > 1000) {
         return res.status(400).json({ error: 'Number of spots must be between 1 and 1000.' });
       }
+      // Dropping capacity below what's already booked would leave the event
+      // oversold relative to its own stated limit — block it rather than
+      // silently creating a service that reads "12 of 8 spots booked".
+      if (capacityVal < service.capacity) {
+        const bookedCount = await prisma.booking.count({
+          where: { service_id: service.id, status: { in: ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'] } },
+        });
+        if (capacityVal < bookedCount) {
+          return res.status(400).json({
+            error: `Number of spots can't be lower than ${bookedCount} — that many people are already booked.`,
+          });
+        }
+      }
     }
     const effectiveCapacity = capacity !== undefined ? capacityVal : service.capacity;
     if (isEvent && !effectiveCapacity) {
       return res.status(400).json({ error: 'Number of spots must be between 1 and 1000.' });
+    }
+
+    // In-person events happen at a venue the expert names per event — it has
+    // no connection to their registered practice address.
+    const effectiveEventLocation = event_location !== undefined ? (event_location || '').trim() : service.event_location;
+    const effectiveEventCity = event_city !== undefined ? (event_city || '').trim() : service.event_city;
+    if (isEvent && effectiveFormat === 'IN_PERSON') {
+      if (!effectiveEventLocation) {
+        return res.status(400).json({ error: 'Venue address is required for in-person events.' });
+      }
+      if (!effectiveEventCity) {
+        return res.status(400).json({ error: 'City is required for in-person events.' });
+      }
     }
 
     if (isEvent) {
@@ -398,11 +456,18 @@ async function updateService(req, res) {
       ...(cluster !== undefined      && { cluster: cluster || null }),
       ...(event_starts_at !== undefined && { event_starts_at: eventStartsAtDate }),
       ...(capacity !== undefined     && { capacity: capacityVal }),
+      ...(event_location !== undefined && { event_location: (event_location || '').trim() || null }),
+      ...(event_city !== undefined     && { event_city: (event_city || '').trim() || null }),
       // Switching away from EVENT leaves these fields meaningless — clear
-      // them rather than letting a stale date/capacity sit dormant (and
-      // silently reappear if the service is ever switched back).
-      ...(!isEvent && (service.event_starts_at != null || service.capacity != null) && {
-        event_starts_at: null, capacity: null,
+      // them rather than letting a stale date/capacity/venue sit dormant
+      // (and silently reappear if the service is ever switched back).
+      ...(!isEvent && (service.event_starts_at != null || service.capacity != null || service.event_location != null || service.event_city != null) && {
+        event_starts_at: null, capacity: null, event_location: null, event_city: null,
+      }),
+      // Still an event, but no longer in-person — the venue is meaningless
+      // on its own, so clear it even though the event itself stays.
+      ...(isEvent && effectiveFormat !== 'IN_PERSON' && (service.event_location != null || service.event_city != null) && {
+        event_location: null, event_city: null,
       }),
     };
     const hasContentFields = Object.keys(contentData).length > 0;
@@ -474,6 +539,8 @@ async function updateService(req, res) {
             home_visit_areas: service.draft.home_visit_areas,
             event_starts_at: service.draft.event_starts_at,
             capacity: service.draft.capacity,
+            event_location: service.draft.event_location,
+            event_city: service.draft.event_city,
           }
         : {
             title: service.title,
@@ -485,6 +552,8 @@ async function updateService(req, res) {
             home_visit_areas: service.home_visit_areas,
             event_starts_at: service.event_starts_at,
             capacity: service.capacity,
+            event_location: service.event_location,
+            event_city: service.event_city,
           };
       const proposedContent = { ...draftBaseline, ...contentData };
       serviceDraft = await prisma.serviceDraft.upsert({

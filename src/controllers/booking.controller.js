@@ -9,7 +9,7 @@ const { SERVICE_FORMATS, usesExpertAddress, isHomeVisit } = require("../constant
 const { practiceAddressLine } = require("../utils/countryName");
 const { upsertMarketingConsent, syncMarketingConsentToBrevo } = require("../utils/marketingConsent");
 const { createRefundWithFallback } = require("../utils/stripeRefund");
-const { PAYOUT_SETTLEMENT_MS } = require("../constants/payouts");
+const { PAYOUT_HOLD_MS } = require("../constants/payouts");
 const {
   sendBookingCancellationNotification,
   sendParentCancellationConfirmationEmail,
@@ -490,7 +490,9 @@ async function createBooking(req, res) {
 
       const parentConfirmationLanguage = fullBooking.consent?.language || fullBooking.parent.language || "en";
       if (fullBooking.parent.notify_booking_confirmation !== false) {
-        const parentExpertAddress = practiceAddressLine(fullBooking.expert, parentConfirmationLanguage);
+        const parentExpertAddress = isEvent
+          ? [service.event_location, service.event_city].filter(Boolean).join(", ")
+          : practiceAddressLine(fullBooking.expert, parentConfirmationLanguage);
         getLegalDocLinks(parentConfirmationLanguage).then((legalLinks) => {
           sendBookingConfirmationEmail({
             to: fullBooking.parent.email,
@@ -515,7 +517,9 @@ async function createBooking(req, res) {
 
       if (fullBooking.expert.notify_new_booking !== false) {
         const expertLanguage = fullBooking.expert.user.language || "en";
-        const notifyExpertAddress = practiceAddressLine(fullBooking.expert, expertLanguage);
+        const notifyExpertAddress = isEvent
+          ? [service.event_location, service.event_city].filter(Boolean).join(", ")
+          : practiceAddressLine(fullBooking.expert, expertLanguage);
         getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
           sendNewBookingNotificationEmail({
             to: fullBooking.expert.user.email,
@@ -812,18 +816,27 @@ async function reportImLate(req, res) {
 
 // ─── DELETE /bookings/:id — parent cancels their booking ─────────────────────
 //
-// Three-tier cancellation policy — boundary is the request-received timestamp,
-// NOT the Stripe processing timestamp:
+// Three-tier cancellation policy for 1:1 sessions — boundary is the
+// request-received timestamp, NOT the Stripe processing timestamp:
 //
 //   ≥ 24 h before session        → full refund  (100%)
 //   ≥ 12 h and < 24 h before     → 50% refund
 //   < 12 h before session        → no refund    (0%)
 //
+// Events use a separate, simpler binary policy (client spec):
+//
+//   ≥ 7 days before the event    → full refund  (100%)
+//   < 7 days before the event, or a no-show → no refund (0%)
+//
 // Edge-case rules:
-//   • Exactly 24 h  → treated as ≥ 24 h  (full refund)
-//   • Exactly 12 h  → treated as ≥ 12 h  (50% refund)
-//   • No-show       → 0% (< 12 h window; no active cancellation issued by parent)
-//   • Expert cancel → always 100% (handled separately via admin controller)
+//   • Exactly 24 h / 7 days → treated as meeting the threshold (full refund)
+//   • Exactly 12 h  → treated as ≥ 12 h  (50% refund, 1:1 sessions only)
+//   • No-show       → 0% (below the refund threshold; no active cancellation
+//                     issued by parent, so this is the natural fallthrough,
+//                     not a separately tracked status)
+//   • Expert cancel → always 100% (handled separately, see performExpertCancellation)
+//   • Free events (price = 0) → the tier is computed the same way for audit/
+//                     email wording, but there is never anything to refund
 //   • System delay  → cancelledAt is stamped at request arrival, before any
 //                     async work, so processing latency never moves a boundary
 //
@@ -868,15 +881,20 @@ async function cancelBooking(req, res) {
       (booking.scheduled_at.getTime() - cancelledAt.getTime()) /
       (1000 * 60 * 60);
     const wasConfirmed = booking.status === "CONFIRMED";
+    const isEvent = booking.service.cluster === "EVENT";
 
     // Determine refund tier. Boundaries are inclusive on the more-favourable side:
-    //   >= 24 h → 100%, >= 12 h → 50%, < 12 h → 0%
+    //   Events:      >= 7 days (168h) → 100%, else → 0% (binary, no 50% tier)
+    //   1:1 sessions: >= 24 h → 100%, >= 12 h → 50%, < 12 h → 0%
     // min_refund_percent is the worst tier this booking ever reached across all
     // reschedules. Taking the minimum of the two values ensures a reschedule can
     // never improve the tier: if the parent was already in the 50% band when they
     // rescheduled, the floor stays at 50% even if the new slot is far in the future.
-    const tierAtCancellation =
-      hoursUntilSession >= 24 ? 100 : hoursUntilSession >= 12 ? 50 : 0;
+    // (Events can't be rescheduled at all, so min_refund_percent stays at its
+    // default of 100 for them and this min() is a no-op.)
+    const tierAtCancellation = isEvent
+      ? (hoursUntilSession >= 7 * 24 ? 100 : 0)
+      : (hoursUntilSession >= 24 ? 100 : hoursUntilSession >= 12 ? 50 : 0);
     const refundPercent = Math.min(
       tierAtCancellation,
       booking.min_refund_percent,
@@ -1043,6 +1061,7 @@ async function cancelBooking(req, res) {
       bookingId: booking.id,
       timezone: booking.expert.timezone,
       language: booking.expert.user.language,
+      isEvent,
     }).catch((e) =>
       console.error("[Email] Cancellation notification failed:", e.message),
     );
@@ -1062,6 +1081,7 @@ async function cancelBooking(req, res) {
       bookingId: booking.id,
       timezone: booking.parent.timezone || booking.expert.timezone,
       language: booking.parent.language,
+      isEvent,
     }).catch((e) =>
       console.error("[Email] Cancellation confirmation failed:", e.message),
     );
@@ -1203,12 +1223,12 @@ async function rescheduleBooking(req, res) {
         });
     }
 
-    // Recalculate transfer_due_at (payout-settled marker) for the new session end
+    // Recalculate transfer_due_at (earliest payout time) for the new session end
     const newSessionEnd = new Date(
       newDate.getTime() + booking.duration_minutes * 60 * 1000,
     );
     const newTransferDueAt = new Date(
-      newSessionEnd.getTime() + PAYOUT_SETTLEMENT_MS,
+      newSessionEnd.getTime() + PAYOUT_HOLD_MS,
     );
 
     // Snapshot the refund tier at this moment (before moving scheduled_at).
@@ -1603,7 +1623,7 @@ async function verifyPayment(req, res) {
             user: { select: { name: true, email: true, language: true } },
           },
         },
-        service: { select: { title: true, cluster: true } },
+        service: { select: { title: true, cluster: true, event_location: true, event_city: true } },
         consent: { select: { language: true, withdrawal_applicable: true, ...BILLING_SNAPSHOT_SELECT } },
       },
     });
@@ -1641,7 +1661,7 @@ async function verifyPayment(req, res) {
       booking.scheduled_at.getTime() + booking.duration_minutes * 60 * 1000,
     );
     const transferDueAt = new Date(
-      sessionEndTime.getTime() + PAYOUT_SETTLEMENT_MS,
+      sessionEndTime.getTime() + PAYOUT_HOLD_MS,
     );
 
     await prisma.booking.update({
@@ -1678,7 +1698,9 @@ async function verifyPayment(req, res) {
     if (booking.parent.notify_booking_confirmation !== false) {
       const confirmationLanguage = booking.consent?.language || booking.parent.language || "en";
       const isEventBooking = booking.service.cluster === "EVENT";
-      const expertAddressVerify = practiceAddressLine(booking.expert, confirmationLanguage);
+      const expertAddressVerify = isEventBooking
+        ? [booking.service.event_location, booking.service.event_city].filter(Boolean).join(", ")
+        : practiceAddressLine(booking.expert, confirmationLanguage);
       getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
         sendBookingConfirmationEmail({
           to: booking.parent.email,
@@ -1711,7 +1733,9 @@ async function verifyPayment(req, res) {
 
     if (booking.expert.notify_new_booking !== false) {
       const expertLanguage = booking.expert.user.language || "en";
-      const expertAddressVerify = practiceAddressLine(booking.expert, expertLanguage);
+      const expertAddressVerify = booking.service.cluster === "EVENT"
+        ? [booking.service.event_location, booking.service.event_city].filter(Boolean).join(", ")
+        : practiceAddressLine(booking.expert, expertLanguage);
       getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
         sendNewBookingNotificationEmail({
           to: booking.expert.user.email,
@@ -1916,13 +1940,15 @@ async function performExpertCancellation(booking, actingUserId, { sendExpertConf
       );
     }
 
-    // Email the parent — fire-and-forget. Only sent once the refund has
-    // actually succeeded (finding 3, Expert Cancellation Notice review):
-    // never claim "a full refund has been issued" before it has.
+    // Email the parent — fire-and-forget. Sent once the refund has actually
+    // succeeded, OR there was never anything to refund in the first place
+    // (a free booking never had a payment intent) — never claim "a full
+    // refund has been issued" when a paid booking's refund attempt failed.
+    const nothingToRefund = !booking.stripe_payment_intent_id;
     if (
       booking.status === "CONFIRMED" &&
       booking.parent.notify_expert_cancellation !== false &&
-      stripeRefund
+      (stripeRefund || nothingToRefund)
     ) {
       const parentLanguage = booking.consent?.language || booking.parent.language || "en";
       sendExpertCancelledSessionEmail({
@@ -1942,11 +1968,11 @@ async function performExpertCancellation(booking, actingUserId, { sendExpertConf
     }
 
     // Confirm to the expert what their cancellation caused — same trigger
-    // point as the parent email above (only after the refund has succeeded),
+    // point and same free-booking allowance as the parent email above,
     // independent of the parent's own notification preference. Suppressed
     // for a bulk whole-event cancel, which sends one summary instead of one
     // email per attendee.
-    if (sendExpertConfirmation && booking.status === "CONFIRMED" && stripeRefund) {
+    if (sendExpertConfirmation && booking.status === "CONFIRMED" && (stripeRefund || nothingToRefund)) {
       sendExpertCancellationConfirmationEmail({
         to: booking.expert.user.email,
         expertName: booking.expert.user.name,
@@ -1956,6 +1982,7 @@ async function performExpertCancellation(booking, actingUserId, { sendExpertConf
         bookingId: booking.id,
         timezone: booking.expert.timezone,
         language: booking.expert.user.language,
+        isFree: refundedAmount === 0,
       }).catch((e) =>
         console.error("[Email] Expert cancellation confirmation email failed:", e.message),
       );

@@ -1,4 +1,5 @@
 const prisma = require('../prisma/client');
+const { zonedToUTC } = require('../utils/timezone');
 
 async function getExpertIdForUser(userId) {
   const expert = await prisma.expert.findUnique({ where: { user_id: userId } });
@@ -35,27 +36,6 @@ function minutesToTime(mins) {
   const h = Math.floor(mins / 60);
   const m = mins % 60;
   return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
-
-// ─── Helper: convert a calendar date + local time in an IANA timezone to UTC ─
-// e.g. zonedToUTC(2026, 3, 31, 9, 0, 'Europe/Berlin') → 2026-03-31T07:00:00Z
-function zonedToUTC(year, month, day, hours, minutes, timezone) {
-  // Treat inputs as UTC to get a starting guess
-  const guess = new Date(Date.UTC(year, month - 1, day, hours, minutes, 0, 0));
-
-  // Find what that UTC instant looks like in the target timezone
-  const parts = {};
-  new Intl.DateTimeFormat('en-US', {
-    timeZone: timezone,
-    year: 'numeric', month: 'numeric', day: 'numeric',
-    hour: 'numeric', minute: 'numeric', hour12: false,
-  }).formatToParts(guess).forEach(({ type, value }) => {
-    parts[type] = parseInt(value, 10);
-  });
-
-  const zonedHour   = parts.hour === 24 ? 0 : (parts.hour || 0);
-  const diffMinutes = (hours * 60 + minutes) - (zonedHour * 60 + (parts.minute || 0));
-  return new Date(guess.getTime() + diffMinutes * 60 * 1000);
 }
 
 // ─── GET /availability/slots — public slot generation ────────────────────────

@@ -440,6 +440,7 @@ const sendBookingCancellationNotification = ({
   bookingId,
   timezone,
   language,
+  isEvent = false,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const text =
@@ -466,6 +467,7 @@ const sendBookingCancellationNotification = ({
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
       supportEmail: SUPPORT_EMAIL,
+      isEvent,
     }),
   });
 };
@@ -497,6 +499,7 @@ const sendParentCancellationConfirmationEmail = ({
   bookingId,
   timezone,
   language,
+  isEvent = false,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const text =
@@ -523,6 +526,7 @@ const sendParentCancellationConfirmationEmail = ({
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
       supportEmail: SUPPORT_EMAIL,
+      isEvent,
     }),
   });
 };
@@ -954,14 +958,19 @@ const sendExpertCancelledSessionEmail = ({
 }) => {
   const lang = language === "it" ? "it" : "en";
   const locale = lang === "it" ? "it-IT" : "en-GB";
-  const amountStr = new Intl.NumberFormat(locale, { style: 'currency', currency }).format(Number(amount));
-  const text =
-    lang === "it"
-      ? `Ciao ${parentName.split(' ')[0]}, ci dispiace informarti che ${expertName.split(' ')[0]} ha dovuto cancellare la tua prossima sessione. Ti abbiamo rimborsato l'intero importo di ${amountStr}.`
-      : `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. A full refund of ${amountStr} has been issued to your original payment method.`;
+  const numericAmount = Number(amount) || 0;
+  const isFree = numericAmount === 0;
+  const amountStr = new Intl.NumberFormat(locale, { style: 'currency', currency }).format(numericAmount);
+  const text = isFree
+    ? (lang === "it"
+        ? `Ciao ${parentName.split(' ')[0]}, ci dispiace informarti che ${expertName.split(' ')[0]} ha dovuto cancellare la tua prossima sessione. Si trattava di una prenotazione gratuita, quindi non è stato necessario alcun rimborso.`
+        : `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. This was a free booking, so no refund was needed.`)
+    : (lang === "it"
+        ? `Ciao ${parentName.split(' ')[0]}, ci dispiace informarti che ${expertName.split(' ')[0]} ha dovuto cancellare la tua prossima sessione. Ti abbiamo rimborsato l'intero importo di ${amountStr}.`
+        : `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. A full refund of ${amountStr} has been issued to your original payment method.`);
   return sendEmail({
     to,
-    subject: expertCancelledSessionEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone }),
+    subject: expertCancelledSessionEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone, amount: numericAmount }),
     text,
     html: expertCancelledSessionEmailHtml({
       parentName,
@@ -1000,15 +1009,19 @@ const sendExpertCancellationConfirmationEmail = ({
   bookingId,
   timezone,
   language,
+  isFree = false,
 }) => {
   const lang = language === "it" ? "it" : "en";
   return sendEmail({
     to,
     subject: expertCancellationConfirmationEmailSubject({ language: lang, serviceTitle, parentName, scheduledAt, timezone }),
-    text:
-      lang === "it"
-        ? `Ciao ${expertName?.split(' ')[0] || 'there'}, ti confermiamo la cancellazione della sessione (${serviceTitle}, prenotazione #${bookingId}) con ${parentName}. Il genitore è stato rimborsato integralmente; non verrà corrisposto alcun compenso per questa prenotazione.`
-        : `Hi ${expertName?.split(' ')[0] || 'there'}, this confirms that you have cancelled the session (${serviceTitle}, booking #${bookingId}) with ${parentName}. The parent has been refunded in full; no payout will be made for this booking.`,
+    text: isFree
+      ? (lang === "it"
+          ? `Ciao ${expertName?.split(' ')[0] || 'there'}, ti confermiamo la cancellazione della sessione (${serviceTitle}, prenotazione #${bookingId}) con ${parentName}. Si trattava di una prenotazione gratuita; non verrà corrisposto alcun compenso per questa prenotazione.`
+          : `Hi ${expertName?.split(' ')[0] || 'there'}, this confirms that you have cancelled the session (${serviceTitle}, booking #${bookingId}) with ${parentName}. This was a free booking; no payout will be made for it.`)
+      : (lang === "it"
+          ? `Ciao ${expertName?.split(' ')[0] || 'there'}, ti confermiamo la cancellazione della sessione (${serviceTitle}, prenotazione #${bookingId}) con ${parentName}. Il genitore è stato rimborsato integralmente; non verrà corrisposto alcun compenso per questa prenotazione.`
+          : `Hi ${expertName?.split(' ')[0] || 'there'}, this confirms that you have cancelled the session (${serviceTitle}, booking #${bookingId}) with ${parentName}. The parent has been refunded in full; no payout will be made for this booking.`),
     html: expertCancellationConfirmationEmailHtml({
       expertName,
       parentName,
@@ -1020,6 +1033,7 @@ const sendExpertCancellationConfirmationEmail = ({
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
       supportEmail: SUPPORT_EMAIL,
+      isFree,
     }),
   });
 };
