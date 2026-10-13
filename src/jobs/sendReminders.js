@@ -15,11 +15,17 @@ async function runReminders() {
   // ── 1h reminder window ─────────────────────────────────────────────────────
   const in1h = new Date(now.getTime() + 60 * 60 * 1000);
 
-  // Fetch all bookings that need either reminder in a single query
+  // Fetch all bookings that need either reminder in a single query. Events
+  // are excluded — they get their own dedicated reminder (one, at 24h, with
+  // the video link/venue) from sendEventReminders.js, not this generic one.
   const due = await prisma.booking.findMany({
     where: {
       status: 'CONFIRMED',
       scheduled_at: { gt: now }, // session hasn't happened yet
+      // Prisma's `not` excludes NULLs outright, and cluster is nullable —
+      // without the explicit null branch, any uncategorised service would
+      // silently stop getting reminders.
+      service: { OR: [{ cluster: null }, { cluster: { not: 'EVENT' } }] },
       OR: [
         { reminder_24h_sent: false, scheduled_at: { lte: in24h } },
         { reminder_1h_sent:  false, scheduled_at: { lte: in1h  } },

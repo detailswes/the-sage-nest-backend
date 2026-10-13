@@ -148,8 +148,15 @@ model Service {
   home_visit_areas    String[]             @default([])
   event_starts_at     DateTime?
   capacity            Int?
-  event_location      String?
+  event_venue_name    String?
+  event_address       String?
+  event_postcode      String?
   event_city          String?
+  video_link          String?
+  // Set once an expert has been alerted that an online event's video link is
+  // still missing inside the 36h window — stops the alert job from re-sending
+  // every cycle until the link is added, which resets it back to false.
+  video_link_alert_sent Boolean            @default(false)
   sort_order          Int                  @default(0)
   currency            String               @default("EUR")
   review_status       ServiceReviewStatus  @default(PENDING_REVIEW)
@@ -184,8 +191,11 @@ model ServiceDraft {
   home_visit_areas  String[]        @default([])
   event_starts_at   DateTime?
   capacity          Int?
-  event_location    String?
+  event_venue_name  String?
+  event_address     String?
+  event_postcode    String?
   event_city        String?
+  video_link        String?
   status            DraftStatus     @default(PENDING_REVIEW)
   submitted_at      DateTime        @default(now())
   reviewed_at       DateTime?

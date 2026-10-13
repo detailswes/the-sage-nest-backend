@@ -51,9 +51,29 @@ const {
   expertCancellationConfirmationEmailSubject,
 } = require("./email_templates/expertCancellationConfirmationEmail");
 const {
-  eventFullyBookedEmailHtml,
-  eventFullyBookedEmailSubject,
-} = require("./email_templates/eventFullyBookedEmail");
+  eventBookingConfirmationEmailHtml,
+  eventBookingConfirmationEmailSubject,
+} = require("./email_templates/eventBookingConfirmationEmail");
+const {
+  eventNewBookingNotificationEmailHtml,
+  eventNewBookingNotificationEmailSubject,
+} = require("./email_templates/eventNewBookingNotificationEmail");
+const {
+  eventParentCancelledNotificationEmailHtml,
+  eventParentCancelledNotificationEmailSubject,
+} = require("./email_templates/eventParentCancelledNotificationEmail");
+const {
+  eventCancelledByExpertEmailHtml,
+  eventCancelledByExpertEmailSubject,
+} = require("./email_templates/eventCancelledByExpertEmail");
+const {
+  eventReminderEmailHtml,
+  eventReminderEmailSubject,
+} = require("./email_templates/eventReminderEmail");
+const {
+  eventVideoLinkMissingAlertEmailHtml,
+  eventVideoLinkMissingAlertEmailSubject,
+} = require("./email_templates/eventVideoLinkMissingAlertEmail");
 const {
   parentSuspendedEmailHtml,
   parentSuspendedEmailSubject,
@@ -382,7 +402,6 @@ const sendBookingConfirmationEmail = ({
   termsUrl,
   policyUrl,
   privacyUrl,
-  isEvent,
 }) => {
   const lang = language === "it" ? "it" : "en";
   return sendEmail({
@@ -412,7 +431,6 @@ const sendBookingConfirmationEmail = ({
       termsUrl,
       policyUrl,
       privacyUrl,
-      isEvent: !!isEvent,
     }),
   });
 };
@@ -440,7 +458,6 @@ const sendBookingCancellationNotification = ({
   bookingId,
   timezone,
   language,
-  isEvent = false,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const text =
@@ -467,7 +484,6 @@ const sendBookingCancellationNotification = ({
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
       supportEmail: SUPPORT_EMAIL,
-      isEvent,
     }),
   });
 };
@@ -561,7 +577,6 @@ const sendNewBookingNotificationEmail = ({
   policyUrl,
   parentAddress,
   parentFiscalCode,
-  isEvent,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const text =
@@ -593,7 +608,6 @@ const sendNewBookingNotificationEmail = ({
       policyUrl,
       parentAddress,
       parentFiscalCode,
-      isEvent: !!isEvent,
     }),
   });
 };
@@ -1039,32 +1053,350 @@ const sendExpertCancellationConfirmationEmail = ({
 };
 
 /**
- * Sent to the expert the moment an event's last spot is booked and it
- * auto-deactivates — purely informational.
+ * Event booking confirmation — sent to the parent (annex A/B). Dedicated
+ * event template, never shared with 1:1 session bookings.
  * @param {{
- *   to: string, expertName: string, serviceTitle: string,
- *   scheduledAt: Date, timezone?: string | null, language?: 'en' | 'it'
+ *   to: string, parentName: string, expertName: string, eventTitle: string,
+ *   eventDescription?: string, format: 'ONLINE' | 'IN_PERSON', scheduledAt: Date,
+ *   durationMinutes: number, eventVenueName?: string, eventAddress?: string, eventPostcode?: string, eventCity?: string,
+ *   amount?: number | string | null, currency?: string, withdrawalApplicable?: boolean,
+ *   bookingId: number, recipientTimezone?: string | null, language?: 'en' | 'it',
+ *   eventTermsUrl: string,
  * }} param0
  */
-const sendEventFullyBookedEmail = ({
+const sendEventBookingConfirmationEmail = ({
+  to,
+  parentName,
+  expertName,
+  eventTitle,
+  eventDescription,
+  format,
+  scheduledAt,
+  durationMinutes,
+  eventVenueName,
+  eventAddress,
+  eventPostcode,
+  eventCity,
+  amount,
+  currency,
+  withdrawalApplicable,
+  bookingId,
+  recipientTimezone,
+  language,
+  eventTermsUrl,
+}) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${parentName?.split(' ')[0] || 'there'}, il tuo posto per ${eventTitle} con ${expertName} è confermato.`
+      : `Hi ${parentName?.split(' ')[0] || 'there'}, your place at ${eventTitle} with ${expertName} is confirmed.`;
+  return sendEmail({
+    to,
+    subject: eventBookingConfirmationEmailSubject({ language: lang, eventTitle, scheduledAt, timezone: recipientTimezone }),
+    text,
+    html: eventBookingConfirmationEmailHtml({
+      parentName,
+      expertName,
+      eventTitle,
+      eventDescription,
+      format,
+      scheduledAt,
+      durationMinutes,
+      eventVenueName,
+      eventAddress,
+      eventPostcode,
+      eventCity,
+      amount,
+      currency,
+      withdrawalApplicable: !!withdrawalApplicable,
+      bookingId,
+      recipientTimezone,
+      language: lang,
+      clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
+      eventTermsUrl,
+    }),
+  });
+};
+
+/**
+ * New-booking notification — sent to the expert when a parent books a place
+ * at their event (annex C/D). Folds in the "event now full" notice as a
+ * conditional block rather than a separate email.
+ * @param {{
+ *   to: string, expertName: string, parentName: string, eventTitle: string,
+ *   format: 'ONLINE' | 'IN_PERSON', scheduledAt: Date, durationMinutes: number,
+ *   eventVenueName?: string, eventAddress?: string, eventPostcode?: string, eventCity?: string,
+ *   spotsRemaining: number, totalSpots: number, eventNowFull?: boolean,
+ *   videoLink?: string | null,
+ *   amount?: number | string | null, currency?: string,
+ *   bookingId: number, timezone?: string | null, language?: 'en' | 'it',
+ * }} param0
+ */
+const sendEventNewBookingNotificationEmail = ({
   to,
   expertName,
-  serviceTitle,
+  parentName,
+  eventTitle,
+  format,
+  scheduledAt,
+  durationMinutes,
+  eventVenueName,
+  eventAddress,
+  eventPostcode,
+  eventCity,
+  spotsRemaining,
+  totalSpots,
+  eventNowFull,
+  videoLink,
+  amount,
+  currency,
+  bookingId,
+  timezone,
+  language,
+}) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${expertName?.split(' ')[0] || 'there'}, ${parentName} ha prenotato un posto per il tuo evento ${eventTitle}.`
+      : `Hi ${expertName?.split(' ')[0] || 'there'}, ${parentName} has booked a place at your event ${eventTitle}.`;
+  return sendEmail({
+    to,
+    subject: eventNewBookingNotificationEmailSubject({ language: lang, eventTitle, scheduledAt, timezone }),
+    text,
+    html: eventNewBookingNotificationEmailHtml({
+      expertName,
+      parentName,
+      eventTitle,
+      format,
+      scheduledAt,
+      durationMinutes,
+      eventVenueName,
+      eventAddress,
+      eventPostcode,
+      eventCity,
+      spotsRemaining,
+      totalSpots,
+      eventNowFull: !!eventNowFull,
+      videoLink,
+      amount,
+      currency,
+      bookingId,
+      timezone,
+      language: lang,
+      clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
+    }),
+  });
+};
+
+/**
+ * Expert notification — sent when a parent cancels their place at the
+ * expert's event (annex E/F).
+ * @param {{
+ *   to: string, expertName: string, parentName: string, eventTitle: string,
+ *   scheduledAt: Date, durationMinutes: number,
+ *   spotsRemaining: number, totalSpots: number, eventWasFull?: boolean,
+ *   isFree: boolean, refundPercent: 0 | 100,
+ *   bookingId: number, timezone?: string | null, language?: 'en' | 'it',
+ * }} param0
+ */
+const sendEventParentCancelledNotificationEmail = ({
+  to,
+  expertName,
+  parentName,
+  eventTitle,
+  scheduledAt,
+  durationMinutes,
+  spotsRemaining,
+  totalSpots,
+  eventWasFull,
+  isFree,
+  refundPercent,
+  bookingId,
+  timezone,
+  language,
+}) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${expertName?.split(' ')[0] || 'there'}, ${parentName} ha cancellato la sua prenotazione per il tuo evento ${eventTitle}.`
+      : `Hi ${expertName?.split(' ')[0] || 'there'}, ${parentName} has cancelled their place at your event ${eventTitle}.`;
+  return sendEmail({
+    to,
+    subject: eventParentCancelledNotificationEmailSubject({ language: lang, eventTitle, scheduledAt, timezone }),
+    text,
+    html: eventParentCancelledNotificationEmailHtml({
+      expertName,
+      parentName,
+      eventTitle,
+      scheduledAt,
+      durationMinutes,
+      spotsRemaining,
+      totalSpots,
+      eventWasFull: !!eventWasFull,
+      isFree: !!isFree,
+      refundPercent,
+      bookingId,
+      timezone,
+      language: lang,
+      clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
+    }),
+  });
+};
+
+// Fallback events-listing destination until the client supplies the real
+// public events listing page (e.g. the Webflow events collection URL) — set
+// EVENTS_LISTING_URL to override without a code change.
+const EVENTS_LISTING_URL = process.env.EVENTS_LISTING_URL || `${process.env.CLIENT_URL}/book`;
+
+/**
+ * Event cancelled by the expert — sent to every participant when the whole
+ * event is cancelled (annex G/H). A single attendee removed from an
+ * otherwise still-active event continues to use sendExpertCancelledSessionEmail
+ * below — no dedicated copy was specified for that narrower case.
+ * @param {{
+ *   to: string, parentName: string, expertName: string, eventTitle: string,
+ *   scheduledAt: Date, format: 'ONLINE' | 'IN_PERSON', cancellationReason?: string,
+ *   isFree: boolean, amount?: number | string | null, currency?: string,
+ *   bookingId: number, recipientTimezone?: string | null, language?: 'en' | 'it',
+ * }} param0
+ */
+const sendEventCancelledByExpertEmail = ({
+  to,
+  parentName,
+  expertName,
+  eventTitle,
+  scheduledAt,
+  format,
+  cancellationReason,
+  isFree,
+  amount,
+  currency,
+  bookingId,
+  recipientTimezone,
+  language,
+}) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${parentName?.split(' ')[0] || 'there'}, ci dispiace informarti che ${expertName} ha dovuto annullare ${eventTitle}.`
+      : `Hi ${parentName?.split(' ')[0] || 'there'}, we are sorry to let you know that ${expertName} has had to cancel ${eventTitle}.`;
+  return sendEmail({
+    to,
+    subject: eventCancelledByExpertEmailSubject({ language: lang, eventTitle, scheduledAt, timezone: recipientTimezone }),
+    text,
+    html: eventCancelledByExpertEmailHtml({
+      parentName,
+      expertName,
+      eventTitle,
+      scheduledAt,
+      format,
+      cancellationReason,
+      isFree: !!isFree,
+      amount,
+      currency,
+      bookingId,
+      recipientTimezone,
+      language: lang,
+      clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
+      eventsListingUrl: EVENTS_LISTING_URL,
+    }),
+  });
+};
+
+/**
+ * Event reminder — sent to the parent once, 24h before the event (or right
+ * after booking confirmation if they booked less than 24h out). Carries the
+ * video link for online events; never sent in the booking confirmation.
+ * @param {{
+ *   to: string, parentName: string, expertName: string, eventTitle: string,
+ *   format: 'ONLINE' | 'IN_PERSON', scheduledAt: Date,
+ *   eventVenueName?: string, eventAddress?: string, eventPostcode?: string, eventCity?: string,
+ *   videoLink?: string | null,
+ *   bookingId: number, recipientTimezone?: string | null, language?: 'en' | 'it',
+ * }} param0
+ */
+const sendEventReminderEmail = ({
+  to,
+  parentName,
+  expertName,
+  eventTitle,
+  format,
+  scheduledAt,
+  eventVenueName,
+  eventAddress,
+  eventPostcode,
+  eventCity,
+  videoLink,
+  bookingId,
+  recipientTimezone,
+  language,
+}) => {
+  const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${parentName?.split(' ')[0] || 'there'}, ti ricordiamo che ${eventTitle} con ${expertName} è in programma a breve.`
+      : `Hi ${parentName?.split(' ')[0] || 'there'}, ${eventTitle} with ${expertName} is coming up.`;
+  return sendEmail({
+    to,
+    subject: eventReminderEmailSubject({ language: lang, eventTitle, scheduledAt, timezone: recipientTimezone }),
+    text,
+    html: eventReminderEmailHtml({
+      parentName,
+      expertName,
+      eventTitle,
+      format,
+      scheduledAt,
+      eventVenueName,
+      eventAddress,
+      eventPostcode,
+      eventCity,
+      videoLink,
+      bookingId,
+      recipientTimezone,
+      language: lang,
+      clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
+    }),
+  });
+};
+
+/**
+ * Missing-video-link alert — sent to the expert once, when an online event
+ * is within 36h of starting and still has no video link set.
+ * @param {{
+ *   to: string, expertName: string, eventTitle: string, scheduledAt: Date,
+ *   timezone?: string | null, language?: 'en' | 'it',
+ * }} param0
+ */
+const sendEventVideoLinkMissingAlertEmail = ({
+  to,
+  expertName,
+  eventTitle,
   scheduledAt,
   timezone,
   language,
 }) => {
   const lang = language === "it" ? "it" : "en";
+  const text =
+    lang === "it"
+      ? `Ciao ${expertName?.split(' ')[0] || 'there'}, il tuo evento online ${eventTitle} è in programma a breve e non hai ancora inserito il link della videochiamata.`
+      : `Hi ${expertName?.split(' ')[0] || 'there'}, your online event ${eventTitle} is coming up and you haven't added a video call link yet.`;
   return sendEmail({
     to,
-    subject: eventFullyBookedEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone }),
-    text:
-      lang === "it"
-        ? `Ciao ${expertName?.split(' ')[0] || 'there'}, il tuo evento "${serviceTitle}" ha raggiunto il numero massimo di posti ed è stato disattivato automaticamente.`
-        : `Hi ${expertName?.split(' ')[0] || 'there'}, your event "${serviceTitle}" has reached its number of spots and has been automatically deactivated.`,
-    html: eventFullyBookedEmailHtml({
+    subject: eventVideoLinkMissingAlertEmailSubject({ language: lang, eventTitle, scheduledAt, timezone }),
+    text,
+    html: eventVideoLinkMissingAlertEmailHtml({
       expertName,
-      serviceTitle,
+      eventTitle,
       scheduledAt,
       timezone,
       language: lang,
@@ -1397,7 +1729,12 @@ module.exports = {
   sendPasswordChangedEmail,
   sendExpertCancelledSessionEmail,
   sendExpertCancellationConfirmationEmail,
-  sendEventFullyBookedEmail,
+  sendEventBookingConfirmationEmail,
+  sendEventNewBookingNotificationEmail,
+  sendEventParentCancelledNotificationEmail,
+  sendEventCancelledByExpertEmail,
+  sendEventReminderEmail,
+  sendEventVideoLinkMissingAlertEmail,
   sendParentSuspendedEmail,
   sendPlatformCancellationEmailToExpert,
   sendAdminPayoutAlert,

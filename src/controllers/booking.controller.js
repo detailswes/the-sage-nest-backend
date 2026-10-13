@@ -19,7 +19,11 @@ const {
   sendExpertCancelledSessionEmail,
   sendExpertCancellationConfirmationEmail,
   sendImLateNotification,
-  sendEventFullyBookedEmail,
+  sendEventBookingConfirmationEmail,
+  sendEventNewBookingNotificationEmail,
+  sendEventParentCancelledNotificationEmail,
+  sendEventCancelledByExpertEmail,
+  sendEventReminderEmail,
 } = require("../utils/email");
 
 // Billing details are a per-booking snapshot on BookingConsent (spec v1.7 §8) —
@@ -324,8 +328,9 @@ async function createBooking(req, res) {
 
     let booking;
     let eventNowFull = false;
+    let eventBookedCount = null;
     try {
-      ({ booking, eventNowFull } = await prisma.$transaction(async (tx) => {
+      ({ booking, eventNowFull, eventBookedCount } = await prisma.$transaction(async (tx) => {
         if (isEvent && service.capacity) {
           const bookedCount = await tx.booking.count({
             where: {
@@ -359,14 +364,15 @@ async function createBooking(req, res) {
         // accepting new ones automatically rather than relying on the expert
         // to notice and deactivate it manually.
         let justFilled = false;
+        let eventBookedCount = null;
         if (isEvent && service.capacity) {
-          const newCount = await tx.booking.count({
+          eventBookedCount = await tx.booking.count({
             where: {
               service_id: service.id,
               status: { in: ["PENDING", "CONFIRMED", "PENDING_PAYMENT"] },
             },
           });
-          if (newCount >= service.capacity) {
+          if (eventBookedCount >= service.capacity) {
             await tx.service.update({ where: { id: service.id }, data: { is_active: false } });
             justFilled = true;
           }
@@ -430,7 +436,7 @@ async function createBooking(req, res) {
           await upsertMarketingConsent(tx, req.user.id, { consent: true, source: "BOOKING" });
         }
 
-        return { booking: created, eventNowFull: justFilled };
+        return { booking: created, eventNowFull: justFilled, eventBookedCount };
       }));
     } catch (err) {
       if (err instanceof EventFullError) {
@@ -451,29 +457,6 @@ async function createBooking(req, res) {
       syncMarketingConsentToBrevo(req.user.id, true);
     }
 
-    // ── Event just filled its last spot ─────────────────────────────────────
-    // is_active was already flipped off inside the transaction above — this
-    // fires regardless of whether the booking that filled it is free or still
-    // waiting on payment, since the capacity count (and therefore is_active)
-    // already treats a PENDING_PAYMENT booking as occupying its spot.
-    if (eventNowFull) {
-      prisma.expert.findUnique({
-        where: { id: expert.id },
-        select: { timezone: true, user: { select: { email: true, language: true } } },
-      }).then((fullExpert) => {
-        if (!fullExpert) return;
-        const expertLanguage = fullExpert.user.language || "en";
-        return sendEventFullyBookedEmail({
-          to: fullExpert.user.email,
-          expertName: expert.user.name,
-          serviceTitle: service.title,
-          scheduledAt: scheduledDate,
-          timezone: fullExpert.timezone,
-          language: expertLanguage,
-        });
-      }).catch((e) => console.error("[Email] Event-full notification failed:", e.message));
-    }
-
     // ── Free booking: nothing to charge, so there's no PaymentIntent and no
     // webhook to confirm it later — the booking is already CONFIRMED, so send
     // the same notifications the webhook sends for a paid booking, right now.
@@ -481,7 +464,7 @@ async function createBooking(req, res) {
       const fullBooking = await prisma.booking.findUnique({
         where: { id: booking.id },
         include: {
-          parent: { select: { name: true, email: true, phone: true, language: true, timezone: true, notify_booking_confirmation: true } },
+          parent: { select: { name: true, email: true, phone: true, language: true, timezone: true, notify_booking_confirmation: true, notify_session_reminder: true } },
           expert: { select: { address_street: true, address_city: true, address_postcode: true, address_country: true, business_info: { select: { address_country: true } }, timezone: true, notify_new_booking: true, user: { select: { name: true, email: true, language: true } } } },
           service: { select: { title: true } },
           consent: { select: { language: true, withdrawal_applicable: true } },
@@ -490,57 +473,131 @@ async function createBooking(req, res) {
 
       const parentConfirmationLanguage = fullBooking.consent?.language || fullBooking.parent.language || "en";
       if (fullBooking.parent.notify_booking_confirmation !== false) {
-        const parentExpertAddress = isEvent
-          ? [service.event_location, service.event_city].filter(Boolean).join(", ")
-          : practiceAddressLine(fullBooking.expert, parentConfirmationLanguage);
-        getLegalDocLinks(parentConfirmationLanguage).then((legalLinks) => {
-          sendBookingConfirmationEmail({
+        if (isEvent) {
+          getLegalDocLinks(parentConfirmationLanguage).then(({ eventTermsUrl }) => {
+            sendEventBookingConfirmationEmail({
+              to: fullBooking.parent.email,
+              parentName: fullBooking.parent.name,
+              expertName: fullBooking.expert.user.name,
+              eventTitle: service.title,
+              eventDescription: service.description,
+              format: fullBooking.format,
+              scheduledAt: fullBooking.scheduled_at,
+              durationMinutes: fullBooking.duration_minutes,
+              eventVenueName: service.event_venue_name,
+              eventAddress: service.event_address,
+              eventPostcode: service.event_postcode,
+              eventCity: service.event_city,
+              amount: fullBooking.amount,
+              currency: fullBooking.currency,
+              withdrawalApplicable: fullBooking.consent?.withdrawal_applicable,
+              bookingId: fullBooking.id,
+              recipientTimezone: fullBooking.parent.timezone || fullBooking.expert.timezone,
+              language: parentConfirmationLanguage,
+              eventTermsUrl,
+            });
+          }).catch((e) => console.error("[Email] Free-event parent confirmation failed:", e.message));
+        } else {
+          const parentExpertAddress = practiceAddressLine(fullBooking.expert, parentConfirmationLanguage);
+          getLegalDocLinks(parentConfirmationLanguage).then((legalLinks) => {
+            sendBookingConfirmationEmail({
+              to: fullBooking.parent.email,
+              name: fullBooking.parent.name,
+              expertName: fullBooking.expert.user.name,
+              serviceTitle: fullBooking.service.title,
+              format: fullBooking.format,
+              scheduledAt: fullBooking.scheduled_at,
+              durationMinutes: fullBooking.duration_minutes,
+              location: usesExpertAddress(fullBooking.format) ? (parentExpertAddress || undefined) : undefined,
+              language: parentConfirmationLanguage,
+              amount: fullBooking.amount,
+              currency: fullBooking.currency,
+              userTimezone: fullBooking.parent.timezone || fullBooking.expert.timezone,
+              withdrawalApplicable: fullBooking.consent?.withdrawal_applicable,
+              bookingId: fullBooking.id,
+              ...legalLinks,
+            });
+          }).catch((e) => console.error("[Email] Free-booking parent confirmation failed:", e.message));
+        }
+      }
+
+      // Late booking: the 24h reminder cron will never catch this one (it's
+      // already inside its own window), so send it — with the video
+      // link/venue — right now instead, and mark the flag so the cron
+      // doesn't also send it once the booking crosses back under 24h... it
+      // never will, but the flag is the same one the cron checks regardless.
+      if (isEvent && fullBooking.scheduled_at.getTime() - Date.now() < 24 * 60 * 60 * 1000) {
+        await prisma.booking.update({ where: { id: fullBooking.id }, data: { reminder_24h_sent: true } });
+        if (fullBooking.parent.notify_session_reminder !== false) {
+          sendEventReminderEmail({
             to: fullBooking.parent.email,
-            name: fullBooking.parent.name,
+            parentName: fullBooking.parent.name,
             expertName: fullBooking.expert.user.name,
-            serviceTitle: fullBooking.service.title,
+            eventTitle: service.title,
             format: fullBooking.format,
             scheduledAt: fullBooking.scheduled_at,
-            durationMinutes: fullBooking.duration_minutes,
-            location: usesExpertAddress(fullBooking.format) ? (parentExpertAddress || undefined) : undefined,
-            language: parentConfirmationLanguage,
-            amount: fullBooking.amount,
-            currency: fullBooking.currency,
-            userTimezone: fullBooking.parent.timezone || fullBooking.expert.timezone,
-            withdrawalApplicable: fullBooking.consent?.withdrawal_applicable,
+            eventVenueName: service.event_venue_name,
+            eventAddress: service.event_address,
+            eventPostcode: service.event_postcode,
+            eventCity: service.event_city,
+            videoLink: service.video_link,
             bookingId: fullBooking.id,
-            isEvent,
-            ...legalLinks,
-          });
-        }).catch((e) => console.error("[Email] Free-booking parent confirmation failed:", e.message));
+            recipientTimezone: fullBooking.parent.timezone || fullBooking.expert.timezone,
+            language: parentConfirmationLanguage,
+          }).catch((e) => console.error("[Email] Late-booking event reminder failed:", e.message));
+        }
       }
 
       if (fullBooking.expert.notify_new_booking !== false) {
         const expertLanguage = fullBooking.expert.user.language || "en";
-        const notifyExpertAddress = isEvent
-          ? [service.event_location, service.event_city].filter(Boolean).join(", ")
-          : practiceAddressLine(fullBooking.expert, expertLanguage);
-        getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
-          sendNewBookingNotificationEmail({
+        if (isEvent) {
+          const totalSpots = service.capacity;
+          const spotsRemaining = Math.max(0, totalSpots - (eventBookedCount ?? 0));
+          sendEventNewBookingNotificationEmail({
             to: fullBooking.expert.user.email,
             expertName: fullBooking.expert.user.name,
             parentName: fullBooking.parent.name,
-            parentEmail: fullBooking.parent.email,
-            parentPhone: isHomeVisit(fullBooking.format) ? fullBooking.parent.phone : null,
-            serviceTitle: fullBooking.service.title,
+            eventTitle: service.title,
             format: fullBooking.format,
             scheduledAt: fullBooking.scheduled_at,
             durationMinutes: fullBooking.duration_minutes,
-            location: usesExpertAddress(fullBooking.format) ? (notifyExpertAddress || undefined) : undefined,
+            eventVenueName: service.event_venue_name,
+            eventAddress: service.event_address,
+            eventPostcode: service.event_postcode,
+            eventCity: service.event_city,
+            spotsRemaining,
+            totalSpots,
+            eventNowFull,
+            videoLink: service.video_link,
             amount: fullBooking.amount,
             currency: fullBooking.currency,
             bookingId: fullBooking.id,
             timezone: fullBooking.expert.timezone,
             language: expertLanguage,
-            policyUrl,
-            isEvent,
-          });
-        }).catch((e) => console.error("[Email] Free-booking expert notification failed:", e.message));
+          }).catch((e) => console.error("[Email] Free-event expert notification failed:", e.message));
+        } else {
+          const notifyExpertAddress = practiceAddressLine(fullBooking.expert, expertLanguage);
+          getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
+            sendNewBookingNotificationEmail({
+              to: fullBooking.expert.user.email,
+              expertName: fullBooking.expert.user.name,
+              parentName: fullBooking.parent.name,
+              parentEmail: fullBooking.parent.email,
+              parentPhone: isHomeVisit(fullBooking.format) ? fullBooking.parent.phone : null,
+              serviceTitle: fullBooking.service.title,
+              format: fullBooking.format,
+              scheduledAt: fullBooking.scheduled_at,
+              durationMinutes: fullBooking.duration_minutes,
+              location: usesExpertAddress(fullBooking.format) ? (notifyExpertAddress || undefined) : undefined,
+              amount: fullBooking.amount,
+              currency: fullBooking.currency,
+              bookingId: fullBooking.id,
+              timezone: fullBooking.expert.timezone,
+              language: expertLanguage,
+              policyUrl,
+            });
+          }).catch((e) => console.error("[Email] Free-booking expert notification failed:", e.message));
+        }
       }
 
       console.log(`[createBooking] Free booking ${booking.id} confirmed — no payment required`);
@@ -920,15 +977,20 @@ async function cancelBooking(req, res) {
 
     // An event auto-deactivates once full (see createBooking) — cancelling an
     // attendee's spot should reopen it for new sign-ups, same as the client
-    // asked: "the spot should reopen and spots left should update."
-    if (booking.service.cluster === "EVENT" && !booking.service.is_active && booking.service.capacity) {
-      const stillBookedCount = await prisma.booking.count({
+    // asked: "the spot should reopen and spots left should update." The live
+    // count is also what the expert-notification email (E/F) reports as
+    // spots remaining, so it's computed unconditionally for events, not only
+    // when the event happened to be full.
+    const eventWasFull = isEvent && !booking.service.is_active;
+    let stillBookedCount = null;
+    if (isEvent && booking.service.capacity) {
+      stillBookedCount = await prisma.booking.count({
         where: {
           service_id: booking.service.id,
           status: { in: ["PENDING", "CONFIRMED", "PENDING_PAYMENT"] },
         },
       });
-      if (stillBookedCount < booking.service.capacity) {
+      if (eventWasFull && stillBookedCount < booking.service.capacity) {
         await prisma.service.update({ where: { id: booking.service.id }, data: { is_active: true } });
       }
     }
@@ -1047,24 +1109,46 @@ async function cancelBooking(req, res) {
     }
 
     // ── Notify expert immediately ───────────────────────────────────────────
-    sendBookingCancellationNotification({
-      to: booking.expert.user.email,
-      expertName: booking.expert.user.name,
-      parentName: booking.parent.name,
-      serviceTitle: booking.service.title,
-      format: booking.format,
-      scheduledAt: booking.scheduled_at,
-      cancellationReason: reason || null,
-      refundPercent,
-      amount: booking.amount,
-      currency: booking.currency || "EUR",
-      bookingId: booking.id,
-      timezone: booking.expert.timezone,
-      language: booking.expert.user.language,
-      isEvent,
-    }).catch((e) =>
-      console.error("[Email] Cancellation notification failed:", e.message),
-    );
+    if (isEvent) {
+      sendEventParentCancelledNotificationEmail({
+        to: booking.expert.user.email,
+        expertName: booking.expert.user.name,
+        parentName: booking.parent.name,
+        eventTitle: booking.service.title,
+        scheduledAt: booking.scheduled_at,
+        durationMinutes: booking.duration_minutes,
+        spotsRemaining: booking.service.capacity != null && stillBookedCount != null
+          ? Math.max(0, booking.service.capacity - stillBookedCount)
+          : null,
+        totalSpots: booking.service.capacity,
+        eventWasFull,
+        isFree: Number(booking.amount) === 0,
+        refundPercent,
+        bookingId: booking.id,
+        timezone: booking.expert.timezone,
+        language: booking.expert.user.language,
+      }).catch((e) =>
+        console.error("[Email] Event cancellation notification failed:", e.message),
+      );
+    } else {
+      sendBookingCancellationNotification({
+        to: booking.expert.user.email,
+        expertName: booking.expert.user.name,
+        parentName: booking.parent.name,
+        serviceTitle: booking.service.title,
+        format: booking.format,
+        scheduledAt: booking.scheduled_at,
+        cancellationReason: reason || null,
+        refundPercent,
+        amount: booking.amount,
+        currency: booking.currency || "EUR",
+        bookingId: booking.id,
+        timezone: booking.expert.timezone,
+        language: booking.expert.user.language,
+      }).catch((e) =>
+        console.error("[Email] Cancellation notification failed:", e.message),
+      );
+    }
 
     // ── Confirm cancellation to the parent ──────────────────────────────────
     sendParentCancellationConfirmationEmail({
@@ -1609,6 +1693,7 @@ async function verifyPayment(req, res) {
             language: true,
             timezone: true,
             notify_booking_confirmation: true,
+            notify_session_reminder: true,
           },
         },
         expert: {
@@ -1623,7 +1708,7 @@ async function verifyPayment(req, res) {
             user: { select: { name: true, email: true, language: true } },
           },
         },
-        service: { select: { title: true, cluster: true, event_location: true, event_city: true } },
+        service: { select: { title: true, description: true, cluster: true, capacity: true, event_venue_name: true, event_address: true, event_postcode: true, event_city: true, video_link: true } },
         consent: { select: { language: true, withdrawal_applicable: true, ...BILLING_SNAPSHOT_SELECT } },
       },
     });
@@ -1695,81 +1780,162 @@ async function verifyPayment(req, res) {
     ]
       .filter(Boolean)
       .join(", ");
+    const isEventBooking = booking.service.cluster === "EVENT";
+
     if (booking.parent.notify_booking_confirmation !== false) {
       const confirmationLanguage = booking.consent?.language || booking.parent.language || "en";
-      const isEventBooking = booking.service.cluster === "EVENT";
-      const expertAddressVerify = isEventBooking
-        ? [booking.service.event_location, booking.service.event_city].filter(Boolean).join(", ")
-        : practiceAddressLine(booking.expert, confirmationLanguage);
-      getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
-        sendBookingConfirmationEmail({
+      if (isEventBooking) {
+        getLegalDocLinks(confirmationLanguage).then(({ eventTermsUrl }) => {
+          sendEventBookingConfirmationEmail({
+            to: booking.parent.email,
+            parentName: booking.parent.name,
+            expertName: booking.expert.user.name,
+            eventTitle: booking.service.title,
+            eventDescription: booking.service.description,
+            format: booking.format,
+            scheduledAt: booking.scheduled_at,
+            durationMinutes: booking.duration_minutes,
+            eventVenueName: booking.service.event_venue_name,
+            eventAddress: booking.service.event_address,
+            eventPostcode: booking.service.event_postcode,
+            eventCity: booking.service.event_city,
+            amount: booking.amount,
+            currency: booking.currency,
+            withdrawalApplicable: booking.consent?.withdrawal_applicable,
+            bookingId: booking.id,
+            recipientTimezone: booking.parent.timezone || booking.expert.timezone,
+            language: confirmationLanguage,
+            eventTermsUrl,
+          });
+        }).catch((e) => console.error("[verifyPayment] Event parent confirmation email failed:", e.message));
+      } else {
+        const expertAddressVerify = practiceAddressLine(booking.expert, confirmationLanguage);
+        getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
+          sendBookingConfirmationEmail({
+            to: booking.parent.email,
+            name: booking.parent.name,
+            expertName: booking.expert.user.name,
+            serviceTitle: booking.service.title,
+            format: booking.format,
+            scheduledAt: booking.scheduled_at,
+            durationMinutes: booking.duration_minutes,
+            location:
+              usesExpertAddress(booking.format)
+                ? expertAddressVerify || undefined
+                : undefined,
+            language: confirmationLanguage,
+            amount: booking.amount,
+            currency: booking.currency,
+            userTimezone: booking.parent.timezone || booking.expert.timezone,
+            withdrawalApplicable: booking.consent?.withdrawal_applicable,
+            bookingId: booking.id,
+            ...legalLinks,
+          });
+        }).catch((e) =>
+          console.error(
+            "[verifyPayment] Parent confirmation email failed:",
+            e.message,
+          ),
+        );
+      }
+    }
+
+    // Late booking: the 24h reminder cron will never catch this one (it's
+    // already inside its own window), so send it — with the video
+    // link/venue — right now instead.
+    if (isEventBooking && booking.scheduled_at.getTime() - Date.now() < 24 * 60 * 60 * 1000) {
+      await prisma.booking.update({ where: { id: booking.id }, data: { reminder_24h_sent: true } });
+      if (booking.parent.notify_session_reminder !== false) {
+        const reminderLanguage = booking.consent?.language || booking.parent.language || "en";
+        sendEventReminderEmail({
           to: booking.parent.email,
-          name: booking.parent.name,
+          parentName: booking.parent.name,
           expertName: booking.expert.user.name,
-          serviceTitle: booking.service.title,
+          eventTitle: booking.service.title,
           format: booking.format,
           scheduledAt: booking.scheduled_at,
-          durationMinutes: booking.duration_minutes,
-          location:
-            usesExpertAddress(booking.format)
-              ? expertAddressVerify || undefined
-              : undefined,
-          language: confirmationLanguage,
-          amount: booking.amount,
-          currency: booking.currency,
-          userTimezone: booking.parent.timezone || booking.expert.timezone,
-          withdrawalApplicable: booking.consent?.withdrawal_applicable,
+          eventVenueName: booking.service.event_venue_name,
+          eventAddress: booking.service.event_address,
+          eventPostcode: booking.service.event_postcode,
+          eventCity: booking.service.event_city,
+          videoLink: booking.service.video_link,
           bookingId: booking.id,
-          isEvent: isEventBooking,
-          ...legalLinks,
-        });
-      }).catch((e) =>
-        console.error(
-          "[verifyPayment] Parent confirmation email failed:",
-          e.message,
-        ),
-      );
+          recipientTimezone: booking.parent.timezone || booking.expert.timezone,
+          language: reminderLanguage,
+        }).catch((e) => console.error("[verifyPayment] Late-booking event reminder failed:", e.message));
+      }
     }
 
     if (booking.expert.notify_new_booking !== false) {
       const expertLanguage = booking.expert.user.language || "en";
-      const expertAddressVerify = booking.service.cluster === "EVENT"
-        ? [booking.service.event_location, booking.service.event_city].filter(Boolean).join(", ")
-        : practiceAddressLine(booking.expert, expertLanguage);
-      getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
-        sendNewBookingNotificationEmail({
-          to: booking.expert.user.email,
-          expertName: booking.expert.user.name,
-          parentName: booking.parent.name,
-          parentEmail: booking.parent.email,
-          // Home visits only — the expert travels to the parent, so they need
-          // to reach them to agree the address. Withheld for every other format.
-          parentPhone: isHomeVisit(booking.format) ? booking.parent.phone : null,
-          serviceTitle: booking.service.title,
-          format: booking.format,
-          scheduledAt: booking.scheduled_at,
-          durationMinutes: booking.duration_minutes,
-          location:
-            usesExpertAddress(booking.format)
-              ? expertAddressVerify || undefined
-              : undefined,
-          amount: booking.amount,
-          currency: booking.currency,
-          bookingId: booking.id,
-          timezone: booking.expert.timezone,
-          language: expertLanguage,
-          policyUrl,
-          parentAddress: parentAddressVerify || undefined,
-          parentFiscalCode: booking.consent?.billing_fiscal_code || undefined,
-          parentInvoiceHolder: booking.consent?.billing_invoice_holder || undefined,
-          isEvent: booking.service.cluster === "EVENT",
-        });
-      }).catch((e) =>
-        console.error(
-          "[verifyPayment] Expert notification email failed:",
-          e.message,
-        ),
-      );
+      if (isEventBooking) {
+        prisma.booking.count({
+          where: {
+            service_id: booking.service_id,
+            status: { in: ["PENDING", "CONFIRMED", "PENDING_PAYMENT"] },
+          },
+        }).then((bookedCount) => {
+          const totalSpots = booking.service.capacity;
+          const spotsRemaining = Math.max(0, totalSpots - bookedCount);
+          return sendEventNewBookingNotificationEmail({
+            to: booking.expert.user.email,
+            expertName: booking.expert.user.name,
+            parentName: booking.parent.name,
+            eventTitle: booking.service.title,
+            format: booking.format,
+            scheduledAt: booking.scheduled_at,
+            durationMinutes: booking.duration_minutes,
+            eventVenueName: booking.service.event_venue_name,
+            eventAddress: booking.service.event_address,
+            eventPostcode: booking.service.event_postcode,
+            eventCity: booking.service.event_city,
+            spotsRemaining,
+            totalSpots,
+            eventNowFull: spotsRemaining <= 0,
+            videoLink: booking.service.video_link,
+            amount: booking.amount,
+            currency: booking.currency,
+            bookingId: booking.id,
+            timezone: booking.expert.timezone,
+            language: expertLanguage,
+          });
+        }).catch((e) => console.error("[verifyPayment] Event expert notification email failed:", e.message));
+      } else {
+        const expertAddressVerify = practiceAddressLine(booking.expert, expertLanguage);
+        getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
+          sendNewBookingNotificationEmail({
+            to: booking.expert.user.email,
+            expertName: booking.expert.user.name,
+            parentName: booking.parent.name,
+            parentEmail: booking.parent.email,
+            // Home visits only — the expert travels to the parent, so they need
+            // to reach them to agree the address. Withheld for every other format.
+            parentPhone: isHomeVisit(booking.format) ? booking.parent.phone : null,
+            serviceTitle: booking.service.title,
+            format: booking.format,
+            scheduledAt: booking.scheduled_at,
+            durationMinutes: booking.duration_minutes,
+            location:
+              usesExpertAddress(booking.format)
+                ? expertAddressVerify || undefined
+                : undefined,
+            amount: booking.amount,
+            currency: booking.currency,
+            bookingId: booking.id,
+            timezone: booking.expert.timezone,
+            language: expertLanguage,
+            policyUrl,
+            parentAddress: parentAddressVerify || undefined,
+            parentFiscalCode: booking.consent?.billing_fiscal_code || undefined,
+            parentInvoiceHolder: booking.consent?.billing_invoice_holder || undefined,
+          });
+        }).catch((e) =>
+          console.error(
+            "[verifyPayment] Expert notification email failed:",
+            e.message,
+          ),
+        );
+      }
     }
 
     return res.json({ status: "CONFIRMED" });
@@ -1816,11 +1982,15 @@ async function markSessionLinkSent(req, res) {
 // through notifying the parent/expert. Expects `booking` already loaded with
 // the includes both callers use. Returns { stripeRefund, platformFunded } or
 // throws (caller decides how to translate that into a response).
-async function performExpertCancellation(booking, actingUserId, { sendExpertConfirmation = true } = {}) {
+async function performExpertCancellation(booking, actingUserId, { sendExpertConfirmation = true, wholeEventCancel = false, reason = null } = {}) {
   const cancelledAt = new Date();
   let stripeRefund = null;
     let platformFunded = false;
     const refundedAmount = parseFloat(booking.amount) || 0;
+    // Only an explicitly-given reason is ever shown to the parent — the
+    // internal DB fallback string below is never surfaced as "a message from
+    // the expert".
+    const givenReason = reason && reason.trim() ? reason.trim() : null;
 
     if (booking.status === "CONFIRMED" && booking.stripe_payment_intent_id) {
       let chargeId = booking.stripe_charge_id;
@@ -1883,7 +2053,7 @@ async function performExpertCancellation(booking, actingUserId, { sendExpertConf
       where: { id: booking.id },
       data: {
         status: booking.status === "CONFIRMED" ? "REFUNDED" : "CANCELLED",
-        cancellation_reason: "Cancelled by expert",
+        cancellation_reason: givenReason || "Cancelled by expert",
         cancelled_at: cancelledAt,
         transfer_status: "skipped",
         ...(stripeRefund
@@ -1951,20 +2121,40 @@ async function performExpertCancellation(booking, actingUserId, { sendExpertConf
       (stripeRefund || nothingToRefund)
     ) {
       const parentLanguage = booking.consent?.language || booking.parent.language || "en";
-      sendExpertCancelledSessionEmail({
-        to: booking.parent.email,
-        parentName: booking.parent.name,
-        expertName: booking.expert.user.name,
-        serviceTitle: booking.service.title,
-        scheduledAt: booking.scheduled_at,
-        amount: refundedAmount,
-        currency: booking.currency || "EUR",
-        bookingId: booking.id,
-        timezone: booking.parent.timezone || booking.expert.timezone,
-        language: parentLanguage,
-      }).catch((e) =>
-        console.error("[Email] Expert cancel parent email failed:", e.message),
-      );
+      if (wholeEventCancel && booking.service.cluster === "EVENT") {
+        sendEventCancelledByExpertEmail({
+          to: booking.parent.email,
+          parentName: booking.parent.name,
+          expertName: booking.expert.user.name,
+          eventTitle: booking.service.title,
+          scheduledAt: booking.scheduled_at,
+          format: booking.format,
+          cancellationReason: givenReason,
+          isFree: refundedAmount === 0,
+          amount: refundedAmount,
+          currency: booking.currency || "EUR",
+          bookingId: booking.id,
+          recipientTimezone: booking.parent.timezone || booking.expert.timezone,
+          language: parentLanguage,
+        }).catch((e) =>
+          console.error("[Email] Event cancelled-by-expert email failed:", e.message),
+        );
+      } else {
+        sendExpertCancelledSessionEmail({
+          to: booking.parent.email,
+          parentName: booking.parent.name,
+          expertName: booking.expert.user.name,
+          serviceTitle: booking.service.title,
+          scheduledAt: booking.scheduled_at,
+          amount: refundedAmount,
+          currency: booking.currency || "EUR",
+          bookingId: booking.id,
+          timezone: booking.parent.timezone || booking.expert.timezone,
+          language: parentLanguage,
+        }).catch((e) =>
+          console.error("[Email] Expert cancel parent email failed:", e.message),
+        );
+      }
     }
 
     // Confirm to the expert what their cancellation caused — same trigger
@@ -2048,6 +2238,7 @@ async function expertCancelBooking(req, res) {
 // the event is off, not merely down one attendee.
 async function expertCancelEvent(req, res) {
   const { serviceId } = req.params;
+  const { reason } = req.body || {};
 
   try {
     const service = await prisma.service.findUnique({ where: { id: parseInt(serviceId) } });
@@ -2083,7 +2274,7 @@ async function expertCancelEvent(req, res) {
     let failed = 0;
     for (const booking of bookings) {
       try {
-        await performExpertCancellation(booking, req.user.id, { sendExpertConfirmation: false });
+        await performExpertCancellation(booking, req.user.id, { sendExpertConfirmation: false, wholeEventCancel: true, reason });
         cancelled += 1;
       } catch (err) {
         failed += 1;

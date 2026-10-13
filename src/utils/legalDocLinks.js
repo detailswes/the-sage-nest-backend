@@ -8,6 +8,7 @@ const STATIC_FALLBACK_PATH = {
   TERMS_CONDITIONS: "/terms-conditions",
   CANCELLATION_POLICY: "/cancellation-policy",
   PRIVACY_POLICY: "/privacy-policy",
+  EVENT_TERMS: "/event-terms",
 };
 
 function resolveUrl(doc, language, type) {
@@ -23,16 +24,18 @@ function resolveUrl(doc, language, type) {
  */
 async function getLegalDocLinks(language) {
   const select = { file_url_en: true, file_url_it: true };
-  const [tc, cp, pp] = await Promise.all([
+  const [tc, cp, pp, et] = await Promise.all([
     prisma.legalDocument.findFirst({ where: { type: "TERMS_CONDITIONS" }, orderBy: { effective_from: "desc" }, select }),
     prisma.legalDocument.findFirst({ where: { type: "CANCELLATION_POLICY" }, orderBy: { effective_from: "desc" }, select }),
     prisma.legalDocument.findFirst({ where: { type: "PRIVACY_POLICY" }, orderBy: { effective_from: "desc" }, select }),
+    prisma.legalDocument.findFirst({ where: { type: "EVENT_TERMS" }, orderBy: { effective_from: "desc" }, select }),
   ]);
 
   return {
     termsUrl: resolveUrl(tc, language, "TERMS_CONDITIONS"),
     policyUrl: resolveUrl(cp, language, "CANCELLATION_POLICY"),
     privacyUrl: resolveUrl(pp, language, "PRIVACY_POLICY"),
+    eventTermsUrl: resolveUrl(et, language, "EVENT_TERMS"),
   };
 }
 

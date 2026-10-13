@@ -58,4 +58,16 @@ function formatDateTime(scheduledAt, timezone, language) {
   return { dateStr, timeStr, tzLabel: TZ_TIME_PHRASE[lang](abbrev, city) };
 }
 
-module.exports = { formatDateTime, cityLabel };
+/**
+ * Just the "HH:mm" portion, in the given IANA timezone — used to format an
+ * event's end time (start + duration) alongside formatDateTime's start time,
+ * without repeating the date/tzLabel parts a second time.
+ */
+function formatTimeOnly(date, timezone, language) {
+  const lang = language === "it" ? "it" : "en";
+  const tz = timezone || "UTC";
+  const locale = lang === "it" ? "it-IT" : "en-GB";
+  return new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: tz }).format(new Date(date));
+}
+
+module.exports = { formatDateTime, formatTimeOnly, cityLabel };
