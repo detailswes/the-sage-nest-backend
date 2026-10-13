@@ -31,10 +31,6 @@ const COPY = {
     reschedule: "Need to change your time? You can reschedule your session once, free of charge, as long as you do so more than 12 hours before your session — simply use the Reschedule option in your dashboard.",
     expertCancel: "If your expert cancels for any reason, you will always receive a full refund, regardless of timing.",
     fullPolicy: (url) => `The full policy is available here: <a href="${url}" style="color:#445446;text-decoration:underline;font-weight:600;">Cancellation and Rescheduling Policy</a>`,
-    eventHeading: "Event Terms",
-    // Placeholder until the client supplies the actual event-specific terms —
-    // replace eventTermsPlaceholder once that copy is confirmed.
-    eventTermsPlaceholder: "This event is governed by its own terms and cancellation conditions, separate from our standard 1:1 session policy. [Event terms text pending — to be added once confirmed.]",
     button: "View booking in your dashboard",
     termsLine: (termsUrl, privacyUrl) =>
       `This booking is governed by the Sage Nest <a href="${termsUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">Consumer Terms &amp; Conditions</a> you accepted when you booked and the applicable <a href="${privacyUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">Privacy Policy</a>. Links open the same language version you accepted.`,
@@ -70,8 +66,6 @@ const COPY = {
     reschedule: "Devi cambiare orario? Puoi modificare la tua prenotazione una sola volta, gratuitamente, purché tu lo faccia più di 12 ore prima della sessione — usa semplicemente l'opzione Modifica prenotazione nella tua dashboard.",
     expertCancel: "Se il tuo Professionista cancella per qualsiasi motivo, riceverai sempre un rimborso completo, indipendentemente dal momento.",
     fullPolicy: (url) => `Le condizioni complete sono disponibili qui: <a href="${url}" style="color:#445446;text-decoration:underline;font-weight:600;">Condizioni di Cancellazione e Modifica della Prenotazione</a>`,
-    eventHeading: "Condizioni dell'Evento",
-    eventTermsPlaceholder: "Questo evento è regolato da condizioni proprie, separate dalla nostra normale politica per le sessioni individuali. [Testo delle condizioni dell'evento in attesa di conferma.]",
     button: "Visualizza la prenotazione nella tua dashboard",
     termsLine: (termsUrl, privacyUrl) =>
       `La presente prenotazione è disciplinata dai <a href="${termsUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">Termini e Condizioni Consumatori</a> di Sage Nest che hai accettato al momento della prenotazione e dalla relativa <a href="${privacyUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">Informativa sulla privacy</a>. I link aprono la stessa versione linguistica che hai accettato.`,
@@ -135,7 +129,6 @@ const bookingConfirmationEmailHtml = ({
   termsUrl,
   policyUrl,
   privacyUrl,
-  isEvent,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const t = COPY[lang];
@@ -260,10 +253,7 @@ const bookingConfirmationEmailHtml = ({
           <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.withdrawalHeading}</p>
           ${withdrawalBlockHtml({ withdrawalApplicable, language: lang, termsUrl })}
 
-          <!-- Cancellation & rescheduling (events: their own terms instead) -->
-          ${isEvent ? `
-          <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.eventHeading}</p>
-          <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.eventTermsPlaceholder}</p>` : `
+          <!-- Cancellation & rescheduling -->
           <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${t.cancellationHeading}</p>
           <p style="margin:0 0 12px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.cancellationIntro}</p>
           <ul style="margin:0 0 12px;padding-left:20px;">
@@ -271,7 +261,7 @@ const bookingConfirmationEmailHtml = ({
           </ul>
           <p style="margin:0 0 8px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.reschedule}</p>
           <p style="margin:0 0 12px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.expertCancel}</p>
-          <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.fullPolicy(policyUrl)}</p>`}
+          <p style="margin:0 0 28px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.fullPolicy(policyUrl)}</p>
 
           <!-- Button -->
           <table width="100%" cellpadding="0" cellspacing="0" style="margin-bottom:28px;">

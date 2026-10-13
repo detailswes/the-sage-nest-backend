@@ -98,7 +98,7 @@ function logCurrencyRejection(actorUserId, serviceId, attempted, expected) {
 async function createService(req, res) {
   const {
     title, description, duration_minutes, price, format, cluster, home_visit_areas,
-    event_starts_at, capacity, event_location, event_city,
+    event_starts_at, capacity, event_venue_name, event_address, event_postcode, event_city, video_link,
   } = req.body;
 
   if (!title || !description || !duration_minutes || price === undefined || price === null || price === '' || !format || !cluster) {
@@ -145,12 +145,21 @@ async function createService(req, res) {
     // In-person events happen at a venue the expert names per event — it has
     // no connection to their registered practice address.
     if (format === 'IN_PERSON') {
-      if (!(event_location || '').trim()) {
+      if (!(event_venue_name || '').trim()) {
+        return res.status(400).json({ error: 'Venue name is required for in-person events.' });
+      }
+      if (!(event_address || '').trim()) {
         return res.status(400).json({ error: 'Venue address is required for in-person events.' });
+      }
+      if (!(event_postcode || '').trim()) {
+        return res.status(400).json({ error: 'Postcode is required for in-person events.' });
       }
       if (!(event_city || '').trim()) {
         return res.status(400).json({ error: 'City is required for in-person events.' });
       }
+    }
+    if (video_link && !/^https?:\/\/.+/i.test(video_link.trim())) {
+      return res.status(400).json({ error: 'Video link must be a valid URL starting with http:// or https://.' });
     }
   }
 
@@ -223,8 +232,11 @@ async function createService(req, res) {
         cluster: cluster || null,
         event_starts_at: isEvent ? eventStartsAtDate : null,
         capacity: isEvent ? capacityVal : null,
-        event_location: isEvent && format === 'IN_PERSON' ? event_location.trim() : null,
+        event_venue_name: isEvent && format === 'IN_PERSON' ? event_venue_name.trim() : null,
+        event_address: isEvent && format === 'IN_PERSON' ? event_address.trim() : null,
+        event_postcode: isEvent && format === 'IN_PERSON' ? event_postcode.trim() : null,
         event_city: isEvent && format === 'IN_PERSON' ? event_city.trim() : null,
+        video_link: isEvent && video_link ? video_link.trim() : null,
         is_active: false,
         sort_order,
         review_status: 'PENDING_REVIEW',
@@ -261,7 +273,7 @@ async function updateService(req, res) {
   const { id } = req.params;
   const {
     title, description, duration_minutes, price, currency, is_active, format, cluster, home_visit_areas,
-    event_starts_at, capacity, event_location, event_city,
+    event_starts_at, capacity, event_venue_name, event_address, event_postcode, event_city, video_link,
   } = req.body;
 
   if (title !== undefined && title.trim().length > 80) {
@@ -377,15 +389,26 @@ async function updateService(req, res) {
 
     // In-person events happen at a venue the expert names per event — it has
     // no connection to their registered practice address.
-    const effectiveEventLocation = event_location !== undefined ? (event_location || '').trim() : service.event_location;
+    const effectiveEventVenueName = event_venue_name !== undefined ? (event_venue_name || '').trim() : service.event_venue_name;
+    const effectiveEventAddress = event_address !== undefined ? (event_address || '').trim() : service.event_address;
+    const effectiveEventPostcode = event_postcode !== undefined ? (event_postcode || '').trim() : service.event_postcode;
     const effectiveEventCity = event_city !== undefined ? (event_city || '').trim() : service.event_city;
     if (isEvent && effectiveFormat === 'IN_PERSON') {
-      if (!effectiveEventLocation) {
+      if (!effectiveEventVenueName) {
+        return res.status(400).json({ error: 'Venue name is required for in-person events.' });
+      }
+      if (!effectiveEventAddress) {
         return res.status(400).json({ error: 'Venue address is required for in-person events.' });
+      }
+      if (!effectiveEventPostcode) {
+        return res.status(400).json({ error: 'Postcode is required for in-person events.' });
       }
       if (!effectiveEventCity) {
         return res.status(400).json({ error: 'City is required for in-person events.' });
       }
+    }
+    if (video_link !== undefined && video_link && !/^https?:\/\/.+/i.test(video_link.trim())) {
+      return res.status(400).json({ error: 'Video link must be a valid URL starting with http:// or https://.' });
     }
 
     if (isEvent) {
@@ -456,25 +479,43 @@ async function updateService(req, res) {
       ...(cluster !== undefined      && { cluster: cluster || null }),
       ...(event_starts_at !== undefined && { event_starts_at: eventStartsAtDate }),
       ...(capacity !== undefined     && { capacity: capacityVal }),
-      ...(event_location !== undefined && { event_location: (event_location || '').trim() || null }),
-      ...(event_city !== undefined     && { event_city: (event_city || '').trim() || null }),
+      ...(event_venue_name !== undefined && { event_venue_name: (event_venue_name || '').trim() || null }),
+      ...(event_address !== undefined    && { event_address: (event_address || '').trim() || null }),
+      ...(event_postcode !== undefined   && { event_postcode: (event_postcode || '').trim() || null }),
+      ...(event_city !== undefined       && { event_city: (event_city || '').trim() || null }),
+      ...(video_link !== undefined        && { video_link: (video_link || '').trim() || null }),
       // Switching away from EVENT leaves these fields meaningless — clear
-      // them rather than letting a stale date/capacity/venue sit dormant
-      // (and silently reappear if the service is ever switched back).
-      ...(!isEvent && (service.event_starts_at != null || service.capacity != null || service.event_location != null || service.event_city != null) && {
-        event_starts_at: null, capacity: null, event_location: null, event_city: null,
+      // them rather than letting a stale date/capacity/venue/link sit
+      // dormant (and silently reappear if the service is ever switched
+      // back).
+      ...(!isEvent && (service.event_starts_at != null || service.capacity != null || service.event_venue_name != null || service.event_address != null || service.event_postcode != null || service.event_city != null || service.video_link != null) && {
+        event_starts_at: null, capacity: null,
+        event_venue_name: null, event_address: null, event_postcode: null, event_city: null,
+        video_link: null,
       }),
       // Still an event, but no longer in-person — the venue is meaningless
       // on its own, so clear it even though the event itself stays.
-      ...(isEvent && effectiveFormat !== 'IN_PERSON' && (service.event_location != null || service.event_city != null) && {
-        event_location: null, event_city: null,
+      ...(isEvent && effectiveFormat !== 'IN_PERSON' && (service.event_venue_name != null || service.event_address != null || service.event_postcode != null || service.event_city != null) && {
+        event_venue_name: null, event_address: null, event_postcode: null, event_city: null,
+      }),
+      // Still an event, but no longer online — the video link is meaningless
+      // without an online format.
+      ...(isEvent && effectiveFormat !== 'ONLINE' && service.video_link != null && {
+        video_link: null,
       }),
     };
+    // video_link_alert_sent is internal bookkeeping for the 36h missing-link
+    // alert job, not reviewable "content" — it always applies live,
+    // independent of the draft/review system, via operationalData below.
+    // Any change that touches the link (set, edited, cleared, or format
+    // switched away from it) restarts the "already nagged about this" state.
+    const videoLinkTouched = 'video_link' in contentData;
     const hasContentFields = Object.keys(contentData).length > 0;
     const operationalData = {
       ...(currency !== undefined     && { currency }),
       ...(isRealignment && price !== undefined && { price: parseFloat(price) }),
       ...(is_active !== undefined    && { is_active }),
+      ...(videoLinkTouched           && { video_link_alert_sent: false }),
     };
 
     let updated;
@@ -539,8 +580,11 @@ async function updateService(req, res) {
             home_visit_areas: service.draft.home_visit_areas,
             event_starts_at: service.draft.event_starts_at,
             capacity: service.draft.capacity,
-            event_location: service.draft.event_location,
+            event_venue_name: service.draft.event_venue_name,
+            event_address: service.draft.event_address,
+            event_postcode: service.draft.event_postcode,
             event_city: service.draft.event_city,
+            video_link: service.draft.video_link,
           }
         : {
             title: service.title,
@@ -552,8 +596,11 @@ async function updateService(req, res) {
             home_visit_areas: service.home_visit_areas,
             event_starts_at: service.event_starts_at,
             capacity: service.capacity,
-            event_location: service.event_location,
+            event_venue_name: service.event_venue_name,
+            event_address: service.event_address,
+            event_postcode: service.event_postcode,
             event_city: service.event_city,
+            video_link: service.video_link,
           };
       const proposedContent = { ...draftBaseline, ...contentData };
       serviceDraft = await prisma.serviceDraft.upsert({

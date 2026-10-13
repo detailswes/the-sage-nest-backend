@@ -1139,8 +1139,15 @@ async function approveService(req, res) {
             // would wrongly fall back to the stale live value in that case.
             event_starts_at: draft.event_starts_at !== null ? draft.event_starts_at : service.event_starts_at,
             capacity: draft.capacity !== null ? draft.capacity : service.capacity,
-            event_location: draft.event_location !== null ? draft.event_location : service.event_location,
+            event_venue_name: draft.event_venue_name !== null ? draft.event_venue_name : service.event_venue_name,
+            event_address: draft.event_address !== null ? draft.event_address : service.event_address,
+            event_postcode: draft.event_postcode !== null ? draft.event_postcode : service.event_postcode,
             event_city: draft.event_city !== null ? draft.event_city : service.event_city,
+            video_link: draft.video_link !== null ? draft.video_link : service.video_link,
+            // A draft only ever proposes video_link alongside other content —
+            // if it actually changed what's live, the missing-link alert's
+            // "already nagged" state must restart for the newly-live value.
+            ...(draft.video_link !== null && draft.video_link !== service.video_link && { video_link_alert_sent: false }),
           },
         }),
         prisma.serviceDraft.delete({ where: { service_id: service.id } }),

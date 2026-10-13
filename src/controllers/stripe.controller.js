@@ -4,6 +4,9 @@ const { logAudit } = require('../utils/auditLog');
 const {
   sendBookingConfirmationEmail,
   sendNewBookingNotificationEmail,
+  sendEventBookingConfirmationEmail,
+  sendEventNewBookingNotificationEmail,
+  sendEventReminderEmail,
   sendAdminPayoutAlert,
 } = require('../utils/email');
 const { getLegalDocLinks } = require('../utils/legalDocLinks');
@@ -186,9 +189,9 @@ async function processStripeEvent(event) {
       const booking = await prisma.booking.findFirst({
         where: { stripe_payment_intent_id: pi.id },
         include: {
-          parent:  { select: { name: true, email: true, phone: true, language: true, timezone: true, notify_booking_confirmation: true } },
+          parent:  { select: { name: true, email: true, phone: true, language: true, timezone: true, notify_booking_confirmation: true, notify_session_reminder: true } },
           expert:  { select: { address_street: true, address_city: true, address_postcode: true, address_country: true, business_info: { select: { address_country: true } }, timezone: true, notify_new_booking: true, user: { select: { name: true, email: true, language: true } } } },
-          service: { select: { title: true, cluster: true, event_location: true, event_city: true } },
+          service: { select: { title: true, description: true, cluster: true, capacity: true, event_venue_name: true, event_address: true, event_postcode: true, event_city: true, video_link: true } },
           consent: {
             select: {
               language: true, withdrawal_applicable: true,
@@ -242,67 +245,146 @@ async function processStripeEvent(event) {
           booking.consent?.billing_address, booking.consent?.billing_postcode,
           booking.consent?.billing_town, booking.consent?.billing_province, booking.consent?.billing_country,
         ].filter(Boolean).join(', ');
+        const isEventBooking = booking.service.cluster === 'EVENT';
+
         if (booking.parent.notify_booking_confirmation !== false) {
           const confirmationLanguage = booking.consent?.language || booking.parent.language || 'en';
-          const isEventBooking = booking.service.cluster === 'EVENT';
-          // An in-person event happens at a venue the expert names per event —
-          // never the expert's registered practice address.
-          const parentExpertAddress = isEventBooking
-            ? [booking.service.event_location, booking.service.event_city].filter(Boolean).join(', ')
-            : practiceAddressLine(booking.expert, confirmationLanguage);
-          getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
-            sendBookingConfirmationEmail({
-              to:              booking.parent.email,
-              name:            booking.parent.name,
-              expertName:      booking.expert.user.name,
-              serviceTitle:    booking.service.title,
-              format:          booking.format,
-              scheduledAt:     booking.scheduled_at,
-              durationMinutes: booking.duration_minutes,
-              location:        usesExpertAddress(booking.format) ? (parentExpertAddress || undefined) : undefined,
-              language:        confirmationLanguage,
-              amount:          booking.amount,
-              currency:        booking.currency,
-              userTimezone:    booking.parent.timezone || booking.expert.timezone,
-              withdrawalApplicable: booking.consent?.withdrawal_applicable,
-              bookingId:       booking.id,
-              isEvent:         isEventBooking,
-              ...legalLinks,
-            });
-          }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));
+          if (isEventBooking) {
+            getLegalDocLinks(confirmationLanguage).then(({ eventTermsUrl }) => {
+              sendEventBookingConfirmationEmail({
+                to:               booking.parent.email,
+                parentName:       booking.parent.name,
+                expertName:       booking.expert.user.name,
+                eventTitle:       booking.service.title,
+                eventDescription: booking.service.description,
+                format:           booking.format,
+                scheduledAt:      booking.scheduled_at,
+                durationMinutes:  booking.duration_minutes,
+                eventVenueName:   booking.service.event_venue_name,
+                eventAddress:     booking.service.event_address,
+                eventPostcode:    booking.service.event_postcode,
+                eventCity:        booking.service.event_city,
+                amount:           booking.amount,
+                currency:         booking.currency,
+                withdrawalApplicable: booking.consent?.withdrawal_applicable,
+                bookingId:        booking.id,
+                recipientTimezone: booking.parent.timezone || booking.expert.timezone,
+                language:         confirmationLanguage,
+                eventTermsUrl,
+              });
+            }).catch((e) => console.error('[Email] Event parent confirmation email failed:', e.message));
+          } else {
+            const parentExpertAddress = practiceAddressLine(booking.expert, confirmationLanguage);
+            getLegalDocLinks(confirmationLanguage).then((legalLinks) => {
+              sendBookingConfirmationEmail({
+                to:              booking.parent.email,
+                name:            booking.parent.name,
+                expertName:      booking.expert.user.name,
+                serviceTitle:    booking.service.title,
+                format:          booking.format,
+                scheduledAt:     booking.scheduled_at,
+                durationMinutes: booking.duration_minutes,
+                location:        usesExpertAddress(booking.format) ? (parentExpertAddress || undefined) : undefined,
+                language:        confirmationLanguage,
+                amount:          booking.amount,
+                currency:        booking.currency,
+                userTimezone:    booking.parent.timezone || booking.expert.timezone,
+                withdrawalApplicable: booking.consent?.withdrawal_applicable,
+                bookingId:       booking.id,
+                ...legalLinks,
+              });
+            }).catch((e) => console.error('[Email] Parent confirmation email failed:', e.message));
+          }
+        }
+
+        // Late booking: the 24h reminder cron will never catch this one
+        // (it's already inside its own window), so send it — with the video
+        // link/venue — right now instead.
+        if (isEventBooking && booking.scheduled_at.getTime() - Date.now() < 24 * 60 * 60 * 1000) {
+          await prisma.booking.update({ where: { id: booking.id }, data: { reminder_24h_sent: true } });
+          if (booking.parent.notify_session_reminder !== false) {
+            const reminderLanguage = booking.consent?.language || booking.parent.language || 'en';
+            sendEventReminderEmail({
+              to:               booking.parent.email,
+              parentName:       booking.parent.name,
+              expertName:       booking.expert.user.name,
+              eventTitle:       booking.service.title,
+              format:           booking.format,
+              scheduledAt:      booking.scheduled_at,
+              eventVenueName:   booking.service.event_venue_name,
+              eventAddress:     booking.service.event_address,
+              eventPostcode:    booking.service.event_postcode,
+              eventCity:        booking.service.event_city,
+              videoLink:        booking.service.video_link,
+              bookingId:        booking.id,
+              recipientTimezone: booking.parent.timezone || booking.expert.timezone,
+              language:         reminderLanguage,
+            }).catch((e) => console.error('[Email] Late-booking event reminder failed:', e.message));
+          }
         }
 
         if (booking.expert.notify_new_booking !== false) {
           const expertLanguage = booking.expert.user.language || 'en';
-          const notifyExpertAddress = booking.service.cluster === 'EVENT'
-            ? [booking.service.event_location, booking.service.event_city].filter(Boolean).join(', ')
-            : practiceAddressLine(booking.expert, expertLanguage);
-          getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
-            sendNewBookingNotificationEmail({
-              to:              booking.expert.user.email,
-              expertName:      booking.expert.user.name,
-              parentName:      booking.parent.name,
-              parentEmail:     booking.parent.email,
-              // Home visits only — the expert travels to the parent, so they
-              // need to reach them to agree the address. Withheld otherwise.
-              parentPhone:     isHomeVisit(booking.format) ? booking.parent.phone : null,
-              serviceTitle:    booking.service.title,
-              format:          booking.format,
-              scheduledAt:     booking.scheduled_at,
-              durationMinutes: booking.duration_minutes,
-              location:        usesExpertAddress(booking.format) ? (notifyExpertAddress || undefined) : undefined,
-              amount:          booking.amount,
-              currency:        booking.currency,
-              bookingId:       booking.id,
-              timezone:        booking.expert.timezone,
-              language:        expertLanguage,
-              policyUrl,
-              parentAddress:      parentAddress || undefined,
-              parentFiscalCode:   booking.consent?.billing_fiscal_code || undefined,
-              parentInvoiceHolder: booking.consent?.billing_invoice_holder || undefined,
-              isEvent:            booking.service.cluster === 'EVENT',
-            });
-          }).catch((e) => console.error('[Email] Expert notification email failed:', e.message));
+          if (isEventBooking) {
+            prisma.booking.count({
+              where: {
+                service_id: booking.service_id,
+                status: { in: ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'] },
+              },
+            }).then((bookedCount) => {
+              const totalSpots = booking.service.capacity;
+              const spotsRemaining = Math.max(0, totalSpots - bookedCount);
+              return sendEventNewBookingNotificationEmail({
+                to:              booking.expert.user.email,
+                expertName:      booking.expert.user.name,
+                parentName:      booking.parent.name,
+                eventTitle:      booking.service.title,
+                format:          booking.format,
+                scheduledAt:     booking.scheduled_at,
+                durationMinutes: booking.duration_minutes,
+                eventVenueName:  booking.service.event_venue_name,
+                eventAddress:    booking.service.event_address,
+                eventPostcode:   booking.service.event_postcode,
+                eventCity:       booking.service.event_city,
+                spotsRemaining,
+                totalSpots,
+                eventNowFull:    spotsRemaining <= 0,
+                videoLink:       booking.service.video_link,
+                amount:          booking.amount,
+                currency:        booking.currency,
+                bookingId:       booking.id,
+                timezone:        booking.expert.timezone,
+                language:        expertLanguage,
+              });
+            }).catch((e) => console.error('[Email] Event expert notification email failed:', e.message));
+          } else {
+            const notifyExpertAddress = practiceAddressLine(booking.expert, expertLanguage);
+            getLegalDocLinks(expertLanguage).then(({ policyUrl }) => {
+              sendNewBookingNotificationEmail({
+                to:              booking.expert.user.email,
+                expertName:      booking.expert.user.name,
+                parentName:      booking.parent.name,
+                parentEmail:     booking.parent.email,
+                // Home visits only — the expert travels to the parent, so they
+                // need to reach them to agree the address. Withheld otherwise.
+                parentPhone:     isHomeVisit(booking.format) ? booking.parent.phone : null,
+                serviceTitle:    booking.service.title,
+                format:          booking.format,
+                scheduledAt:     booking.scheduled_at,
+                durationMinutes: booking.duration_minutes,
+                location:        usesExpertAddress(booking.format) ? (notifyExpertAddress || undefined) : undefined,
+                amount:          booking.amount,
+                currency:        booking.currency,
+                bookingId:       booking.id,
+                timezone:        booking.expert.timezone,
+                language:        expertLanguage,
+                policyUrl,
+                parentAddress:      parentAddress || undefined,
+                parentFiscalCode:   booking.consent?.billing_fiscal_code || undefined,
+                parentInvoiceHolder: booking.consent?.billing_invoice_holder || undefined,
+              });
+            }).catch((e) => console.error('[Email] Expert notification email failed:', e.message));
+          }
         }
       } else {
         console.log(`[Webhook] Booking ${booking.id} already has status=${booking.status} — skipping update`);

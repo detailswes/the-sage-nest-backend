@@ -550,16 +550,21 @@ async function buildServiceFields(service, expertId, expertWebflowItemId) {
     : '';
 
   // Venue for an in-person event — a one-off address the expert names per
-  // event, unrelated to their practice address. 'event-city' is split out
-  // separately so the events listing can filter by city. Always set (not
-  // just when truthy) so switching away from EVENT, or away from
+  // event, unrelated to their practice address. 'event-location' carries the
+  // venue name + street address + postcode as one line (structured as three
+  // separate fields on the Service row, combined here since Webflow's
+  // collection only has a single free-text slug for this); 'event-city' is
+  // split out separately so the events listing can filter by city. Always
+  // set (not just when truthy) so switching away from EVENT, or away from
   // IN_PERSON, clears any stale venue left over in Webflow.
   // NOTE: these two field slugs ('event-location', 'event-city') must exist
   // on the Webflow Services collection as PlainText fields — if they don't,
   // Webflow will reject the sync for every EVENT service (visible as
   // webflow_sync_status=FAILED + an admin alert email), without affecting
   // any other service's sync.
-  fields['event-location'] = (service.cluster === 'EVENT' && service.event_location) ? service.event_location : '';
+  fields['event-location'] = (service.cluster === 'EVENT')
+    ? [service.event_venue_name, service.event_address, service.event_postcode].filter(Boolean).join(', ')
+    : '';
   fields['event-city']     = (service.cluster === 'EVENT' && service.event_city)     ? service.event_city     : '';
 
   // Category (Reference → Services Categories collection)

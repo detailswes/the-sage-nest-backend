@@ -54,6 +54,7 @@ const { verifyEmailConnection } = require('./utils/email');
 const { startCleanupJob }        = require('./jobs/cleanupPendingBookings');
 const { startPayoutJob } = require('./jobs/processPayouts');
 const { startReminderJob }       = require('./jobs/sendReminders');
+const { startEventReminderJob }  = require('./jobs/sendEventReminders');
 const { startMarkCompletedJob }  = require('./jobs/markCompletedBookings');
 const { startWebflowSyncJob }    = require('./jobs/webflowSyncJob');
 const { startTokenCleanupJob }   = require('./jobs/cleanupExpiredTokens');
@@ -70,6 +71,7 @@ app.listen(PORT, () => {
   startCleanupJob();
   startPayoutJob();
   startReminderJob();
+  startEventReminderJob();
   startMarkCompletedJob();
   startWebflowSyncJob();
   startTokenCleanupJob();
