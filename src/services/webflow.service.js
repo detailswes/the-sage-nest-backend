@@ -43,15 +43,15 @@ const SESSION_TYPE_LABELS = {
 // pointed at stale names ('service for the mum' / 'service for the package') that no longer
 // matched anything after the category items were renamed in Webflow, so every service in
 // those two clusters silently never got a category assigned (resolveSingleRefId finds no
-// match → field just omitted, no error). EVENT has no corresponding item in Webflow at all
-// currently — that one needs a category item created there before it can ever resolve.
+// match → field just omitted, no error). No EVENT entry — events are skipped before this
+// ever runs (see the cluster === 'EVENT' guard in syncService); they'll get their own
+// mapping once WEBFLOW_EVENTS_COLLECTION_ID exists.
 const CLUSTER_DISPLAY = {
   FOR_PARENTS: 'service for the parents',
   FOR_BABY:    'service for the baby',
   FOR_FAMILY:  'service for the family',
   PACKAGE:     'package',
   GIFT:        'gift cards',
-  EVENT:       'event',
 };
 
 // ─── HTTP helper ──────────────────────────────────────────────────────────────
@@ -108,7 +108,11 @@ function logWebflowSync({ entityType, entityId, itemId, attempt, maxAttempts, ou
     outcome,     // 'success' | 'retrying' | 'dead_lettered'
     durationMs,
     payload,
-    ...(error ? { error: error.message, httpStatus: error.status ?? null } : {}),
+    // error.body carries Webflow's full response — the top-level message is
+    // often just "Validation Error" with the actual offending field named
+    // only in here (e.g. a `details`/`errors` array), so it has to be logged
+    // too or a validation failure is undiagnosable from this log alone.
+    ...(error ? { error: error.message, httpStatus: error.status ?? null, webflowErrorBody: error.body ?? null } : {}),
   };
   if (outcome === 'success') {
     console.log(`[Webflow] ${JSON.stringify(record)}`);
@@ -119,6 +123,24 @@ function logWebflowSync({ entityType, entityId, itemId, attempt, maxAttempts, ou
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// Webflow's top-level error message is usually just "Validation Error" —
+// the actual offending field lives in the response body (shape varies:
+// `details`/`errors`/`fields` depending on the endpoint), which the bare
+// err.message swallows. Appends whatever of that we can find so a stored
+// webflow_sync_error is actually diagnosable without re-reading raw logs.
+function describeWebflowError(err) {
+  const base = err?.message || 'Unknown error';
+  const body = err?.body;
+  if (!body || typeof body !== 'object') return base;
+  const detail = body.details || body.errors || body.fields;
+  if (!detail) return base;
+  try {
+    return `${base} — ${JSON.stringify(detail)}`;
+  } catch {
+    return base;
+  }
 }
 
 // ─── Retry + dead-letter wrapper ───────────────────────────────────────────────
@@ -140,7 +162,7 @@ async function resolveWebflowSyncFailure(idempotencyKey) {
 }
 
 async function deadLetterWebflowSync({ entityType, entityId, idempotencyKey, payload, error }) {
-  const lastError = (error?.message || 'Unknown error').slice(0, 1000);
+  const lastError = describeWebflowError(error).slice(0, 1000);
 
   let row;
   try {
@@ -437,9 +459,15 @@ async function buildExpertFields(expert, slug) {
   if (expert.summary)        fields['short-description'] = expert.summary;
   if (expert.bio)            fields['bio-content']       = expert.bio;
   if (cheapest)              fields['price']             = `From ${formatPrice(cheapest.price, cheapest.currency)}`;
-  if (expert.instagram)      fields['instagram-url']     = expert.instagram;
-  if (expert.facebook)       fields['facebook-url']      = expert.facebook;
-  if (expert.linkedin)       fields['linkedin-url']      = expert.linkedin;
+  // cleanLinkUrl strips the surrounding whitespace / missing-scheme issues
+  // common in hand-typed social links — sent raw, Webflow 400s the whole
+  // item on a malformed Link field instead of rejecting just that field.
+  const instagramUrl = cleanLinkUrl(expert.instagram);
+  const facebookUrl   = cleanLinkUrl(expert.facebook);
+  const linkedinUrl   = cleanLinkUrl(expert.linkedin);
+  if (instagramUrl)          fields['instagram-url']     = instagramUrl;
+  if (facebookUrl)           fields['facebook-url']      = facebookUrl;
+  if (linkedinUrl)           fields['linkedin-url']      = linkedinUrl;
   if (expert.profile_image)  fields['photo']             = { url: expert.profile_image, alt: expert.user.name };
 
   // ── Reference fields ─────────────────────────────────────────────────────────
@@ -549,23 +577,13 @@ async function buildServiceFields(service, expertId, expertWebflowItemId) {
     ? service.home_visit_areas.join(', ')
     : '';
 
-  // Venue for an in-person event — a one-off address the expert names per
-  // event, unrelated to their practice address. 'event-location' carries the
-  // venue name + street address + postcode as one line (structured as three
-  // separate fields on the Service row, combined here since Webflow's
-  // collection only has a single free-text slug for this); 'event-city' is
-  // split out separately so the events listing can filter by city. Always
-  // set (not just when truthy) so switching away from EVENT, or away from
-  // IN_PERSON, clears any stale venue left over in Webflow.
-  // NOTE: these two field slugs ('event-location', 'event-city') must exist
-  // on the Webflow Services collection as PlainText fields — if they don't,
-  // Webflow will reject the sync for every EVENT service (visible as
-  // webflow_sync_status=FAILED + an admin alert email), without affecting
-  // any other service's sync.
-  fields['event-location'] = (service.cluster === 'EVENT')
-    ? [service.event_venue_name, service.event_address, service.event_postcode].filter(Boolean).join(', ')
-    : '';
-  fields['event-city']     = (service.cluster === 'EVENT' && service.event_city)     ? service.event_city     : '';
+  // No event-specific fields here (venue, video link, etc.) — EVENT-cluster
+  // services never reach this function at all; syncService returns before
+  // calling it, since events belong in their own Webflow CMS collection, not
+  // this one. See the cluster === 'EVENT' guard in syncService, and
+  // eventVenue.js / formatEventVenue for the in-app (non-Webflow) display
+  // equivalent. Build real event→Webflow sync against
+  // WEBFLOW_EVENTS_COLLECTION_ID once that collection exists.
 
   // Category (Reference → Services Categories collection)
   if (service.cluster) {
@@ -805,7 +823,7 @@ async function syncExpert(expertId) {
       where: { id: expertId },
       data:  {
         webflow_sync_status: 'FAILED',
-        webflow_sync_error:  (err.message || 'Unknown error').slice(0, 500),
+        webflow_sync_error:  describeWebflowError(err).slice(0, 500),
       },
     });
     throw err;
@@ -841,6 +859,21 @@ async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverr
     include: { expert: { select: { id: true, webflow_item_id: true, user: { select: { language: true } } } } },
   });
   if (!service) return;
+
+  // Events will live in their own dedicated Webflow CMS collection once it
+  // exists — they don't belong in the Services collection even generically
+  // (title/price/etc.), not just for their event-specific fields. Until
+  // WEBFLOW_EVENTS_COLLECTION_ID is wired up, skip them entirely rather than
+  // publish a placeholder item that doesn't belong there. Also clears any
+  // dead-letter row left over from before this guard existed, so a
+  // previously-failing event doesn't sit retrying forever in the queue.
+  if (service.cluster === 'EVENT') {
+    await Promise.all(
+      [`service:${serviceId}`, `service:${serviceId}:create`, `service:${serviceId}:EN`, `service:${serviceId}:IT`]
+        .map(resolveWebflowSyncFailure),
+    );
+    return;
+  }
 
   const expertId            = expertIdOverride            ?? service.expert_id;
   const expertWebflowItemId = expertWebflowItemIdOverride ?? service.expert?.webflow_item_id;
@@ -951,7 +984,7 @@ async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverr
       where: { id: serviceId },
       data:  {
         webflow_sync_status: 'FAILED',
-        webflow_sync_error:  (err.message || 'Unknown error').slice(0, 500),
+        webflow_sync_error:  describeWebflowError(err).slice(0, 500),
       },
     });
     throw err;
