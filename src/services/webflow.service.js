@@ -1151,19 +1151,29 @@ async function deleteServiceFromWebflow(serviceId, webflowItemId) {
 // would just find no row and silently no-op. "archive" failures (suspend) must replay the
 // archive too, not a plain sync — a plain sync would re-publish (un-hide) a suspended expert.
 async function retryDeadLetter(failure) {
-  const { entity_type: entityType, entity_id: entityId, payload } = failure;
+  const { entity_type: entityType, entity_id: entityId, payload, idempotency_key: idempotencyKey } = failure;
 
-  if (payload?.action === 'delete') {
-    return entityType === 'expert'
-      ? deleteExpertFromWebflow(entityId, payload.webflowItemId)
-      : deleteServiceFromWebflow(entityId, payload.webflowItemId);
-  }
+  const run = payload?.action === 'delete'
+    ? () => (entityType === 'expert'
+        ? deleteExpertFromWebflow(entityId, payload.webflowItemId)
+        : deleteServiceFromWebflow(entityId, payload.webflowItemId))
+    : payload?.action === 'archive' && entityType === 'expert'
+      ? () => archiveExpert(entityId)
+      : () => (entityType === 'expert' ? syncExpert(entityId) : syncService(entityId));
 
-  if (payload?.action === 'archive' && entityType === 'expert') {
-    return archiveExpert(entityId);
-  }
+  const result = await run();
 
-  return entityType === 'expert' ? syncExpert(entityId) : syncService(entityId);
+  // The sync call above resolves whichever idempotency key *it itself* used
+  // internally (e.g. an expert with an existing item only ever touches its
+  // own active locale's key going forward). That can differ from the key on
+  // the dead-letter row the sweep actually picked up — e.g. one left over
+  // from an earlier locale, or from before per-locale keys existed — which
+  // would otherwise sit at PENDING_RETRY forever even once the entity is
+  // syncing successfully again. Resolve the row this call was handed too,
+  // explicitly, regardless of what the nested call resolved on its own.
+  await resolveWebflowSyncFailure(idempotencyKey);
+
+  return result;
 }
 
 module.exports = {
