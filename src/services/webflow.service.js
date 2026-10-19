@@ -455,8 +455,13 @@ async function buildExpertFields(expert, slug) {
     'booking-url': `${APP_URL}/book?expertId=${expert.id}`,
   };
 
-  if (expert.position)       fields['position']          = expert.position;
-  if (expert.summary)        fields['short-description'] = expert.summary;
+  // 'position' and 'short-description' are singleLine PlainText fields on
+  // Webflow's side (confirmed against the live collection schema) — a hand-
+  // typed line break in either 400s the whole item, same as 'description'
+  // on Services (see flattenForSingleLine above). 'bio-content' is RichText
+  // and genuinely supports multiple lines, so it's left as-is.
+  if (expert.position)       fields['position']          = flattenForSingleLine(expert.position);
+  if (expert.summary)        fields['short-description'] = flattenForSingleLine(expert.summary);
   if (expert.bio)            fields['bio-content']       = expert.bio;
   if (cheapest)              fields['price']             = `From ${formatPrice(cheapest.price, cheapest.currency)}`;
   // cleanLinkUrl strips the surrounding whitespace / missing-scheme issues
