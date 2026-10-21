@@ -291,6 +291,18 @@ async function removeAvailability(req, res) {
       return res.status(404).json({ error: 'Availability slot not found' });
     }
 
+    // Last slot + a live service would leave parents with a service they can't book.
+    const [slotCount, activeServiceCount] = await Promise.all([
+      prisma.availability.count({ where: { expert_id } }),
+      prisma.service.count({ where: { expert_id, is_active: true } }),
+    ]);
+    if (slotCount <= 1 && activeServiceCount > 0) {
+      return res.status(409).json({
+        error: 'This is your last availability slot. Deactivate your active services before removing it, otherwise parents will see services with no bookable dates.',
+        code: 'LAST_SLOT_ACTIVE_SERVICES',
+      });
+    }
+
     await prisma.availability.delete({ where: { id: parseInt(id) } });
     return res.json({ message: 'Availability slot removed' });
   } catch (err) {

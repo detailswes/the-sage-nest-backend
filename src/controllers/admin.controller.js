@@ -304,6 +304,15 @@ async function approveExpert(req, res) {
       });
     }
 
+    // Without weekly availability the profile goes live with nothing bookable.
+    const availabilityCount = await prisma.availability.count({ where: { expert_id: expert.id } });
+    if (availabilityCount === 0) {
+      return res.status(409).json({
+        error: "This expert has not added any availability. They must set their weekly availability before they can be approved.",
+        code: "AVAILABILITY_REQUIRED",
+      });
+    }
+
     // Booking flow spec v1.7 §7.1 — admin-set, no default, mandatory before approval.
     if (expert.is_health_professional === null) {
       return res.status(409).json({
@@ -973,6 +982,7 @@ async function getExpertDetail(req, res) {
       },
     });
     if (!expert) return res.status(404).json({ error: "Expert not found" });
+    expert.has_availability = (await prisma.availability.count({ where: { expert_id: expert.id } })) > 0;
     if (expert.business_info?.iban) {
       expert.business_info.iban = decryptIban(expert.business_info.iban);
     }
