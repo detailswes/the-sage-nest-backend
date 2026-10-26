@@ -184,10 +184,19 @@ async function register(req, res) {
           error: `This email is already registered as a ${existingRoleLabel} account. Please log in, or use a different email to register as a${assignedRole === "EXPERT" ? "n expert" : " parent"}.`,
         });
       }
-      // Same-role duplicate: enumeration-safe — return the same response as a
-      // successful registration. The caller cannot distinguish a duplicate
-      // from a new account.
-      return res.status(201).json({ verification_email_sent: true, email });
+      // Same-role duplicate: reject up front rather than faking a "verification
+      // email sent" screen for an account that is already verified (no email
+      // would ever arrive). registrationLimiter bounds enumeration probing.
+      if (existing.is_verified) {
+        return res.status(409).json({
+          error: "An account with this email already exists. Please log in instead.",
+          code: "EMAIL_EXISTS_VERIFIED",
+        });
+      }
+      return res.status(409).json({
+        error: "An account with this email already exists but isn't verified yet.",
+        code: "EMAIL_EXISTS_UNVERIFIED",
+      });
     }
 
     const password_hash = await hashPassword(password);
