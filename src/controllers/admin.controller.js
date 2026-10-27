@@ -174,7 +174,7 @@ async function listExperts(req, res) {
         prisma.expert.findMany({
           where,
           include,
-          orderBy: { id: "asc" },
+          orderBy: [{ user: { created_at: "desc" } }, { id: "desc" }], // newest joined first
           skip,
           take: limit,
         }),
