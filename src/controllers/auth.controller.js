@@ -701,9 +701,13 @@ async function forgotPassword(req, res) {
   try {
     const user = await prisma.user.findUnique({ where: { email } });
 
-    // Always return success — prevents enumeration of registered emails
-    if (!user) {
-      return res.json({ sent: true });
+    // Reject unknown (or deleted) accounts up front so the client can say so,
+    // instead of faking "email sent". passwordResetLimiter bounds enumeration probing.
+    if (!user || user.account_deleted) {
+      return res.status(404).json({
+        error: "No account found with this email address.",
+        code: "EMAIL_NOT_FOUND",
+      });
     }
 
     // Server-side cooldown: block if a token was issued < 1 minute ago
