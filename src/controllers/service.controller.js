@@ -107,8 +107,8 @@ async function createService(req, res) {
   if (title.trim().length > 80) {
     return res.status(400).json({ error: 'Service title must be 80 characters or fewer.' });
   }
-  if (description && description.trim().length > 500) {
-    return res.status(400).json({ error: 'Description must be 500 characters or fewer.' });
+  if (description && description.trim().length > 700) {
+    return res.status(400).json({ error: 'Description must be 700 characters or fewer.' });
   }
   const dur = parseInt(duration_minutes);
   if (isNaN(dur) || dur < 15 || dur > 480) {
@@ -279,8 +279,8 @@ async function updateService(req, res) {
   if (title !== undefined && title.trim().length > 80) {
     return res.status(400).json({ error: 'Service title must be 80 characters or fewer.' });
   }
-  if (description !== undefined && description && description.trim().length > 500) {
-    return res.status(400).json({ error: 'Description must be 500 characters or fewer.' });
+  if (description !== undefined && description && description.trim().length > 700) {
+    return res.status(400).json({ error: 'Description must be 700 characters or fewer.' });
   }
   if (duration_minutes !== undefined) {
     const dur = parseInt(duration_minutes);
