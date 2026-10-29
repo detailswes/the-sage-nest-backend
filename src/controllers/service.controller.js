@@ -629,7 +629,11 @@ async function updateService(req, res) {
         });
         if (expert?.status !== 'APPROVED' || !expert?.webflow_item_id) return;
 
-        if (updated.is_active) {
+        if (updated.cluster === 'EVENT') {
+          // Events are never deleted from Webflow: syncEvent keeps a full event visible
+          // (sold out) and archives a cancelled/deactivated one.
+          await webflowService.syncEvent(updated.id, { source: 'edit' });
+        } else if (updated.is_active) {
           await webflowService.syncService(updated.id, expert_id, expert.webflow_item_id);
         } else if (updated.webflow_item_id) {
           await webflowService.deleteServiceFromWebflow(updated.id, updated.webflow_item_id);

@@ -2286,6 +2286,10 @@ async function expertCancelEvent(req, res) {
     // reactivation logic did while the loop was running.
     await prisma.service.update({ where: { id: service.id }, data: { is_active: false } });
 
+    // Cancelled events are archived off the website (the 5-min event job would also catch this).
+    require("../services/webflow.service").syncEvent(service.id, { source: "edit" })
+      .catch(err => console.error("[Webflow] Event archive after cancel failed:", err.message));
+
     logAudit(req.user.id, "EVENT_CANCELLED_BY_EXPERT", "SERVICE", service.id,
       `Event #${service.id} cancelled — ${cancelled} attendee(s) refunded${failed ? `, ${failed} failed and need manual follow-up` : ""}.`);
 

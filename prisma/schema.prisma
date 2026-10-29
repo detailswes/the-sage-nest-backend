@@ -168,6 +168,13 @@ model Service {
   webflow_sync_status WebflowSyncStatus    @default(UNSYNCED)
   webflow_synced_at   DateTime?
   webflow_sync_error  String?
+  // Events only: last "spots left" pushed to Webflow (lets the sync job skip
+  // unchanged events) and when the item was archived (cancelled / past).
+  webflow_spots_left  Int?
+  webflow_archived_at DateTime?
+  // Events only: the detail fields last pushed to Webflow, per locale — later syncs send
+  // only fields that differ from this, so the client's manual CMS edits survive.
+  webflow_pushed_fields Json?
   bookings            Booking[]
   expert              Expert               @relation(fields: [expert_id], references: [id], onDelete: Cascade)
   draft               ServiceDraft?
