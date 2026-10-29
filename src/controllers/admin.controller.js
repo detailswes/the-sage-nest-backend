@@ -1174,7 +1174,7 @@ async function approveService(req, res) {
     }
 
     if (service.expert.status === "APPROVED" && service.expert.webflow_item_id && updated.is_active) {
-      webflowService.syncService(service.id, service.expert.id, service.expert.webflow_item_id)
+      webflowService.syncService(service.id, service.expert.id, service.expert.webflow_item_id, undefined, { source: 'approval' })
         .catch(err => console.error("[Webflow] Sync after service approve failed:", err.message));
     }
     return res.json({ message: "Service approved" });
@@ -3757,8 +3757,8 @@ async function getAdminNotifications(req, res) {
     const serviceNotifications = pendingServices.map((svc) => ({
       id:        `service_${svc.id}`,
       type:      "SERVICE_PENDING",
-      title:     "New service awaiting review",
-      body:      `${svc.expert.user.name} added a service: "${svc.title}".`,
+      title:     svc.cluster === "EVENT" ? "New event awaiting review" : "New service awaiting review",
+      body:      `${svc.expert.user.name} added ${svc.cluster === "EVENT" ? "an event" : "a service"}: "${svc.title}".`,
       href:      `/dashboard/admin/experts/${svc.expert_id}?tab=services`,
       expertId:  svc.expert_id,
       createdAt: svc.submitted_at,
@@ -3767,7 +3767,7 @@ async function getAdminNotifications(req, res) {
     const serviceDraftNotifications = pendingServiceDrafts.map((draft) => ({
       id:        `service_draft_${draft.id}`,
       type:      "SERVICE_DRAFT_PENDING",
-      title:     "Service edit awaiting review",
+      title:     draft.service.cluster === "EVENT" ? "Event edit awaiting review" : "Service edit awaiting review",
       body:      `${draft.service.expert.user.name} proposed changes to "${draft.service.title}".`,
       href:      `/dashboard/admin/experts/${draft.service.expert_id}?tab=services`,
       expertId:  draft.service.expert_id,

@@ -1704,8 +1704,47 @@ const sendImLateNotification = async ({
 };
 
 // ─── Exports ──────────────────────────────────────────────────────────────────
+// ─── Event → Webflow CMS notifications ─────────────────────────────────────────
+// `new`: an approved event just landed in the Webflow CMS as a draft (needs images,
+// topics, micro-hubs, then manual publish). `changed`: a PUBLISHED event's date/price/
+// capacity was updated automatically and should be double-checked.
+const sendEventCmsNotification = ({ kind, service }) => {
+  const adminTo = process.env.ADMIN_ALERT_EMAIL || process.env.EMAIL_FROM_NOTIFICATIONS;
+  if (!adminTo) {
+    console.error('[Email] sendEventCmsNotification: no recipient configured (set ADMIN_ALERT_EMAIL)');
+    return Promise.resolve();
+  }
+  const isNew   = kind === 'new';
+  const subject = isNew
+    ? `New event ready in the CMS (draft): ${service.title}`
+    : `Published event updated: ${service.title}`;
+  const intro = isNew
+    ? 'An approved event has been added to the Webflow Events collection as a draft in English and Italian. Please add images, topics, micro-hubs and co-hosts, translate the Italian version, then publish.'
+    : 'A published event was updated automatically from the booking system. Please check that the website still looks right.';
+  const when  = service.event_starts_at ? service.event_starts_at.toISOString() : '—';
+  const rows  = [
+    ['Event', service.title],
+    ['Starts (UTC)', when],
+    ['Price', `${service.price} ${service.currency}`],
+    ['Capacity', service.capacity ?? '—'],
+  ].map(([k, v]) => `<tr><td style="padding:4px 0;color:#6B7280;font-size:13px;">${k}</td><td style="padding:4px 0 4px 16px;font-size:13px;color:#1F2933;">${v}</td></tr>`).join('');
+
+  return sendEmail({
+    to: adminTo,
+    subject: `[Sage Nest] ${subject}`,
+    text: `${subject}\n\n${intro}\n\nStarts (UTC): ${when}\nPrice: ${service.price} ${service.currency}\nCapacity: ${service.capacity ?? '—'}`,
+    html: layout(`
+      <h1 style="margin:0 0 16px;font-size:20px;font-weight:700;color:#1F2933;">${subject}</h1>
+      <p style="margin:0 0 20px;font-size:14px;color:#4B5563;line-height:1.6;">${intro}</p>
+      <table style="border-collapse:collapse;width:100%;margin-bottom:24px;">${rows}</table>
+    `),
+  });
+};
+
+
 module.exports = {
   sendEmail,
+  sendEventCmsNotification,
   sendMarketingEmail,
   verifyEmailConnection,
   sendWelcomeEmail,

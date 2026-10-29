@@ -57,6 +57,7 @@ const { startReminderJob }       = require('./jobs/sendReminders');
 const { startEventReminderJob }  = require('./jobs/sendEventReminders');
 const { startMarkCompletedJob }  = require('./jobs/markCompletedBookings');
 const { startWebflowSyncJob }    = require('./jobs/webflowSyncJob');
+const { startEventWebflowJob }  = require('./jobs/eventWebflowJob');
 const { startTokenCleanupJob }   = require('./jobs/cleanupExpiredTokens');
 const { startWebhookRetryJob }          = require('./jobs/retryFailedWebhooks');
 const { startBalanceReconciliationJob } = require('./jobs/reconcileBalances');
@@ -74,6 +75,7 @@ app.listen(PORT, () => {
   startEventReminderJob();
   startMarkCompletedJob();
   startWebflowSyncJob();
+  startEventWebflowJob();
   startTokenCleanupJob();
   startWebhookRetryJob();
   startBalanceReconciliationJob();

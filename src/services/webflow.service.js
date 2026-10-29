@@ -1,10 +1,11 @@
 const prisma = require('../prisma/client');
-const { sendWebflowSyncFailureAlert } = require('../utils/email');
+const { sendWebflowSyncFailureAlert, sendEventCmsNotification } = require('../utils/email');
 const { countryName } = require('../utils/countryName');
 
 const WEBFLOW_API_BASE      = 'https://api.webflow.com/v2';
 const EXPERTS_COLLECTION_ID  = process.env.WEBFLOW_EXPERTS_COLLECTION_ID;
 const SERVICES_COLLECTION_ID = process.env.WEBFLOW_SERVICES_COLLECTION_ID;
+const EVENTS_COLLECTION_ID   = process.env.WEBFLOW_EVENTS_COLLECTION_ID;
 const SITE_ID                = process.env.WEBFLOW_SITE_ID;
 const APP_URL                = process.env.APP_URL || 'https://portal.sagenest.org';
 
@@ -43,9 +44,8 @@ const SESSION_TYPE_LABELS = {
 // pointed at stale names ('service for the mum' / 'service for the package') that no longer
 // matched anything after the category items were renamed in Webflow, so every service in
 // those two clusters silently never got a category assigned (resolveSingleRefId finds no
-// match → field just omitted, no error). No EVENT entry — events are skipped before this
-// ever runs (see the cluster === 'EVENT' guard in syncService); they'll get their own
-// mapping once WEBFLOW_EVENTS_COLLECTION_ID exists.
+// match → field just omitted, no error). No EVENT entry — events are routed to syncEvent
+// (their own Webflow collection) before this ever runs; see the EVENT guard in syncService.
 const CLUSTER_DISPLAY = {
   FOR_PARENTS: 'service for the parents',
   FOR_BABY:    'service for the baby',
@@ -582,13 +582,8 @@ async function buildServiceFields(service, expertId, expertWebflowItemId) {
     ? service.home_visit_areas.join(', ')
     : '';
 
-  // No event-specific fields here (venue, video link, etc.) — EVENT-cluster
-  // services never reach this function at all; syncService returns before
-  // calling it, since events belong in their own Webflow CMS collection, not
-  // this one. See the cluster === 'EVENT' guard in syncService, and
-  // eventVenue.js / formatEventVenue for the in-app (non-Webflow) display
-  // equivalent. Build real event→Webflow sync against
-  // WEBFLOW_EVENTS_COLLECTION_ID once that collection exists.
+  // No event-specific fields here — EVENT-cluster services never reach this
+  // function; syncService hands them to syncEvent (own Webflow collection).
 
   // Category (Reference → Services Categories collection)
   if (service.cluster) {
@@ -849,36 +844,24 @@ async function syncExpertServices(expertId) {
   if (!expert?.webflow_item_id) return;
 
   for (const svc of expert.services) {
-    await syncService(svc.id, expert.id, expert.webflow_item_id, expert.user.language).catch(() => {});
+    await syncService(svc.id, expert.id, expert.webflow_item_id, expert.user.language, { source: 'job' }).catch(() => {});
   }
 }
 
 // Sync a single service (can be called with overrides to avoid extra DB lookups).
 // `expertLanguageOverride` mirrors the expert's registered language so the service
 // publishes live in that locale too — falls back to a fresh lookup when omitted.
-async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverride, expertLanguageOverride) {
-  if (!SERVICES_COLLECTION_ID) return;
-
+async function syncService(serviceId, expertIdOverride, expertWebflowItemIdOverride, expertLanguageOverride, opts = {}) {
   const service = await prisma.service.findUnique({
     where:   { id: serviceId },
     include: { expert: { select: { id: true, webflow_item_id: true, user: { select: { language: true } } } } },
   });
   if (!service) return;
 
-  // Events will live in their own dedicated Webflow CMS collection once it
-  // exists — they don't belong in the Services collection even generically
-  // (title/price/etc.), not just for their event-specific fields. Until
-  // WEBFLOW_EVENTS_COLLECTION_ID is wired up, skip them entirely rather than
-  // publish a placeholder item that doesn't belong there. Also clears any
-  // dead-letter row left over from before this guard existed, so a
-  // previously-failing event doesn't sit retrying forever in the queue.
-  if (service.cluster === 'EVENT') {
-    await Promise.all(
-      [`service:${serviceId}`, `service:${serviceId}:create`, `service:${serviceId}:EN`, `service:${serviceId}:IT`]
-        .map(resolveWebflowSyncFailure),
-    );
-    return;
-  }
+  // Events live in their own Webflow collection with their own lifecycle
+  // (draft-first, client publishes manually) — see syncEvent.
+  if (service.cluster === 'EVENT') return syncEvent(serviceId, { source: opts.source });
+  if (!SERVICES_COLLECTION_ID) return;
 
   const expertId            = expertIdOverride            ?? service.expert_id;
   const expertWebflowItemId = expertWebflowItemIdOverride ?? service.expert?.webflow_item_id;
@@ -1149,6 +1132,351 @@ async function deleteServiceFromWebflow(serviceId, webflowItemId) {
   }
 }
 
+// ─── Event sync ───────────────────────────────────────────────────────────────
+// Events live in their own Webflow collection (WEBFLOW_EVENTS_COLLECTION_ID). Lifecycle,
+// per the client:
+//   • Approved → created in Webflow as a DRAFT in both locales and never published by us —
+//     she adds images, topics, micro-hubs, co-hosts, etc. and publishes manually.
+//   • After creation we only touch fields the booking system owns — date/time, price, capacity,
+//     format, venue, description (on approved edits) and spots left / sold-out (also on the
+//     5-min job) — in BOTH locales, publishing only the locales she already published.
+//     Of those, only fields whose app-side value CHANGED since the last push are sent
+//     (webflow_pushed_fields), so a hand edit in the CMS survives unrelated edits.
+//     Images, topics, micro-hubs, co-hosts, FAQ etc. are never touched.
+//   • Sold-out events stay visible (flagged); cancelled/deactivated and past events are
+//     archived (never deleted, so she can reuse the content).
+
+// Webflow field slugs in the Events collection (verified against the live collection schema).
+// Anything not present in the live collection schema is skipped with a
+// warning (see pruneToSchema), so a wrong guess can never fail the whole sync.
+const EVENT_FIELD = {
+  cardDescription: 'blog-text',
+  format:          'in-person-or-online',
+  free:            'free',
+  priceLabel:      'price-tag',
+  expertCard:      'expert',
+  startsAt:        'start-date-and-time',
+  endsAt:          'end-time',
+  city:            'city',
+  timeZoneLabel:   'time-zone-label',
+  language:        'language',
+  locationName:    'location-name',
+  address:         'address',
+  mapLink:         'map-link',
+  capacity:        'total-slots',
+  spotsLeft:       'slots-left',
+  bookingLink:     'booking-link',
+  expertsProfession: 'experts-profession',
+  soldOut:         'sold-out', // Switch — must be added to the collection in Webflow
+};
+
+const EVENT_BOOKED_STATUSES = ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'];
+
+const EVENT_FREE_LABEL     = { EN: 'Free',     IT: 'Gratuito' };
+const EVENT_SOLD_OUT_LABEL = { EN: 'Sold out', IT: 'Esaurito' };
+
+let _eventSchema; // { at, value }
+async function getEventSchema() {
+  if (_eventSchema && Date.now() - _eventSchema.at < CACHE_TTL) return _eventSchema.value;
+  let value = null;
+  try {
+    const col = await webflowRequest('GET', `/collections/${EVENTS_COLLECTION_ID}`);
+    value = { fields: col.fields || [] };
+  } catch (err) {
+    console.error('[Webflow] Failed to fetch Events collection schema:', err.message);
+  }
+  _eventSchema = { at: Date.now(), value };
+  return value;
+}
+
+function pruneToSchema(fieldData, schema) {
+  if (!schema) return fieldData;
+  const known = new Set(schema.fields.map(f => f.slug));
+  const out = {};
+  for (const [slug, value] of Object.entries(fieldData)) {
+    if (slug === 'name' || slug === 'slug' || known.has(slug)) out[slug] = value;
+    else console.warn(`[Webflow] Events collection has no "${slug}" field — skipping`);
+  }
+  return out;
+}
+
+// Option fields take the option's id, not its label.
+function eventFormatOptionId(schema, format) {
+  const options = schema?.fields.find(f => f.slug === EVENT_FIELD.format)?.validations?.options || [];
+  const want    = format === 'ONLINE' ? 'online' : 'in person';
+  return options.find(o => normalizeLabel(o.name).replace(/-/g, ' ') === want)?.id || null;
+}
+
+function eventEndsAt(service) {
+  return new Date(service.event_starts_at.getTime() + (service.duration_minutes || 0) * 60 * 1000);
+}
+
+function eventPriceLabel(price, currency, localeKey) {
+  if (Number(price) === 0) return EVENT_FREE_LABEL[localeKey] || EVENT_FREE_LABEL.EN;
+  const cur = (currency || 'EUR').toUpperCase();
+  // da-DK renders DKK as "350 kr."; every other currency uses the English style ("€45").
+  return new Intl.NumberFormat(cur === 'DKK' ? 'da-DK' : 'en', {
+    style: 'currency', currency: cur, minimumFractionDigits: 0, maximumFractionDigits: 2,
+  }).format(Number(price)).replace(/ /g, ' ');
+}
+
+function timeZoneLabel(timeZone, date) {
+  try {
+    return new Intl.DateTimeFormat('en-GB', { timeZone: timeZone || 'Europe/Rome', timeZoneName: 'short' })
+      .formatToParts(date).find(p => p.type === 'timeZoneName')?.value || timeZone;
+  } catch {
+    return timeZone || '';
+  }
+}
+
+async function eventAvailability(service) {
+  const booked = await prisma.booking.count({
+    where: { service_id: service.id, status: { in: EVENT_BOOKED_STATUSES } },
+  });
+  const capacity  = service.capacity ?? 0;
+  const spotsLeft = Math.max(0, capacity - booked);
+  return { spotsLeft, soldOut: capacity > 0 && spotsLeft <= 0 };
+}
+
+// Availability only — what the 5-minute job pushes, so routine ticks never overwrite
+// anything the client may have edited in the CMS.
+function buildEventAvailabilityFields({ spotsLeft, soldOut }, localeKey) {
+  return {
+    [EVENT_FIELD.spotsLeft]: soldOut ? (EVENT_SOLD_OUT_LABEL[localeKey] || EVENT_SOLD_OUT_LABEL.EN) : String(spotsLeft),
+    [EVENT_FIELD.soldOut]:   soldOut,
+  };
+}
+
+// Fields that follow the booking system's own data (re-pushed on creation, approved edits and
+// expert edits, in both locales): date/time, price, capacity, format, venue, description.
+function buildEventDetailFields(service, schema, localeKey) {
+  const price    = Number(service.price);
+  const online   = service.format === 'ONLINE';
+  const address  = [service.event_address, [service.event_postcode, service.event_city].filter(Boolean).join(' ')]
+    .filter(Boolean).join(', ');
+  const mapQuery = [service.event_venue_name, address].filter(Boolean).join(', ');
+  const formatId = eventFormatOptionId(schema, service.format);
+
+  return {
+    [EVENT_FIELD.startsAt]:      service.event_starts_at.toISOString(),
+    [EVENT_FIELD.endsAt]:        eventEndsAt(service).toISOString(),
+    [EVENT_FIELD.timeZoneLabel]: timeZoneLabel(service.expert?.timezone, service.event_starts_at),
+    [EVENT_FIELD.free]:          price === 0,
+    [EVENT_FIELD.priceLabel]:    eventPriceLabel(price, service.currency, localeKey),
+    [EVENT_FIELD.capacity]:      String(service.capacity ?? ''),
+    [EVENT_FIELD.city]:          online ? 'Online' : (service.event_city || ''),
+    [EVENT_FIELD.locationName]:  online ? '' : (service.event_venue_name || ''),
+    [EVENT_FIELD.address]:       online ? '' : address,
+    [EVENT_FIELD.mapLink]:       !online && mapQuery ? `https://www.google.com/maps/search/${encodeURIComponent(mapQuery)}` : '',
+    ...(service.description ? { [EVENT_FIELD.cardDescription]: flattenForSingleLine(service.description) } : {}),
+    ...(formatId ? { [EVENT_FIELD.format]: formatId } : {}),
+  };
+}
+
+// Written once, at creation, then owned by the client in the CMS.
+function buildEventCreationFields(service, slug, localeKey) {
+  const expert = service.expert;
+  return {
+    name: service.title,
+    slug,
+    [EVENT_FIELD.bookingLink]: withLangParam(
+      `${APP_URL}/book?expertId=${service.expert_id}&serviceId=${service.id}`, localeKey),
+    ...(expert?.languages?.length ? { [EVENT_FIELD.language]: expert.languages.join(', ') } : {}),
+    ...(expert?.position ? { [EVENT_FIELD.expertsProfession]: flattenForSingleLine(expert.position) } : {}),
+    // Expert (Card) = the creating expert; left empty for Sage Nest-run events (no expert),
+    // which must not appear on any expert's page.
+    ...(expert?.webflow_item_id ? { [EVENT_FIELD.expertCard]: expert.webflow_item_id } : {}),
+  };
+}
+
+// State of one locale's variant: `live` = published (what the public site shows).
+async function eventVariantState(itemId, cmsLocaleId) {
+  try {
+    const item = await webflowRequest('GET',
+      `/collections/${EVENTS_COLLECTION_ID}/items/${itemId}${cmsLocaleId ? `?cmsLocaleId=${cmsLocaleId}` : ''}`);
+    return { live: !item.isDraft && !item.isArchived && !!item.lastPublished };
+  } catch {
+    return { live: false };
+  }
+}
+
+async function syncEvent(serviceId, { source } = {}) {
+  if (!EVENTS_COLLECTION_ID) {
+    console.warn('[Webflow] WEBFLOW_EVENTS_COLLECTION_ID not set — skipping event sync');
+    return;
+  }
+
+  const service = await prisma.service.findUnique({
+    where:   { id: serviceId },
+    include: { expert: { select: {
+      id: true, webflow_item_id: true, languages: true, position: true, timezone: true,
+    } } },
+  });
+  if (!service || service.cluster !== 'EVENT' || !service.event_starts_at) return;
+
+  const availability = await eventAvailability(service);
+
+  // Cancelled / deactivated by the expert (is_active false while NOT merely full — booking
+  // flips is_active off when an event fills up, which must stay visible as sold out), or
+  // already over → archive, never delete.
+  const ended = eventEndsAt(service).getTime() <= Date.now();
+  if (ended || (!service.is_active && !availability.soldOut)) {
+    return archiveEvent(serviceId);
+  }
+  if (service.review_status !== 'APPROVED') return;
+
+  // Job ticks: nothing to do unless availability changed since the last push.
+  if (source === 'job' && service.webflow_item_id && !service.webflow_archived_at
+      && service.webflow_spots_left === availability.spotsLeft) return;
+
+  const slug    = service.webflow_slug || serviceSlug(service.title, service.id);
+  const schema  = await getEventSchema();
+  const locales = await getLocaleCmsIds().catch(() => null);
+  const localeKeys = locales ? Object.keys(locales) : [null];
+
+  try {
+    let itemId = service.webflow_item_id || await findItemBySlug(EVENTS_COLLECTION_ID, slug);
+    const isNewItem = !service.webflow_item_id;
+    let anyLive = false;
+    const pushed = {}; // locale → detail fields written this run (becomes the next diff baseline)
+
+    if (isNewItem) {
+      if (!itemId && locales) {
+        itemId = await syncWithRetry(
+          () => createItemAcrossLocales(EVENTS_COLLECTION_ID, slug, Object.values(locales)),
+          {
+            entityType: 'service', entityId: serviceId,
+            payload: { action: 'create-localized', slug }, idempotencyKey: `service:${serviceId}:create`,
+          },
+        );
+      }
+      // Both locales written as drafts and never published — the client does that.
+      for (const localeKey of localeKeys) {
+        const details = buildEventDetailFields(service, schema, localeKey || 'EN');
+        pushed[localeKey || 'default'] = details;
+        const fieldData = pruneToSchema({
+          ...buildEventCreationFields(service, slug, localeKey || 'EN'),
+          ...details,
+          ...buildEventAvailabilityFields(availability, localeKey || 'EN'),
+        }, schema);
+        itemId = await syncWithRetry(
+          () => upsertWebflowItem(EVENTS_COLLECTION_ID, itemId, slug, fieldData, {
+            cmsLocaleId: localeKey ? locales[localeKey] : undefined, isDraft: true,
+          }),
+          {
+            entityType: 'service', entityId: serviceId, payload: fieldData,
+            idempotencyKey: `service:${serviceId}:${localeKey || 'default'}`,
+          },
+        );
+      }
+    } else {
+      // Existing item: fact fields only, both locales. A published locale is re-published so the
+      // site never shows a stale date/price; a draft locale just gets the staged change.
+      for (const localeKey of localeKeys) {
+        const cmsLocaleId = localeKey ? locales[localeKey] : undefined;
+        // Send only detail fields whose value differs from what we last pushed — a field the
+        // client hand-edited in the CMS is left alone unless the app's own value for it changes.
+        const details     = source === 'job' ? {} : buildEventDetailFields(service, schema, localeKey || 'EN');
+        const previous    = service.webflow_pushed_fields?.[localeKey || 'default'];
+        const changed     = previous
+          ? Object.fromEntries(Object.entries(details).filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(previous[k])))
+          : details;
+        if (source !== 'job') pushed[localeKey || 'default'] = details;
+        const fieldData   = pruneToSchema({
+          ...changed,
+          ...buildEventAvailabilityFields(availability, localeKey || 'EN'),
+        }, schema);
+        const state       = await eventVariantState(itemId, cmsLocaleId);
+        await syncWithRetry(
+          async () => {
+            await webflowRequest('PATCH', `/collections/${EVENTS_COLLECTION_ID}/items/${itemId}`, {
+              fieldData,
+              ...(service.webflow_archived_at ? { isArchived: false } : {}),
+              ...(cmsLocaleId ? { cmsLocaleId } : {}),
+            });
+            if (state.live) await publishItems(EVENTS_COLLECTION_ID, [itemId], cmsLocaleId ? [cmsLocaleId] : undefined);
+            return itemId;
+          },
+          {
+            entityType: 'service', entityId: serviceId, payload: fieldData,
+            idempotencyKey: `service:${serviceId}:${localeKey || 'default'}`,
+          },
+        );
+        anyLive = anyLive || state.live;
+      }
+    }
+
+    await prisma.service.update({
+      where: { id: serviceId },
+      data:  {
+        webflow_item_id:     itemId,
+        webflow_slug:        slug,
+        webflow_sync_status: 'SYNCED',
+        webflow_synced_at:   new Date(),
+        webflow_sync_error:  null,
+        webflow_spots_left:  availability.spotsLeft,
+        webflow_archived_at: null,
+        ...(Object.keys(pushed).length ? { webflow_pushed_fields: pushed } : {}),
+      },
+    });
+    console.log(`[Webflow] Event ${serviceId} ${isNewItem ? 'created (draft)' : 'updated'} → ${itemId}`);
+
+    // Client notifications: a new draft is waiting in the CMS; or a published event's facts
+    // changed through an admin approval (not routine spots-left ticks or is_active toggles).
+    const notify = (kind) => sendEventCmsNotification({ kind, service })
+      .catch(err => console.error('[Webflow] Event notification failed:', err.message));
+    if (isNewItem) notify('new');
+    else if (anyLive && source === 'approval') notify('changed');
+    return itemId;
+  } catch (err) {
+    await prisma.service.update({
+      where: { id: serviceId },
+      data:  { webflow_sync_status: 'FAILED', webflow_sync_error: describeWebflowError(err).slice(0, 500) },
+    });
+    throw err;
+  }
+}
+
+// Archives (hides, does not delete) an event's Webflow item in every locale. The site is only
+// republished if a locale was actually live — archiving a never-published draft needs nothing.
+async function archiveEvent(serviceId) {
+  if (!EVENTS_COLLECTION_ID) return;
+  const service = await prisma.service.findUnique({ where: { id: serviceId } });
+  if (!service?.webflow_item_id || service.webflow_archived_at) return;
+
+  const itemId  = service.webflow_item_id;
+  const locales = await getLocaleCmsIds().catch(() => null);
+  const cmsLocaleIds = locales ? Object.values(locales) : [undefined];
+
+  try {
+    await syncWithRetry(
+      async () => {
+        let anyLive = false;
+        for (const cmsLocaleId of cmsLocaleIds) {
+          const state = await eventVariantState(itemId, cmsLocaleId);
+          await ignoreIfAlreadyGone(() => webflowRequest('PATCH', `/collections/${EVENTS_COLLECTION_ID}/items/${itemId}`, {
+            isArchived: true,
+            ...(cmsLocaleId ? { cmsLocaleId } : {}),
+          }));
+          if (state.live) {
+            anyLive = true;
+            await ignoreIfAlreadyGone(() => publishItems(EVENTS_COLLECTION_ID, [itemId], cmsLocaleId ? [cmsLocaleId] : undefined));
+          }
+        }
+        if (anyLive) await publishSite();
+      },
+      {
+        entityType: 'service', entityId: serviceId,
+        payload: { action: 'archive', webflowItemId: itemId }, idempotencyKey: `service:${serviceId}:archive`,
+      },
+    );
+    await prisma.service.update({ where: { id: serviceId }, data: { webflow_archived_at: new Date() } });
+    console.log(`[Webflow] Event ${serviceId} archived`);
+  } catch (err) {
+    console.error(`[Webflow] Failed to archive event ${serviceId}:`, err.message);
+  }
+}
+
 // Dead-letter retry dispatch: a failure row's payload.action tells us what operation to
 // replay. "delete" failures target entities that are gone from Postgres by design (GDPR
 // erasure deletes the row before the fire-and-forget Webflow call even runs), so retrying
@@ -1185,6 +1513,8 @@ module.exports = {
   syncExpert,
   syncExpertServices,
   syncService,
+  syncEvent,
+  archiveEvent,
   archiveExpert,
   deleteExpertFromWebflow,
   deleteServiceFromWebflow,
