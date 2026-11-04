@@ -79,6 +79,14 @@ const {
   parentSuspendedEmailSubject,
 } = require("./email_templates/parentSuspendedEmail");
 const {
+  platformCancelledParentEmailHtml,
+  platformCancelledParentEmailSubject,
+} = require("./email_templates/platformCancelledParentEmail");
+const {
+  expertEventCancelledConfirmationEmailHtml,
+  expertEventCancelledConfirmationEmailSubject,
+} = require("./email_templates/expertEventCancelledConfirmationEmail");
+const {
   platformCancellationEmailHtml,
   platformCancellationEmailSubject,
 } = require("./email_templates/platformCancellationEmail");
@@ -114,6 +122,9 @@ const {
   passwordChangedEmailHtml,
   passwordChangedEmailSubject,
 } = require("./email_templates/passwordChangedEmail");
+
+const { buildInvite, nextSequence, toAttachment } = require('./calendarInvite');
+const { formatEventVenue } = require('./eventVenue');
 
 const BREVO_API_URL     = 'https://api.brevo.com/v3/smtp/email';
 const BREVO_SMS_API_URL = 'https://api.brevo.com/v3/transactionalSMS/send';
@@ -151,14 +162,15 @@ const verifyEmailConnection = async () => {
 
 // ─── Base sender ─────────────────────────────────────────────────────────────
 /**
- * @param {{ to: string, subject: string, html: string, text?: string, sender?: { name: string, email: string } }} options
+ * @param {{ to: string, subject: string, html: string, text?: string, sender?: { name: string, email: string }, attachments?: { name: string, content: string }[] }} options
+ *   attachments: optional, content is base64 (see utils/calendarInvite.js toAttachment).
  */
-const sendEmail = async ({ to, subject, html, text, sender = SENDER_NOTIFICATIONS }) => {
+const sendEmail = async ({ to, subject, html, text, sender = SENDER_NOTIFICATIONS, attachments }) => {
   if (!process.env.BREVO_API_KEY) {
     throw new Error('Brevo not configured — missing BREVO_API_KEY env var');
   }
 
-  const res = await fetch(BREVO_API_URL, {
+  const post = (withAttachments) => fetch(BREVO_API_URL, {
     method: 'POST',
     headers: {
       'accept':       'application/json',
@@ -171,12 +183,79 @@ const sendEmail = async ({ to, subject, html, text, sender = SENDER_NOTIFICATION
       subject,
       textContent: text || subject,
       htmlContent: html,
+      ...(withAttachments && attachments?.length ? { attachment: attachments } : {}),
     }),
   });
+
+  let res = await post(true);
+
+  // An attachment (calendar invite) is an extra — if Brevo rejects it, still
+  // deliver the email itself rather than lose a booking confirmation.
+  if (!res.ok && attachments?.length) {
+    console.warn(`[Email] Brevo rejected the attachment (${res.status}) — resending "${subject}" without it`);
+    res = await post(false);
+  }
 
   if (!res.ok) {
     const body = await res.text();
     throw new Error(`Brevo API error ${res.status}: ${body}`);
+  }
+};
+
+// ─── Calendar invites ────────────────────────────────────────────────────────
+// One invite per recipient, built from the same fields the email already has.
+// Never throws — a calendar file must not stop the email going out.
+const FORMAT_LABEL = {
+  en: { ONLINE: 'Online session', IN_PERSON: 'In-person session', HOME_VISIT: 'Home visit' },
+  it: { ONLINE: 'Sessione online', IN_PERSON: 'Sessione di persona', HOME_VISIT: 'Visita a domicilio' },
+};
+
+/**
+ * @param {{
+ *   method: 'REQUEST'|'CANCEL', role: 'parent'|'expert', bookingId: number, eventId?: number,
+ *   to: string, recipientName?: string, scheduledAt: Date|string, durationMinutes?: number,
+ *   title: string, counterpartName?: string, format?: string, location?: string,
+ *   timezone?: string|null, language?: string,
+ * }} p
+ * @returns {{ name: string, content: string }[] | undefined}
+ */
+const bookingInvite = ({
+  method, role, bookingId, eventId, to, recipientName, scheduledAt, durationMinutes,
+  title, counterpartName, format, location, timezone, language,
+}) => {
+  try {
+    const organizerEmail = process.env.EMAIL_FROM_NOTIFICATIONS;
+    if (!organizerEmail || !to || !scheduledAt || !title || !(bookingId || eventId)) return undefined;
+
+    const lang = language === 'it' ? 'it' : 'en';
+    const start = new Date(scheduledAt);
+    // A cancellation carries no duration — calendars match it on the UID.
+    const minutes = durationMinutes > 0 ? durationMinutes : 60;
+    const domain = organizerEmail.split('@')[1];
+    // A group event is one calendar entry for the expert, but one per booking for each attendee.
+    const uid = eventId
+      ? `event-${eventId}-${role}@${domain}`
+      : `booking-${bookingId}-${role}@${domain}`;
+    const label = FORMAT_LABEL[lang][format];
+
+    return [toAttachment(buildInvite({
+      method,
+      uid,
+      sequence: nextSequence(),
+      start,
+      end: new Date(start.getTime() + minutes * 60 * 1000),
+      summary: counterpartName ? `${title} – ${counterpartName}` : title,
+      description: label,
+      location,
+      organizerEmail,
+      cancelledLabel: lang === 'it' ? 'Annullato' : 'Cancelled',
+      timezone,
+      attendeeEmail: to,
+      attendeeName: recipientName,
+    }))];
+  } catch (err) {
+    console.error(`[Calendar] invite skipped for booking ${bookingId || eventId}: ${err.message}`);
+    return undefined;
   }
 };
 
@@ -406,6 +485,7 @@ const sendBookingConfirmationEmail = ({
   const lang = language === "it" ? "it" : "en";
   return sendEmail({
     to,
+    attachments: bookingInvite({ method: 'REQUEST', role: 'parent', bookingId, to, recipientName: name, scheduledAt, durationMinutes, title: serviceTitle, counterpartName: expertName, format, location, timezone: userTimezone, language }),
     subject: bookingConfirmationEmailSubject({ language: lang, serviceTitle, expertName, scheduledAt, userTimezone }),
     text:
       lang === "it"
@@ -466,6 +546,7 @@ const sendBookingCancellationNotification = ({
       : `Hi ${expertName}, ${parentName} has cancelled their booking for ${serviceTitle}. The slot has been freed.`;
   return sendEmail({
     to,
+    attachments: bookingInvite({ method: 'CANCEL', role: 'expert', bookingId, to, recipientName: expertName, scheduledAt, title: serviceTitle, counterpartName: parentName, timezone, language }),
     subject: cancellationNotificationEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone }),
     text,
     html: cancellationNotificationEmailHtml({
@@ -524,6 +605,7 @@ const sendParentCancellationConfirmationEmail = ({
       : `Hi ${parentName}, this confirms your cancellation of the booking for ${serviceTitle} with ${expertName}.`;
   return sendEmail({
     to,
+    attachments: bookingInvite({ method: 'CANCEL', role: 'parent', bookingId, to, recipientName: parentName, scheduledAt, title: serviceTitle, counterpartName: expertName, timezone, language }),
     subject: parentCancellationConfirmationEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone }),
     text,
     html: parentCancellationConfirmationEmailHtml({
@@ -585,6 +667,7 @@ const sendNewBookingNotificationEmail = ({
       : `Hi ${expertName?.split(' ')[0] || 'there'}, you have a new booking: ${parentName} (${parentEmail}) has booked ${serviceTitle} on ${new Date(scheduledAt).toLocaleDateString("en-GB")}.`;
   return sendEmail({
     to,
+    attachments: bookingInvite({ method: 'REQUEST', role: 'expert', bookingId, to, recipientName: expertName, scheduledAt, durationMinutes, title: serviceTitle, counterpartName: parentName, format, location, timezone, language }),
     subject: newBookingNotificationEmailSubject({ language: lang, serviceTitle, parentName, scheduledAt, timezone }),
     text,
     html: newBookingNotificationEmailHtml({
@@ -715,6 +798,7 @@ const sendRefundNotificationToParent = ({
   bookingId,
   timezone,
   language,
+  cancelsBooking = false,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const locale = lang === "it" ? "it-IT" : "en-GB";
@@ -725,6 +809,9 @@ const sendRefundNotificationToParent = ({
       : `Hi ${parentName}, a ${isPartial ? "partial" : "full"} refund of ${amountStr} has been issued for your booking #${bookingId} with ${expertName}. Funds will appear within 3–5 business days.`;
   return sendEmail({
     to,
+    attachments: cancelsBooking
+      ? bookingInvite({ method: 'CANCEL', role: 'parent', bookingId, to, recipientName: parentName, scheduledAt, title: serviceTitle, counterpartName: expertName, timezone, language })
+      : undefined,
     subject: refundParentEmailSubject({ language: lang, bookingId }),
     text,
     html: refundParentEmailHtml({
@@ -817,6 +904,7 @@ const sendRescheduleNotificationEmail = ({
   newScheduledAt,
   durationMinutes,
   bookingId,
+  location,
   timezone,
   language,
 }) => {
@@ -827,6 +915,7 @@ const sendRescheduleNotificationEmail = ({
       : `Hi ${expertName}, ${parentName} has rescheduled their booking for ${serviceTitle}. The new time is ${new Date(newScheduledAt).toLocaleString("en-GB", { timeZone: timezone || "UTC" })}.`;
   return sendEmail({
     to,
+    attachments: bookingInvite({ method: 'REQUEST', role: 'expert', bookingId, to, recipientName: expertName, scheduledAt: newScheduledAt, durationMinutes, title: serviceTitle, counterpartName: parentName, format, location, timezone, language }),
     subject: rescheduleNotificationEmailSubject({ language: lang, parentName }),
     text,
     html: rescheduleNotificationEmailHtml({
@@ -984,6 +1073,7 @@ const sendExpertCancelledSessionEmail = ({
         : `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. A full refund of ${amountStr} has been issued to your original payment method.`);
   return sendEmail({
     to,
+    attachments: bookingInvite({ method: 'CANCEL', role: 'parent', bookingId, to, recipientName: parentName, scheduledAt, title: serviceTitle, counterpartName: expertName, timezone, language }),
     subject: expertCancelledSessionEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone, amount: numericAmount }),
     text,
     html: expertCancelledSessionEmailHtml({
@@ -1028,6 +1118,7 @@ const sendExpertCancellationConfirmationEmail = ({
   const lang = language === "it" ? "it" : "en";
   return sendEmail({
     to,
+    attachments: bookingInvite({ method: 'CANCEL', role: 'expert', bookingId, to, recipientName: expertName, scheduledAt, title: serviceTitle, counterpartName: parentName, timezone, language }),
     subject: expertCancellationConfirmationEmailSubject({ language: lang, serviceTitle, parentName, scheduledAt, timezone }),
     text: isFree
       ? (lang === "it"
@@ -1092,6 +1183,7 @@ const sendEventBookingConfirmationEmail = ({
       : `Hi ${parentName?.split(' ')[0] || 'there'}, your place at ${eventTitle} with ${expertName} is confirmed.`;
   return sendEmail({
     to,
+    attachments: bookingInvite({ method: 'REQUEST', role: 'parent', bookingId, to, recipientName: parentName, scheduledAt, durationMinutes, title: eventTitle, counterpartName: expertName, format, location: format === 'ONLINE' ? undefined : formatEventVenue({ event_venue_name: eventVenueName, event_address: eventAddress, event_postcode: eventPostcode, event_city: eventCity }), timezone: recipientTimezone, language }),
     subject: eventBookingConfirmationEmailSubject({ language: lang, eventTitle, scheduledAt, timezone: recipientTimezone }),
     text,
     html: eventBookingConfirmationEmailHtml({
@@ -1153,6 +1245,7 @@ const sendEventNewBookingNotificationEmail = ({
   amount,
   currency,
   bookingId,
+  eventId,
   timezone,
   language,
 }) => {
@@ -1163,6 +1256,7 @@ const sendEventNewBookingNotificationEmail = ({
       : `Hi ${expertName?.split(' ')[0] || 'there'}, ${parentName} has booked a place at your event ${eventTitle}.`;
   return sendEmail({
     to,
+    attachments: bookingInvite({ method: 'REQUEST', role: 'expert', eventId: totalSpots - spotsRemaining === 1 ? eventId : undefined, bookingId: undefined, to, recipientName: expertName, scheduledAt, durationMinutes, title: eventTitle, format, location: format === 'ONLINE' ? undefined : formatEventVenue({ event_venue_name: eventVenueName, event_address: eventAddress, event_postcode: eventPostcode, event_city: eventCity }), timezone, language }),
     subject: eventNewBookingNotificationEmailSubject({ language: lang, eventTitle, scheduledAt, timezone }),
     text,
     html: eventNewBookingNotificationEmailHtml({
@@ -1288,6 +1382,7 @@ const sendEventCancelledByExpertEmail = ({
       : `Hi ${parentName?.split(' ')[0] || 'there'}, we are sorry to let you know that ${expertName} has had to cancel ${eventTitle}.`;
   return sendEmail({
     to,
+    attachments: bookingInvite({ method: 'CANCEL', role: 'parent', bookingId, to, recipientName: parentName, scheduledAt, title: eventTitle, counterpartName: expertName, timezone: recipientTimezone, language }),
     subject: eventCancelledByExpertEmailSubject({ language: lang, eventTitle, scheduledAt, timezone: recipientTimezone }),
     text,
     html: eventCancelledByExpertEmailHtml({
@@ -1467,6 +1562,7 @@ const sendPlatformCancellationEmailToExpert = ({
         : " because the parent's account is no longer active on the platform";
   return sendEmail({
     to,
+    attachments: bookingInvite({ method: 'CANCEL', role: 'expert', bookingId, to, recipientName: expertName, scheduledAt, title: serviceTitle, counterpartName: parentName, timezone, language }),
     subject: platformCancellationEmailSubject({ language: lang, serviceTitle, parentName, scheduledAt, timezone }),
     text:
       lang === "it"
@@ -1486,6 +1582,98 @@ const sendPlatformCancellationEmailToExpert = ({
       policyUrl,
       cancellationType,
       adminReason,
+    }),
+  });
+};
+
+/**
+ * Notify a parent that Sage Nest itself cancelled one of their bookings (admin
+ * cancel from Booking Management, or parent-account suspension). Also removes
+ * the event from the parent's calendar.
+ * @param {{
+ *   to: string, parentName: string, expertName: string, serviceTitle: string,
+ *   scheduledAt: Date, bookingId: number, timezone?: string | null,
+ *   language?: 'en' | 'it', refundOutcome: 'issued' | 'none' | 'review' | 'free',
+ *   cancellationType?: 'admin_cancelled' | 'account_closure', adminReason?: string | null,
+ * }} param0
+ */
+const sendPlatformCancellationEmailToParent = ({
+  to,
+  parentName,
+  expertName,
+  serviceTitle,
+  scheduledAt,
+  bookingId,
+  timezone,
+  language,
+  refundOutcome,
+  cancellationType = "admin_cancelled",
+  adminReason,
+}) => {
+  const lang = language === "it" ? "it" : "en";
+  return sendEmail({
+    to,
+    attachments: bookingInvite({ method: 'CANCEL', role: 'parent', bookingId, to, recipientName: parentName, scheduledAt, title: serviceTitle, counterpartName: expertName, timezone, language }),
+    subject: platformCancelledParentEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone }),
+    text:
+      lang === "it"
+        ? `Ciao ${parentName?.split(' ')[0] || 'there'}, la tua prenotazione per ${serviceTitle} con ${expertName} (prenotazione #${bookingId}) è stata cancellata da Sage Nest.`
+        : `Hi ${parentName?.split(' ')[0] || 'there'}, your booking for ${serviceTitle} with ${expertName} (booking #${bookingId}) has been cancelled by Sage Nest.`,
+    html: platformCancelledParentEmailHtml({
+      parentName,
+      expertName,
+      serviceTitle,
+      scheduledAt,
+      bookingId,
+      timezone,
+      language: lang,
+      clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
+      refundOutcome,
+      cancellationType,
+      adminReason,
+    }),
+  });
+};
+
+/**
+ * Confirmation to an expert after they cancel a whole event — one email for
+ * the event (not one per attendee). Removes the event from their calendar.
+ * @param {{
+ *   to: string, expertName: string, eventTitle: string, eventId: number,
+ *   scheduledAt: Date, attendeeCount: number, timezone?: string | null, language?: 'en' | 'it',
+ * }} param0
+ */
+const sendExpertEventCancelledConfirmationEmail = ({
+  to,
+  expertName,
+  eventTitle,
+  eventId,
+  scheduledAt,
+  attendeeCount,
+  timezone,
+  language,
+}) => {
+  const lang = language === "it" ? "it" : "en";
+  return sendEmail({
+    to,
+    attachments: bookingInvite({ method: 'CANCEL', role: 'expert', eventId, to, recipientName: expertName, scheduledAt, title: eventTitle, timezone, language }),
+    subject: expertEventCancelledConfirmationEmailSubject({ language: lang, eventTitle, scheduledAt, timezone }),
+    text:
+      lang === "it"
+        ? `Ciao ${expertName?.split(' ')[0] || 'there'}, ti confermiamo la cancellazione dell'evento ${eventTitle}. ${attendeeCount} partecipanti sono stati informati e rimborsati dove applicabile.`
+        : `Hi ${expertName?.split(' ')[0] || 'there'}, this confirms that you have cancelled the event ${eventTitle}. ${attendeeCount} attendee${attendeeCount !== 1 ? 's have' : ' has'} been notified and refunded where applicable.`,
+    html: expertEventCancelledConfirmationEmailHtml({
+      expertName,
+      eventTitle,
+      scheduledAt,
+      attendeeCount,
+      timezone,
+      language: lang,
+      clientUrl: process.env.CLIENT_URL,
+      contactEmail: CONTACT_EMAIL,
+      supportEmail: SUPPORT_EMAIL,
     }),
   });
 };
@@ -1776,6 +1964,8 @@ module.exports = {
   sendEventVideoLinkMissingAlertEmail,
   sendParentSuspendedEmail,
   sendPlatformCancellationEmailToExpert,
+  sendPlatformCancellationEmailToParent,
+  sendExpertEventCancelledConfirmationEmail,
   sendAdminPayoutAlert,
   sendImLateNotification,
   sendWebflowSyncFailureAlert,

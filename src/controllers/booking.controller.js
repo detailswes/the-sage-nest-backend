@@ -18,6 +18,7 @@ const {
   sendRescheduleNotificationEmail,
   sendExpertCancelledSessionEmail,
   sendExpertCancellationConfirmationEmail,
+  sendExpertEventCancelledConfirmationEmail,
   sendImLateNotification,
   sendEventBookingConfirmationEmail,
   sendEventNewBookingNotificationEmail,
@@ -555,6 +556,7 @@ async function createBooking(req, res) {
           const spotsRemaining = Math.max(0, totalSpots - (eventBookedCount ?? 0));
           sendEventNewBookingNotificationEmail({
             to: fullBooking.expert.user.email,
+            eventId: service.id,
             expertName: fullBooking.expert.user.name,
             parentName: fullBooking.parent.name,
             eventTitle: service.title,
@@ -1406,6 +1408,10 @@ async function rescheduleBooking(req, res) {
       previousScheduledAt,
       newScheduledAt: newDate,
       durationMinutes: booking.duration_minutes,
+      // Calendar invite update: without it the expert's event would lose its address.
+      location: usesExpertAddress(booking.format)
+        ? practiceAddressLine(booking.expert, booking.expert.user.language || "en") || undefined
+        : undefined,
       bookingId: booking.id,
       timezone: booking.expert.timezone,
       language: booking.expert.user.language,
@@ -1879,6 +1885,7 @@ async function verifyPayment(req, res) {
           const spotsRemaining = Math.max(0, totalSpots - bookedCount);
           return sendEventNewBookingNotificationEmail({
             to: booking.expert.user.email,
+            eventId: booking.service_id,
             expertName: booking.expert.user.name,
             parentName: booking.parent.name,
             eventTitle: booking.service.title,
@@ -2289,6 +2296,24 @@ async function expertCancelEvent(req, res) {
     // Cancelled events are archived off the website (the 5-min event job would also catch this).
     require("../services/webflow.service").syncEvent(service.id, { source: "edit" })
       .catch(err => console.error("[Webflow] Event archive after cancel failed:", err.message));
+
+    // One confirmation for the whole event (the per-booking expert email is
+    // suppressed above). It also removes the event from the expert's calendar.
+    if (bookings.length > 0 && cancelled > 0) {
+      const { expert } = bookings[0];
+      sendExpertEventCancelledConfirmationEmail({
+        to: expert.user.email,
+        expertName: expert.user.name,
+        eventTitle: service.title,
+        eventId: service.id,
+        scheduledAt: bookings[0].scheduled_at,
+        attendeeCount: cancelled,
+        timezone: expert.timezone,
+        language: expert.user.language,
+      }).catch((e) =>
+        console.error("[Email] Expert event cancellation confirmation failed:", e.message),
+      );
+    }
 
     logAudit(req.user.id, "EVENT_CANCELLED_BY_EXPERT", "SERVICE", service.id,
       `Event #${service.id} cancelled — ${cancelled} attendee(s) refunded${failed ? `, ${failed} failed and need manual follow-up` : ""}.`);

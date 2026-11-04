@@ -336,6 +336,7 @@ async function processStripeEvent(event) {
               const spotsRemaining = Math.max(0, totalSpots - bookedCount);
               return sendEventNewBookingNotificationEmail({
                 to:              booking.expert.user.email,
+                eventId:         booking.service_id,
                 expertName:      booking.expert.user.name,
                 parentName:      booking.parent.name,
                 eventTitle:      booking.service.title,
