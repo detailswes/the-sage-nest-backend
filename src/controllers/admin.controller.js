@@ -17,6 +17,7 @@ const {
   sendRefundNotificationToExpert,
   sendParentSuspendedEmail,
   sendPlatformCancellationEmailToExpert,
+  sendPlatformCancellationEmailToParent,
   sendLegalDocumentUpdatedEmail,
 } = require("../utils/email");
 
@@ -1659,6 +1660,9 @@ async function adminCancelBooking(req, res) {
       const hoursUntilSession = (booking.scheduled_at.getTime() - cancelledAt.getTime()) / (1000 * 60 * 60);
       const tierAtCancellation = hoursUntilSession >= 24 ? 100 : hoursUntilSession >= 12 ? 50 : 0;
       const refundPercent = Math.min(tierAtCancellation, booking.min_refund_percent);
+      // Set by every branch where the refund email below does NOT go out, so the
+      // parent still hears about the cancellation (and the calendar event is removed).
+      let parentCancelOutcome = null;
 
       if (transferDone) {
         // Funds already with expert — cancel but do NOT auto-refund; flag for manual review.
@@ -1671,6 +1675,7 @@ async function adminCancelBooking(req, res) {
             internal_admin_note: "Admin cancelled after payout completed. Manual refund decision required — expert may be owed compensation.",
           },
         });
+        parentCancelOutcome = "review";
       } else if (refundPercent > 0) {
         let chargeId = booking.stripe_charge_id;
         if (!chargeId) {
@@ -1723,6 +1728,7 @@ async function adminCancelBooking(req, res) {
                 bookingId:    booking.id,
                 timezone:     booking.parent?.timezone || booking.expert?.timezone,
                 language:     booking.parent?.language,
+                cancelsBooking: true, // this is the admin-cancel path — also removes the calendar event
               });
             } catch (emailErr) {
               console.error("[ADMIN] Failed to send refund email to parent:", emailErr.message);
@@ -1738,6 +1744,7 @@ async function adminCancelBooking(req, res) {
                   transfer_status:     "skipped",
                 },
               });
+              parentCancelOutcome = "issued";
             } else {
               await prisma.booking.update({
                 where: { id: booking.id },
@@ -1750,6 +1757,7 @@ async function adminCancelBooking(req, res) {
                 },
               });
               console.error(`[adminCancelBooking] Stripe refund failed for booking ${booking.id}:`, stripeErr.message);
+              parentCancelOutcome = "review";
             }
           }
         } else {
@@ -1763,6 +1771,7 @@ async function adminCancelBooking(req, res) {
               transfer_status:     "skipped",
             },
           });
+          parentCancelOutcome = "none";
         }
       } else {
         // 0% tier (cancelled <12h before session) — legitimately no refund.
@@ -1775,6 +1784,25 @@ async function adminCancelBooking(req, res) {
             transfer_status:     "skipped",
           },
         });
+        parentCancelOutcome = "none";
+      }
+
+      if (parentCancelOutcome) {
+        sendPlatformCancellationEmailToParent({
+          to:               booking.parent.email,
+          parentName:       booking.parent.name,
+          expertName:       booking.expert?.user?.name || "your specialist",
+          serviceTitle:     booking.service?.title || "the session",
+          scheduledAt:      booking.scheduled_at,
+          bookingId:        booking.id,
+          timezone:         booking.parent?.timezone || booking.expert?.timezone,
+          language:         booking.parent?.language,
+          refundOutcome:    parentCancelOutcome,
+          cancellationType: "admin_cancelled",
+          adminReason:      reason.trim(),
+        }).catch((e) =>
+          console.error("[ADMIN] Failed to send cancellation email to parent:", e.message)
+        );
       }
 
       // Notify the expert that Sage Nest cancelled this booking — sent
@@ -1815,6 +1843,47 @@ async function adminCancelBooking(req, res) {
           transfer_status:     "skipped",
         },
       });
+
+      // A free CONFIRMED booking lands here too (no payment intent). Its parent and
+      // expert both have a calendar event, so both still need the cancellation.
+      // PENDING_PAYMENT never reached the calendar and needs no email.
+      if (booking.status === "CONFIRMED") {
+        sendPlatformCancellationEmailToParent({
+          to:               booking.parent.email,
+          parentName:       booking.parent.name,
+          expertName:       booking.expert?.user?.name || "your specialist",
+          serviceTitle:     booking.service?.title || "the session",
+          scheduledAt:      booking.scheduled_at,
+          bookingId:        booking.id,
+          timezone:         booking.parent?.timezone || booking.expert?.timezone,
+          language:         booking.parent?.language,
+          refundOutcome:    "free",
+          cancellationType: "admin_cancelled",
+          adminReason:      reason.trim(),
+        }).catch((e) =>
+          console.error("[ADMIN] Failed to send cancellation email to parent:", e.message)
+        );
+        if (booking.expert?.user?.email) {
+          const expertLanguage = booking.expert.user.language || "en";
+          getLegalDocLinks(expertLanguage).then(({ policyUrl }) =>
+            sendPlatformCancellationEmailToExpert({
+              to:           booking.expert.user.email,
+              expertName:   booking.expert.user.name,
+              parentName:   booking.parent.name,
+              serviceTitle: booking.service?.title || "the session",
+              scheduledAt:  booking.scheduled_at,
+              bookingId:    booking.id,
+              timezone:     booking.expert?.timezone,
+              language:     expertLanguage,
+              policyUrl,
+              cancellationType: "admin_cancelled",
+              adminReason:  reason.trim(),
+            })
+          ).catch((e) =>
+            console.error("[ADMIN] Failed to send cancellation email to expert:", e.message)
+          );
+        }
+      }
     }
 
     await logAudit(req.user.id, "CANCEL_BOOKING", "BOOKING", booking.id, reason.trim());
@@ -2932,6 +3001,7 @@ async function suspendParent(req, res) {
       expertTimezone: booking.expert?.timezone,
       expertLanguage: booking.expert?.user?.language,
       parentName: user.name,
+      free: !(parseFloat(booking.amount) > 0),
       serviceTitle: booking.service?.title,
       scheduledAt: booking.scheduled_at,
       refundIssued: false,
@@ -3129,6 +3199,26 @@ async function suspendParent(req, res) {
           )
         );
       }
+    }
+
+    // Step 4b: one cancellation email per booking to the parent, so each event
+    // leaves their calendar (fire-and-forget). The suspension email below is a
+    // single summary and carries no calendar file.
+    for (const b of cancelledBookings) {
+      sendPlatformCancellationEmailToParent({
+        to: user.email,
+        parentName: user.name,
+        expertName: b.expertName || "your specialist",
+        serviceTitle: b.serviceTitle || "the session",
+        scheduledAt: b.scheduledAt,
+        bookingId: b.id,
+        timezone: user.timezone || b.expertTimezone,
+        language: user.language,
+        refundOutcome: b.manualRequired ? "review" : b.refundIssued ? "issued" : b.free ? "free" : "none",
+        cancellationType: "account_closure",
+      }).catch((e) =>
+        console.error(`[Email] Parent cancellation email failed for booking ${b.id}:`, e.message)
+      );
     }
 
     // Step 5: email parent (fire-and-forget)
