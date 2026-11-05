@@ -1143,7 +1143,7 @@ async function deleteServiceFromWebflow(serviceId, webflowItemId) {
 //     Of those, only fields whose app-side value CHANGED since the last push are sent
 //     (webflow_pushed_fields), so a hand edit in the CMS survives unrelated edits.
 //     Images, topics, micro-hubs, co-hosts, FAQ etc. are never touched.
-//   • Sold-out events stay visible (flagged); cancelled/deactivated and past events are
+//   • Sold-out events stay visible (Spots Left 0 + the Sold out switch); cancelled/deactivated and past events are
 //     archived (never deleted, so she can reuse the content).
 
 // Webflow field slugs in the Events collection (verified against the live collection schema).
@@ -1173,7 +1173,6 @@ const EVENT_FIELD = {
 const EVENT_BOOKED_STATUSES = ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'];
 
 const EVENT_FREE_LABEL     = { EN: 'Free',     IT: 'Gratuito' };
-const EVENT_SOLD_OUT_LABEL = { EN: 'Sold out', IT: 'Esaurito' };
 
 let _eventSchema; // { at, value }
 async function getEventSchema() {
@@ -1240,9 +1239,11 @@ async function eventAvailability(service) {
 
 // Availability only — what the 5-minute job pushes, so routine ticks never overwrite
 // anything the client may have edited in the CMS.
-function buildEventAvailabilityFields({ spotsLeft, soldOut }, localeKey) {
+function buildEventAvailabilityFields({ spotsLeft, soldOut }) {
   return {
-    [EVENT_FIELD.spotsLeft]: soldOut ? (EVENT_SOLD_OUT_LABEL[localeKey] || EVENT_SOLD_OUT_LABEL.EN) : String(spotsLeft),
+    // Plain number (0 when full) — the Sold out switch drives the badge, so the page
+    // shows "Sold out" exactly once.
+    [EVENT_FIELD.spotsLeft]: String(spotsLeft),
     [EVENT_FIELD.soldOut]:   soldOut,
   };
 }
