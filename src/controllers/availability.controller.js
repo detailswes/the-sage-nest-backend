@@ -112,9 +112,13 @@ async function getAvailableSlots(req, res) {
     const dayEnd   = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
 
     const blockouts = await prisma.availabilityBlock.findMany({
+      // `date` is a @db.Date (calendar date, stored as UTC midnight). Match it on
+      // the calendar date itself — comparing against the expert's local-day UTC
+      // timestamps makes Postgres truncate them to the *previous* UTC date for
+      // zones ahead of UTC, so each day would pick up the prior day's blockouts.
       where: {
         expert_id: expert.id,
-        date: { gte: dayStart, lt: dayEnd },
+        date: targetDateUTC,
       },
     });
 
@@ -447,7 +451,7 @@ async function getAvailableDatesInMonth(req, res) {
       const dayStart = zonedToUTC(y, m, d, 0, 0, tz);
       const dayEnd   = new Date(dayStart.getTime() + 24 * 60 * 60 * 1000);
 
-      const dayBlockouts = blockouts.filter((b) => b.date >= dayStart && b.date < dayEnd);
+      const dayBlockouts = blockouts.filter((b) => b.date.getTime() === targetDateUTC.getTime());
       if (dayBlockouts.some((b) => b.start_time === null)) continue; // full-day blockout
 
       const dayBookings = existingBookings.filter(
