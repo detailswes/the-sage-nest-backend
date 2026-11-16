@@ -1508,7 +1508,7 @@ async function disable2FA(req, res) {
 async function getLegalVersions(req, res) {
   try {
     const select = { version: true, effective_from: true, file_url_en: true, file_url_it: true };
-    const [pp, tc, cp, et, ep] = await Promise.all([
+    const [pp, tc, cp, et, ep, ev] = await Promise.all([
       prisma.legalDocument.findFirst({
         where: { type: "PRIVACY_POLICY" },
         orderBy: { effective_from: "desc" },
@@ -1534,6 +1534,11 @@ async function getLegalVersions(req, res) {
         orderBy: { effective_from: "desc" },
         select,
       }),
+      prisma.legalDocument.findFirst({
+        where: { type: "EVENT_TERMS" },
+        orderBy: { effective_from: "desc" },
+        select,
+      }),
     ]);
     return res.json({
       privacy_policy: pp,
@@ -1541,6 +1546,7 @@ async function getLegalVersions(req, res) {
       cancellation_policy: cp,
       expert_terms_conditions: et,
       expert_privacy_notice: ep,
+      event_terms: ev,
     });
   } catch (err) {
     console.error(err);

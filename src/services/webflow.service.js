@@ -15,6 +15,10 @@ const LANGUAGES_COL_ID      = process.env.WEBFLOW_LANGUAGES_COLLECTION_ID;
 const LOCATIONS_COL_ID      = process.env.WEBFLOW_LOCATIONS_COLLECTION_ID;
 const CERTIFICATIONS_COL_ID = process.env.WEBFLOW_CERTIFICATIONS_COLLECTION_ID;
 const CATEGORIES_COL_ID     = process.env.WEBFLOW_CATEGORIES_COLLECTION_ID;
+// Slug of a Number field on the Services collection that carries the expert's chosen
+// order. Opt-in: sending a field that doesn't exist in Webflow makes every service
+// sync fail with a 400, so it is only pushed once this env var is set.
+const SERVICE_SORT_FIELD     = process.env.WEBFLOW_SERVICE_SORT_FIELD;
 const SESSION_TYPES_COL_ID  = process.env.WEBFLOW_SESSION_TYPES_COLLECTION_ID;
 
 // Public-site labels for each delivery format, per Webflow locale.
@@ -574,6 +578,7 @@ async function buildServiceFields(service, expertId, expertWebflowItemId) {
   // 'format' is locale-dependent (see serviceFormatLabel) and is set per-locale
   // in syncService's localeFieldData below, not here.
   if (expertWebflowItemId)      fields['expert']      = expertWebflowItemId;
+  if (SERVICE_SORT_FIELD)       fields[SERVICE_SORT_FIELD] = service.sort_order ?? 0;
 
   // Postal codes / areas covered for a Home Visit service. Always set (not just
   // when truthy) so switching a service away from HOME_VISIT clears any stale
