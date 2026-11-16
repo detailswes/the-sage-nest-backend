@@ -25,6 +25,14 @@
 const WORDING = {
   en: {
     terms: "I have read and accept the Consumer Terms and the Cancellation and Rescheduling Policy.",
+    eventTerms: "I have read and accept the Consumer Terms and the Event Terms.",
+    eventWithdrawal: "I understand that this event takes place on a specific date and that the 14-day right of withdrawal does not apply. My cancellation options are shown in the summary and in the Event Terms.",
+    eventWithdrawalExpander: "By law, the 14-day right of withdrawal does not apply to events on a fixed date, because your place is reserved for you and cannot be reallocated at the last minute. You can still cancel with a full refund up to 7 days before.",
+    healthConsentEvent: {
+      label: "Consent to processing",
+      body: "I expressly consent to Sage Nest processing health data relating to my booking in order to manage my participation in the event, event communications and the related payments. I understand I can withdraw my consent at any time.",
+      helper: "You can withdraw your consent at any time by writing to hello@sagenest.org. Withdrawing before the event cancels your booking. It does not delete the tax and accounting records we are required to keep.",
+    },
     withdrawal: "The session is booked within the next 14 days. I ask that it goes ahead on the date I chose, before the withdrawal period ends, and accept that I lose the right of withdrawal once the session has taken place.",
     withdrawalExpander: "By law you have 14 days from confirming a booking to change your mind and get a refund. Your chosen date falls inside those 14 days, so we need you to confirm you still want it. Nothing changes about your session time. Once it has taken place, the 14-day right no longer applies.",
     withdrawalConfirmedEmail: "When you completed your booking, your session was within the next 14 days. You asked for it to go ahead on the date you chose, before the withdrawal period ended, and accepted that you would lose the right of withdrawal once the session had taken place.",
@@ -42,7 +50,15 @@ const WORDING = {
     },
   },
   it: {
-    terms: "Ho letto e accetto i Termini di Consumo e le Condizioni di Cancellazione e Modifica della Prenotazione.",
+    terms: "Ho letto e accetto i Termini per il Consumatore e le Condizioni di Cancellazione e Modifica della Prenotazione.",
+    eventTerms: "Ho letto e accetto i Termini per il Consumatore e i Termini Eventi.",
+    eventWithdrawal: "Prendo atto che l'evento si svolge in una data specifica e che il diritto di recesso di 14 giorni non si applica (art. 59, comma 1, lett. n), Codice del Consumo). Le mie possibilità di cancellazione sono indicate nel riepilogo e nei Termini Eventi.",
+    eventWithdrawalExpander: "Per legge il diritto di recesso di 14 giorni non si applica agli eventi in una data fissa, perché il tuo posto viene riservato e non può essere riassegnato all'ultimo momento. Puoi comunque cancellare con rimborso totale fino a 7 giorni prima.",
+    healthConsentEvent: {
+      label: "Consenso al trattamento",
+      body: "Acconsento espressamente al trattamento da parte di Sage Nest dei dati sanitari relativi alla mia prenotazione, per gestire la partecipazione all'evento, le comunicazioni relative all'evento e i relativi pagamenti. Ho compreso di poter revocare il consenso in qualsiasi momento.",
+      helper: "Puoi revocare il consenso in qualsiasi momento scrivendo a hello@sagenest.org. La revoca prima dell'evento comporta la cancellazione della prenotazione. Non elimina i documenti fiscali e contabili che siamo tenuti a conservare.",
+    },
     withdrawal: "La sessione è prenotata entro i prossimi 14 giorni. Chiedo che si svolga alla data scelta, prima della scadenza del periodo di recesso, e accetto di perdere il diritto di recesso una volta che la sessione è stata erogata.",
     withdrawalExpander: "Per legge hai 14 giorni dalla conferma per cambiare idea e ottenere il rimborso. La data che hai scelto rientra in questi 14 giorni, quindi ci serve la tua conferma. L'orario della sessione non cambia. Una volta svolta, il diritto di recesso non si applica più.",
     withdrawalConfirmedEmail: "Al momento della prenotazione, la tua sessione era prevista entro i 14 giorni successivi. Hai chiesto che si svolgesse alla data scelta, prima della scadenza del periodo di recesso, e hai accettato di perdere il diritto di recesso una volta che la sessione si fosse svolta.",
@@ -65,13 +81,22 @@ const WORDING = {
 // tc_version/withdrawal (which have their own versioning via LegalDocument).
 const HEALTH_CONSENT_VERSION = "v1";
 
-function getConsentWording(language) {
-  return WORDING[language] || WORDING.en;
+// Events have their own checkout copy (Event Checkout spec, Nov 2026): the
+// terms checkbox names Consumer + Event Terms, and the 14-day withdrawal
+// consent is replaced by an acknowledgement that withdrawal does not apply.
+// `terms`/`withdrawal`/`withdrawalExpander` are swapped so callers can
+// snapshot them exactly as for sessions.
+function getConsentWording(language, isEvent = false) {
+  const dict = WORDING[language] || WORDING.en;
+  return isEvent
+    ? { ...dict, terms: dict.eventTerms, withdrawal: dict.eventWithdrawal, withdrawalExpander: dict.eventWithdrawalExpander }
+    : dict;
 }
 
 // flow: "A" | "B"
-function getHealthConsentWording(language, flow) {
+function getHealthConsentWording(language, flow, isEvent = false) {
   const dict = WORDING[language] || WORDING.en;
+  if (isEvent) return dict.healthConsentEvent;
   return flow === "B" ? dict.healthConsentFlowB : dict.healthConsentFlowA;
 }
 

@@ -356,6 +356,9 @@ model BookingConsent {
   tc_accepted                       Boolean   @default(true)
   tc_version                        String
   tc_accepted_at                    DateTime
+  // Events only: version of the Event Terms accepted alongside the Consumer
+  // Terms (tc_version). Null for 1:1 session bookings.
+  event_terms_version               String?
   terms_wording_snapshot            String
   cancellation_policy_version       String?
   withdrawal_applicable             Boolean   @default(false)

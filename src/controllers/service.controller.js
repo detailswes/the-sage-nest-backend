@@ -711,6 +711,29 @@ async function reorderServices(req, res) {
       )
     );
 
+    // Fire-and-forget: push the new order to Webflow (no-op unless the Services
+    // collection has the sort field configured — see WEBFLOW_SERVICE_SORT_FIELD).
+    if (process.env.WEBFLOW_SERVICE_SORT_FIELD) {
+      (async () => {
+        try {
+          const expert = await prisma.expert.findUnique({
+            where:  { id: expert_id },
+            select: { status: true, webflow_item_id: true },
+          });
+          if (expert?.status !== 'APPROVED' || !expert?.webflow_item_id) return;
+          const svcs = await prisma.service.findMany({
+            where:  { id: { in: ids }, is_active: true, cluster: { not: 'EVENT' }, webflow_item_id: { not: null } },
+            select: { id: true },
+          });
+          for (const svc of svcs) {
+            await webflowService.syncService(svc.id, expert_id, expert.webflow_item_id);
+          }
+        } catch (err) {
+          console.error('[Webflow] Service sync after reorder failed:', err.message);
+        }
+      })();
+    }
+
     return res.json({ message: 'Services reordered' });
   } catch (err) {
     console.error(err);

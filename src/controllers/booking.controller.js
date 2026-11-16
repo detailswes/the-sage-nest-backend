@@ -208,12 +208,16 @@ async function createBooking(req, res) {
         });
     }
 
-    const [currentTcDoc, currentPpDoc, currentCancellationDoc] = await Promise.all([
-      // Events run on their own terms, separate from the 1:1 session T&Cs.
+    const [currentTcDoc, currentEventTermsDoc, currentPpDoc, currentCancellationDoc] = await Promise.all([
       prisma.legalDocument.findFirst({
-        where: { type: isEvent ? "EVENT_TERMS" : "TERMS_CONDITIONS" },
+        where: { type: "TERMS_CONDITIONS" },
         orderBy: { effective_from: "desc" },
       }),
+      // Events are booked under the Consumer Terms plus the Event Terms, which
+      // replace the Cancellation Policy for events.
+      isEvent
+        ? prisma.legalDocument.findFirst({ where: { type: "EVENT_TERMS" }, orderBy: { effective_from: "desc" } })
+        : null,
       prisma.legalDocument.findFirst({
         where: { type: "PRIVACY_POLICY" },
         orderBy: { effective_from: "desc" },
@@ -224,18 +228,23 @@ async function createBooking(req, res) {
       }),
     ]);
 
-    // Withdrawal (14-day cooling-off) consent and invoicing only make sense
-    // where money actually changes hands — a free booking has nothing to
-    // withdraw from and nothing to invoice.
+    // Sessions: 14-day cooling-off consent, only where money changes hands.
+    // Events: the right of withdrawal never applies (Art. 16(l) Dir. 2011/83/EU),
+    // so a paid event instead needs an acknowledgement of that fact. Either way
+    // it's stored in the withdrawal_* columns; `withdrawal_applicable` stays
+    // false for events so emails don't show withdrawal instructions.
     const withdrawalApplicable =
-      !isFreeBooking && scheduledDate.getTime() - Date.now() <= WITHDRAWAL_WINDOW_MS;
-    if (withdrawalApplicable && withdrawalAccepted !== true) {
+      !isEvent && !isFreeBooking && scheduledDate.getTime() - Date.now() <= WITHDRAWAL_WINDOW_MS;
+    const withdrawalAcknowledgementRequired = isEvent && !isFreeBooking;
+    if ((withdrawalApplicable || withdrawalAcknowledgementRequired) && withdrawalAccepted !== true) {
       return res.status(400).json({
-        error:
-          "You must confirm the early-performance / withdrawal consent before proceeding.",
+        error: withdrawalAcknowledgementRequired
+          ? "You must acknowledge that the right of withdrawal does not apply to events before proceeding."
+          : "You must confirm the early-performance / withdrawal consent before proceeding.",
         withdrawal_required: true,
       });
     }
+    const withdrawalRecorded = withdrawalApplicable || withdrawalAcknowledgementRequired;
 
     // ── Billing details (booking flow spec v1.7 §5.1) ───────────────────────
     // Billing trigger is the EXPERT's country, never the parent's — an Italian
@@ -324,8 +333,8 @@ async function createBooking(req, res) {
     const currency = (service.currency || "EUR").toLowerCase();
 
     const consentLanguage = normalizeConsentLanguage(language);
-    const consentWording  = getConsentWording(consentLanguage);
-    const healthConsentWording = healthConsentRequired ? getHealthConsentWording(consentLanguage, healthConsentFlow) : null;
+    const consentWording  = getConsentWording(consentLanguage, isEvent);
+    const healthConsentWording = healthConsentRequired ? getHealthConsentWording(consentLanguage, healthConsentFlow, isEvent) : null;
 
     let booking;
     let eventNowFull = false;
@@ -402,13 +411,15 @@ async function createBooking(req, res) {
             tc_accepted: true,
             tc_version: currentTcDoc?.version ?? "unversioned",
             tc_accepted_at: now,
+            event_terms_version: isEvent ? (currentEventTermsDoc?.version ?? "unversioned") : null,
             terms_wording_snapshot: consentWording.terms,
-            cancellation_policy_version: currentCancellationDoc?.version ?? null,
+            // Events have no Cancellation Policy — Event Terms §6–7 apply instead.
+            cancellation_policy_version: isEvent ? null : (currentCancellationDoc?.version ?? null),
             withdrawal_applicable: withdrawalApplicable,
-            withdrawal_accepted: withdrawalApplicable,
-            withdrawal_accepted_at: withdrawalApplicable ? now : null,
-            withdrawal_wording_snapshot: withdrawalApplicable ? consentWording.withdrawal : null,
-            withdrawal_expander_snapshot: withdrawalApplicable ? consentWording.withdrawalExpander : null,
+            withdrawal_accepted: withdrawalRecorded,
+            withdrawal_accepted_at: withdrawalRecorded ? now : null,
+            withdrawal_wording_snapshot: withdrawalRecorded ? consentWording.withdrawal : null,
+            withdrawal_expander_snapshot: withdrawalRecorded ? consentWording.withdrawalExpander : null,
             privacy_policy_version_displayed: currentPpDoc?.version ?? null,
             marketing_consent: marketingConsent === true,
             language: consentLanguage,

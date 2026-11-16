@@ -1960,7 +1960,7 @@ async function updateBookingNote(req, res) {
 
 const LEGAL_DOC_TYPES = [
   "PRIVACY_POLICY", "TERMS_CONDITIONS", "CANCELLATION_POLICY",
-  "EXPERT_TERMS_CONDITIONS", "EXPERT_PRIVACY_NOTICE",
+  "EXPERT_TERMS_CONDITIONS", "EXPERT_PRIVACY_NOTICE", "EVENT_TERMS",
 ];
 
 // Cancellation Policy has no standalone acceptance ledger — it's covered by the
@@ -1972,6 +1972,15 @@ async function acceptanceCountsFor(type) {
   }
   if (type === "TERMS_CONDITIONS") {
     return prisma.tcAcceptance.groupBy({ by: ["version", "language"], _count: { version: true } });
+  }
+  if (type === "EVENT_TERMS") {
+    // No per-user ledger for Event Terms — the per-booking consent snapshot
+    // (event_terms_version) is the acceptance record.
+    return prisma.bookingConsent.groupBy({
+      by: ["event_terms_version", "language"],
+      where: { event_terms_version: { not: null } },
+      _count: { event_terms_version: true },
+    }).then((rows) => rows.map((r) => ({ version: r.event_terms_version, language: r.language, _count: { version: r._count.event_terms_version } })));
   }
   return [];
 }
@@ -1994,20 +2003,23 @@ const enrichDocs = (docs, countMap) => docs.map((d) => ({
 
 async function getLegalDocuments(req, res) {
   try {
-    const [ppDocs, tcDocs, cpDocs, etDocs, epDocs, ppCounts, tcCounts] = await Promise.all([
+    const [ppDocs, tcDocs, cpDocs, etDocs, epDocs, evDocs, ppCounts, tcCounts, evCounts] = await Promise.all([
       prisma.legalDocument.findMany({ where: { type: "PRIVACY_POLICY" },     orderBy: { effective_from: "desc" } }),
       prisma.legalDocument.findMany({ where: { type: "TERMS_CONDITIONS" },   orderBy: { effective_from: "desc" } }),
       prisma.legalDocument.findMany({ where: { type: "CANCELLATION_POLICY" }, orderBy: { effective_from: "desc" } }),
       prisma.legalDocument.findMany({ where: { type: "EXPERT_TERMS_CONDITIONS" }, orderBy: { effective_from: "desc" } }),
       prisma.legalDocument.findMany({ where: { type: "EXPERT_PRIVACY_NOTICE" },   orderBy: { effective_from: "desc" } }),
+      prisma.legalDocument.findMany({ where: { type: "EVENT_TERMS" },           orderBy: { effective_from: "desc" } }),
       acceptanceCountsFor("PRIVACY_POLICY"),
       acceptanceCountsFor("TERMS_CONDITIONS"),
+      acceptanceCountsFor("EVENT_TERMS"),
     ]);
 
     return res.json({
       privacy_policy:           enrichDocs(ppDocs, toCountMap(ppCounts)),
       terms_conditions:         enrichDocs(tcDocs, toCountMap(tcCounts)),
       cancellation_policy:      enrichDocs(cpDocs, {}),
+      event_terms:              enrichDocs(evDocs, toCountMap(evCounts)),
       // No acceptance ledger for expert documents — account creation date is
       // the record of when an expert agreed to these, per product decision.
       expert_terms_conditions:  enrichDocs(etDocs, {}),
