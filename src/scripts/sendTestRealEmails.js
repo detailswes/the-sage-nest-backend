@@ -104,7 +104,7 @@ async function main() {
     await email.sendEventBookingConfirmationEmail({
       ...common, to: PARENT, parentName: 'Test Parent', expertName: 'Test Expert', eventTitle: `${T}Weaning workshop`,
       format: 'IN_PERSON', scheduledAt: first, eventVenueName: 'Test venue', eventAddress: 'Via Roma 1',
-      eventPostcode: '00100', eventCity: 'Roma', amount: 0, currency: 'EUR', withdrawalApplicable: false,
+      eventPostcode: '00100', eventCity: 'Roma', amount: 0, currency: 'EUR',
       recipientTimezone: parentTz, eventTermsUrl: policyUrl,
     });
     await email.sendEventNewBookingNotificationEmail({

@@ -1974,13 +1974,22 @@ async function acceptanceCountsFor(type) {
     return prisma.tcAcceptance.groupBy({ by: ["version", "language"], _count: { version: true } });
   }
   if (type === "EVENT_TERMS") {
-    // No per-user ledger for Event Terms — the per-booking consent snapshot
-    // (event_terms_version) is the acceptance record.
-    return prisma.bookingConsent.groupBy({
-      by: ["event_terms_version", "language"],
+    // Same semantics as the Consumer T&C ledger — one acceptance per user per
+    // version (first language kept) — derived from the per-booking consent
+    // snapshots rather than a separate table.
+    const rows = await prisma.bookingConsent.findMany({
       where: { event_terms_version: { not: null } },
-      _count: { event_terms_version: true },
-    }).then((rows) => rows.map((r) => ({ version: r.event_terms_version, language: r.language, _count: { version: r._count.event_terms_version } })));
+      distinct: ["user_id", "event_terms_version"],
+      orderBy: { created_at: "asc" },
+      select: { event_terms_version: true, language: true },
+    });
+    const grouped = {};
+    for (const r of rows) {
+      const key = `${r.event_terms_version}|${r.language}`;
+      grouped[key] ??= { version: r.event_terms_version, language: r.language, _count: { version: 0 } };
+      grouped[key]._count.version += 1;
+    }
+    return Object.values(grouped);
   }
   return [];
 }
