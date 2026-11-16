@@ -390,7 +390,12 @@ async function createBooking(req, res) {
 
         // Durable per-version ledger (still used by admin acceptance counts) —
         // kept alongside, but no longer what gates the checkbox on the frontend.
-        if (currentTcDoc) {
+        // Sessions only: this ledger drives the admin "Terms & Conditions
+        // (1:1 Sessions)" count and the parent's per-booking terms history, so
+        // event bookings stay out of it. Events record the Consumer Terms
+        // version on BookingConsent.tc_version and the Event Terms version on
+        // BookingConsent.event_terms_version instead.
+        if (currentTcDoc && !isEvent) {
           await tx.tcAcceptance.upsert({
             where: {
               user_id_version: { user_id: req.user.id, version: currentTcDoc.version },
@@ -502,7 +507,6 @@ async function createBooking(req, res) {
               eventCity: service.event_city,
               amount: fullBooking.amount,
               currency: fullBooking.currency,
-              withdrawalApplicable: fullBooking.consent?.withdrawal_applicable,
               bookingId: fullBooking.id,
               recipientTimezone: fullBooking.parent.timezone || fullBooking.expert.timezone,
               language: parentConfirmationLanguage,
@@ -1818,7 +1822,6 @@ async function verifyPayment(req, res) {
             eventCity: booking.service.event_city,
             amount: booking.amount,
             currency: booking.currency,
-            withdrawalApplicable: booking.consent?.withdrawal_applicable,
             bookingId: booking.id,
             recipientTimezone: booking.parent.timezone || booking.expert.timezone,
             language: confirmationLanguage,

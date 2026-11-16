@@ -15,7 +15,6 @@ const COPY = {
     onlineBody: (supportEmail) =>
       `You will receive the video link in a reminder email 24 hours before the event. If you have not received it by then, please contact us at <a href="mailto:${supportEmail}" style="color:#445446;">${supportEmail}</a>. The link is personal: please do not share it.`,
     paymentHeading: "Amount paid",
-    withdrawalNote: "You asked for the event to take place within the 14-day withdrawal period, and you acknowledged that you lose your right of withdrawal once the event has taken place.",
     freeHeading: "Price",
     freeBody: "This is a complimentary event, so no payment was taken.",
     aboutHeading: "About the event",
@@ -42,7 +41,6 @@ const COPY = {
     onlineBody: (supportEmail) =>
       `Riceverai il link della videochiamata in un'email di promemoria 24 ore prima dell'evento. Se non l'hai ricevuto entro quel momento, scrivici a <a href="mailto:${supportEmail}" style="color:#445446;">${supportEmail}</a>. Il link è personale: ti chiediamo di non condividerlo.`,
     paymentHeading: "Importo pagato",
-    withdrawalNote: "Hai chiesto che l'evento si svolga durante il periodo di recesso di 14 giorni e hai preso atto che perdi il diritto di recesso una volta che l'evento si è svolto.",
     freeHeading: "Prezzo",
     freeBody: "Questo è un evento gratuito, quindi non è stato addebitato alcun importo.",
     aboutHeading: "L'evento",
@@ -74,7 +72,7 @@ function formatPrice(amount, currency, language) {
  *   parentName: string, expertName: string, eventTitle: string, eventDescription?: string,
  *   format: 'ONLINE' | 'IN_PERSON', scheduledAt: Date, durationMinutes: number,
  *   eventVenueName?: string, eventAddress?: string, eventPostcode?: string, eventCity?: string,
- *   amount?: number | string | null, currency?: string, withdrawalApplicable?: boolean,
+ *   amount?: number | string | null, currency?: string,
  *   bookingId: number, recipientTimezone?: string | null, language?: 'en' | 'it',
  *   clientUrl: string, contactEmail: string, supportEmail: string, eventTermsUrl: string,
  * }} params
@@ -93,7 +91,6 @@ const eventBookingConfirmationEmailHtml = ({
   eventCity,
   amount,
   currency,
-  withdrawalApplicable,
   bookingId,
   recipientTimezone,
   language,
@@ -192,8 +189,7 @@ const eventBookingConfirmationEmailHtml = ({
           <p style="margin:0 0 10px;font-size:11px;font-weight:700;text-transform:uppercase;color:#445446;letter-spacing:0.8px;">${isFree ? t.freeHeading : t.paymentHeading}</p>
           ${isFree ? `
           <p style="margin:0 0 24px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.freeBody}</p>` : `
-          <p style="margin:0 0 ${withdrawalApplicable ? "12px" : "24px"};font-size:14px;color:#5e6d5b;line-height:1.6;"><strong>${priceStr}</strong></p>
-          ${withdrawalApplicable ? `<p style="margin:0 0 24px;font-size:14px;color:#5e6d5b;line-height:1.6;">${t.withdrawalNote}</p>` : ""}`}
+          <p style="margin:0 0 24px;font-size:14px;color:#5e6d5b;line-height:1.6;"><strong>${priceStr}</strong></p>`}
 
           <!-- About the event -->
           ${eventDescription ? `
