@@ -578,7 +578,8 @@ async function buildServiceFields(service, expertId, expertWebflowItemId) {
   // 'format' is locale-dependent (see serviceFormatLabel) and is set per-locale
   // in syncService's localeFieldData below, not here.
   if (expertWebflowItemId)      fields['expert']      = expertWebflowItemId;
-  if (SERVICE_SORT_FIELD)       fields[SERVICE_SORT_FIELD] = service.sort_order ?? 0;
+  // sort_order is 0-based, but the Webflow field enforces a minimum of 1 — a 0 would 400 the whole sync.
+  if (SERVICE_SORT_FIELD)       fields[SERVICE_SORT_FIELD] = (service.sort_order ?? 0) + 1;
 
   // Postal codes / areas covered for a Home Visit service. Always set (not just
   // when truthy) so switching a service away from HOME_VISIT clears any stale
