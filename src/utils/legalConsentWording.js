@@ -25,7 +25,7 @@
 const WORDING = {
   en: {
     terms: "I have read and accept the Consumer Terms and the Cancellation and Rescheduling Policy.",
-    eventTerms: "I have read and accept the Event Terms and the Consumer Terms, which govern the use of the platform.",
+    eventTerms: "I have read and accept the Event Terms, which govern participation in the event, and the Consumer Terms, which govern the use of the platform.",
     eventWithdrawal: "I understand that this event takes place on a specific date and that the 14-day right of withdrawal does not apply. My cancellation options are shown in the summary and in the Event Terms.",
     eventWithdrawalExpander: "By law, the 14-day right of withdrawal does not apply to events on a fixed date, because your place is reserved for you and cannot be reallocated at the last minute. You can still cancel with a full refund up to 7 days before.",
     healthConsentEvent: {
@@ -51,7 +51,7 @@ const WORDING = {
   },
   it: {
     terms: "Ho letto e accetto i Termini per il Consumatore e le Condizioni di Cancellazione e Modifica della Prenotazione.",
-    eventTerms: "Ho letto e accetto i Termini Eventi e i Termini per il Consumatore, che regolano l'utilizzo della piattaforma.",
+    eventTerms: "Ho letto e accetto i Termini Eventi, che regolano la partecipazione all'evento, e i Termini per il Consumatore, che regolano l'utilizzo della piattaforma.",
     eventWithdrawal: "Prendo atto che l'evento si svolge in una data specifica e che il diritto di recesso di 14 giorni non si applica (art. 59, comma 1, lett. n), Codice del Consumo). Le mie possibilità di cancellazione sono indicate nel riepilogo e nei Termini Eventi.",
     eventWithdrawalExpander: "Per legge il diritto di recesso di 14 giorni non si applica agli eventi in una data fissa, perché il tuo posto viene riservato e non può essere riassegnato all'ultimo momento. Puoi comunque cancellare con rimborso totale fino a 7 giorni prima.",
     healthConsentEvent: {
