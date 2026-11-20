@@ -112,22 +112,26 @@ async function createBooking(req, res) {
         .json({ error: "Expert has not connected their Stripe account yet" });
     }
 
-    // Enforce the expert's minimum-notice window server-side — the slot list
-    // already hides these times, but that's client-side only, so a request sent
-    // straight to this endpoint must be checked independently.
-    const noticeMs = (expert.min_notice_hours ?? 24) * 60 * 60 * 1000;
-    if (scheduledDate.getTime() - Date.now() < noticeMs) {
-      return res.status(400).json({
-        error: "This slot is inside the expert's minimum notice window. Please choose a later time.",
-      });
-    }
-
     // ── Load service ────────────────────────────────────────────────────────
     const service = await prisma.service.findUnique({
       where: { id: parseInt(serviceId) },
     });
     if (!service || service.expert_id !== expert.id) {
       return res.status(404).json({ error: "Service not found" });
+    }
+
+    // Enforce the expert's minimum-notice window server-side — the slot list
+    // already hides these times, but that's client-side only, so a request sent
+    // straight to this endpoint must be checked independently. Not applied to
+    // events: their date is fixed by the organiser, and late booking is
+    // supported (the reminder/video link goes out immediately).
+    if (service.cluster !== "EVENT") {
+      const noticeMs = (expert.min_notice_hours ?? 24) * 60 * 60 * 1000;
+      if (scheduledDate.getTime() - Date.now() < noticeMs) {
+        return res.status(400).json({
+          error: "This slot is inside the expert's minimum notice window. Please choose a later time.",
+        });
+      }
     }
     if (!service.is_active || service.review_status !== "APPROVED") {
       return res
