@@ -533,18 +533,11 @@ async function lockSlot(req, res) {
   const expiresAt   = new Date(now.getTime() + SLOT_LOCK_MINUTES * 60 * 1000);
 
   try {
-    // Enforce the expert's minimum-notice window server-side — getAvailableSlots
-    // already filters these out, but that's the slot list, not a hard rule, so a
-    // request sent straight to this endpoint must be checked independently.
     const expert = await prisma.expert.findUnique({
       where: { id: expertIdInt },
       select: { min_notice_hours: true },
     });
     if (!expert) return res.status(404).json({ error: 'Expert not found' });
-    const noticeMs = (expert.min_notice_hours ?? 24) * 60 * 60 * 1000;
-    if (slotStartDate.getTime() - now.getTime() < noticeMs) {
-      return res.status(400).json({ error: "This slot is inside the expert's minimum notice window. Please choose a later time." });
-    }
 
     let capacity = 1;
     let isEvent = false;
@@ -557,6 +550,17 @@ async function lockSlot(req, res) {
         capacity = service.capacity;
         isEvent = true;
       }
+    }
+
+    // Enforce the expert's minimum-notice window server-side — getAvailableSlots
+    // already filters these out, but that's the slot list, not a hard rule, so a
+    // request sent straight to this endpoint must be checked independently.
+    // Not applied to events: their date is fixed by the organiser (not drawn
+    // from the expert's availability), and booking late is supported — the
+    // booking flow sends the reminder/video link immediately for those.
+    const noticeMs = (expert.min_notice_hours ?? 24) * 60 * 60 * 1000;
+    if (!isEvent && slotStartDate.getTime() - now.getTime() < noticeMs) {
+      return res.status(400).json({ error: "This slot is inside the expert's minimum notice window. Please choose a later time." });
     }
 
     // Release any existing lock this parent holds for this expert (slot
