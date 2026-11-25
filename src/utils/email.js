@@ -2,6 +2,7 @@ const {
   verificationEmailHtml,
   verificationEmailSubject,
 } = require("./email_templates/verificationEmail");
+const { eventsListingUrl } = require("./listingUrls");
 const {
   passwordResetEmailHtml,
   passwordResetEmailSubject,
@@ -597,12 +598,21 @@ const sendParentCancellationConfirmationEmail = ({
   timezone,
   language,
   isEvent = false,
+  isFree = false,
+  eventVenueName,
+  eventAddress,
+  eventPostcode,
+  eventCity,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const text =
     lang === "it"
-      ? `Ciao ${parentName}, ti confermiamo la cancellazione della prenotazione per ${serviceTitle} con ${expertName}.`
-      : `Hi ${parentName}, this confirms your cancellation of the booking for ${serviceTitle} with ${expertName}.`;
+      ? (isEvent
+          ? `Ciao ${parentName}, ti confermiamo la cancellazione della tua partecipazione a ${serviceTitle} con ${expertName}.`
+          : `Ciao ${parentName}, ti confermiamo la cancellazione della prenotazione per ${serviceTitle} con ${expertName}.`)
+      : (isEvent
+          ? `Hi ${parentName}, this confirms you have cancelled your place at ${serviceTitle} with ${expertName}.`
+          : `Hi ${parentName}, this confirms your cancellation of the booking for ${serviceTitle} with ${expertName}.`);
   return sendEmail({
     to,
     attachments: bookingInvite({ method: 'CANCEL', role: 'parent', bookingId, to, recipientName: parentName, scheduledAt, title: serviceTitle, counterpartName: expertName, timezone, language }),
@@ -625,6 +635,12 @@ const sendParentCancellationConfirmationEmail = ({
       contactEmail: CONTACT_EMAIL,
       supportEmail: SUPPORT_EMAIL,
       isEvent,
+      isFree,
+      eventVenueName,
+      eventAddress,
+      eventPostcode,
+      eventCity,
+      eventsListingUrl: eventsListingUrl(lang),
     }),
   });
 };
@@ -1058,23 +1074,27 @@ const sendExpertCancelledSessionEmail = ({
   bookingId,
   timezone,
   language,
+  isEvent = false,
 }) => {
   const lang = language === "it" ? "it" : "en";
   const locale = lang === "it" ? "it-IT" : "en-GB";
   const numericAmount = Number(amount) || 0;
   const isFree = numericAmount === 0;
   const amountStr = new Intl.NumberFormat(locale, { style: 'currency', currency }).format(numericAmount);
+  const what = isEvent
+    ? (lang === "it" ? "il tuo posto a un prossimo evento" : "your place at an upcoming event")
+    : (lang === "it" ? "la tua prossima sessione" : "your upcoming session");
   const text = isFree
     ? (lang === "it"
-        ? `Ciao ${parentName.split(' ')[0]}, ci dispiace informarti che ${expertName.split(' ')[0]} ha dovuto cancellare la tua prossima sessione. Si trattava di una prenotazione gratuita, quindi non è stato necessario alcun rimborso.`
-        : `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. This was a free booking, so no refund was needed.`)
+        ? `Ciao ${parentName.split(' ')[0]}, ci dispiace informarti che ${expertName.split(' ')[0]} ha dovuto cancellare ${what}. Si trattava di una prenotazione gratuita, quindi non è stato necessario alcun rimborso.`
+        : `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel ${what}. This was a free booking, so no refund was needed.`)
     : (lang === "it"
-        ? `Ciao ${parentName.split(' ')[0]}, ci dispiace informarti che ${expertName.split(' ')[0]} ha dovuto cancellare la tua prossima sessione. Ti abbiamo rimborsato l'intero importo di ${amountStr}.`
-        : `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel your upcoming session. A full refund of ${amountStr} has been issued to your original payment method.`);
+        ? `Ciao ${parentName.split(' ')[0]}, ci dispiace informarti che ${expertName.split(' ')[0]} ha dovuto cancellare ${what}. Ti abbiamo rimborsato l'intero importo di ${amountStr}.`
+        : `Hi ${parentName.split(' ')[0]}, we are sorry to let you know that ${expertName.split(' ')[0]} has had to cancel ${what}. A full refund of ${amountStr} has been issued to your original payment method.`);
   return sendEmail({
     to,
     attachments: bookingInvite({ method: 'CANCEL', role: 'parent', bookingId, to, recipientName: parentName, scheduledAt, title: serviceTitle, counterpartName: expertName, timezone, language }),
-    subject: expertCancelledSessionEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone, amount: numericAmount }),
+    subject: expertCancelledSessionEmailSubject({ language: lang, serviceTitle, scheduledAt, timezone, amount: numericAmount, isEvent }),
     text,
     html: expertCancelledSessionEmailHtml({
       parentName,
@@ -1089,6 +1109,8 @@ const sendExpertCancelledSessionEmail = ({
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
       supportEmail: SUPPORT_EMAIL,
+      isEvent,
+      eventsListingUrl: eventsListingUrl(lang),
     }),
   });
 };
@@ -1341,10 +1363,6 @@ const sendEventParentCancelledNotificationEmail = ({
   });
 };
 
-// Fallback events-listing destination until the client supplies the real
-// public events listing page (e.g. the Webflow events collection URL) — set
-// EVENTS_LISTING_URL to override without a code change.
-const EVENTS_LISTING_URL = process.env.EVENTS_LISTING_URL || `${process.env.CLIENT_URL}/book`;
 
 /**
  * Event cancelled by the expert — sent to every participant when the whole
@@ -1399,7 +1417,7 @@ const sendEventCancelledByExpertEmail = ({
       clientUrl: process.env.CLIENT_URL,
       contactEmail: CONTACT_EMAIL,
       supportEmail: SUPPORT_EMAIL,
-      eventsListingUrl: EVENTS_LISTING_URL,
+      eventsListingUrl: eventsListingUrl(lang),
     }),
   });
 };
@@ -1607,6 +1625,7 @@ const sendPlatformCancellationEmailToParent = ({
   refundOutcome,
   cancellationType = "admin_cancelled",
   adminReason,
+  isEvent = false,
 }) => {
   const lang = language === "it" ? "it" : "en";
   return sendEmail({
@@ -1631,6 +1650,7 @@ const sendPlatformCancellationEmailToParent = ({
       refundOutcome,
       cancellationType,
       adminReason,
+      isEvent,
     }),
   });
 };

@@ -9,6 +9,7 @@ const { SERVICE_FORMATS, usesExpertAddress, isHomeVisit } = require("../constant
 const { practiceAddressLine } = require("../utils/countryName");
 const { upsertMarketingConsent, syncMarketingConsentToBrevo } = require("../utils/marketingConsent");
 const { createRefundWithFallback } = require("../utils/stripeRefund");
+const { refundTierPercent } = require("../utils/refundPolicy");
 const { PAYOUT_HOLD_MS } = require("../constants/payouts");
 const {
   sendBookingCancellationNotification,
@@ -769,8 +770,18 @@ async function getMyBookings(req, res) {
             format: true,
             price: true,
             currency: true,
+            // Lets the parent dashboard tell event bookings from session
+            // bookings (policy, cancel copy, labels, venue).
+            cluster: true,
+            event_venue_name: true,
+            event_address: true,
+            event_postcode: true,
+            event_city: true,
           },
         },
+        // The parent's own saved time zone — times on the dashboard are shown
+        // in it (named), same rule as the transactional emails.
+        parent: { select: { timezone: true } },
         late_notifications: {
           where:  { email_status: 'sent' },
           select: { id: true },
@@ -939,7 +950,7 @@ async function cancelBooking(req, res) {
       include: {
         parent: { select: { name: true, email: true, language: true, timezone: true } },
         expert: { include: { user: { select: { name: true, email: true, language: true } } } },
-        service: { select: { id: true, title: true, cluster: true, capacity: true, is_active: true } },
+        service: { select: { id: true, title: true, cluster: true, capacity: true, is_active: true, event_venue_name: true, event_address: true, event_postcode: true, event_city: true } },
       },
     });
 
@@ -970,9 +981,7 @@ async function cancelBooking(req, res) {
     // rescheduled, the floor stays at 50% even if the new slot is far in the future.
     // (Events can't be rescheduled at all, so min_refund_percent stays at its
     // default of 100 for them and this min() is a no-op.)
-    const tierAtCancellation = isEvent
-      ? (hoursUntilSession >= 7 * 24 ? 100 : 0)
-      : (hoursUntilSession >= 24 ? 100 : hoursUntilSession >= 12 ? 50 : 0);
+    const tierAtCancellation = refundTierPercent({ isEvent, hoursUntil: hoursUntilSession });
     const refundPercent = Math.min(
       tierAtCancellation,
       booking.min_refund_percent,
@@ -1187,6 +1196,11 @@ async function cancelBooking(req, res) {
       timezone: booking.parent.timezone || booking.expert.timezone,
       language: booking.parent.language,
       isEvent,
+      isFree: Number(booking.amount) === 0,
+      eventVenueName: booking.service.event_venue_name,
+      eventAddress: booking.service.event_address,
+      eventPostcode: booking.service.event_postcode,
+      eventCity: booking.service.event_city,
     }).catch((e) =>
       console.error("[Email] Cancellation confirmation failed:", e.message),
     );
@@ -2176,6 +2190,7 @@ async function performExpertCancellation(booking, actingUserId, { sendExpertConf
           bookingId: booking.id,
           timezone: booking.parent.timezone || booking.expert.timezone,
           language: parentLanguage,
+          isEvent: booking.service.cluster === "EVENT",
         }).catch((e) =>
           console.error("[Email] Expert cancel parent email failed:", e.message),
         );
