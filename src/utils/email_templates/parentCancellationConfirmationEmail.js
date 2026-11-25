@@ -1,5 +1,7 @@
 const { formatDateTime } = require("../emailDateTimeFormat");
 const { formatBookingRef } = require("../bookingRef");
+const { expertsListingUrl } = require("../listingUrls");
+const { formatEventVenue } = require("../eventVenue");
 
 const COPY = {
   en: {
@@ -22,7 +24,18 @@ const COPY = {
       `As the cancellation was made at least 7 days before the event, you have received a full refund of ${amountStr}.`,
     refundOutcome0Event: () =>
       `As the cancellation was made less than 7 days before the event, no refund has been issued.`,
+    refundOutcomeFreeEvent: () =>
+      `This was a free event, so there is nothing to refund and no cancellation penalty applies.`,
     refundNote: "Please allow 5–10 business days for the refund to appear, depending on your bank.",
+    event: {
+      greeting: (parentFirstName) =>
+        `Hi ${parentFirstName},<br><br>This confirms that you have cancelled your place at the following event.`,
+      cancelledSession: "Cancelled Event",
+      labels: { expert: "Hosted by", service: "Event", date: "Date", time: "Time", format: "Format", location: "Location", bookingRef: "Booking Ref", reason: "Reason" },
+      findHeading: "Browse Other Events",
+      findBody: "If you'd like to join another event, you can browse our upcoming events and find one that works for you.",
+      findButton: "Browse other events",
+    },
     findHeading: "Find Another Expert",
     findBody: "If you'd like to book with another expert, you can browse available specialists and find a time that works for you.",
     findButton: "Find another expert",
@@ -54,7 +67,18 @@ const COPY = {
       `Poiché la cancellazione è avvenuta almeno 7 giorni prima dell'evento, hai ricevuto un rimborso integrale di ${amountStr}.`,
     refundOutcome0Event: () =>
       `Poiché la cancellazione è avvenuta meno di 7 giorni prima dell'evento, non è stato emesso alcun rimborso.`,
+    refundOutcomeFreeEvent: () =>
+      `Si trattava di un evento gratuito, quindi non c'è nulla da rimborsare e non si applica alcuna penale di cancellazione.`,
     refundNote: "L'accredito potrà richiedere dai 5 ai 10 giorni lavorativi, a seconda della tua banca.",
+    event: {
+      greeting: (parentFirstName) =>
+        `Ciao ${parentFirstName},<br><br>ti confermiamo la cancellazione della tua partecipazione al seguente evento.`,
+      cancelledSession: "Evento Cancellato",
+      labels: { expert: "Organizzato da", service: "Evento", date: "Data", time: "Orario", format: "Modalità", location: "Luogo", bookingRef: "Riferimento Prenotazione", reason: "Motivo" },
+      findHeading: "Scopri Altri Eventi",
+      findBody: "Se desideri partecipare a un altro evento, puoi consultare i prossimi eventi e scegliere quello più adatto a te.",
+      findButton: "Scopri altri eventi",
+    },
     findHeading: "Trova un Altro Professionista",
     findBody: "Se desideri prenotare con un altro professionista, puoi consultare gli specialisti disponibili e scegliere l'orario più adatto a te.",
     findButton: "Trova un altro professionista",
@@ -101,14 +125,25 @@ const parentCancellationConfirmationEmailHtml = ({
   contactEmail,
   supportEmail,
   isEvent = false,
+  isFree = false,
+  eventVenueName,
+  eventAddress,
+  eventPostcode,
+  eventCity,
+  eventsListingUrl,
 }) => {
   const lang = language === "it" ? "it" : "en";
-  const t = COPY[lang];
+  const base = COPY[lang];
+  // Event bookings get their own wording/labels/CTA; everything else is shared.
+  const t = isEvent ? { ...base, ...base.event, labels: base.event.labels } : base;
   const locale = lang === "it" ? "it-IT" : "en-GB";
   const parentFirstName = parentName?.split(" ")[0] || "there";
   const logoUrl = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
   const dashboardUrl = `${clientUrl}/dashboard/parent/upcoming`;
-  const findExpertUrl = `${clientUrl}/book`;
+  const findExpertUrl = isEvent ? (eventsListingUrl || expertsListingUrl(lang)) : expertsListingUrl(lang);
+  const venue = isEvent && format === "IN_PERSON"
+    ? formatEventVenue({ event_venue_name: eventVenueName, event_address: eventAddress, event_postcode: eventPostcode, event_city: eventCity })
+    : "";
 
   const { dateStr, timeStr, tzLabel } = formatDateTime(scheduledAt, timezone, lang);
 
@@ -117,7 +152,9 @@ const parentCancellationConfirmationEmailHtml = ({
   const fmt = (n) => new Intl.NumberFormat(locale, { style: "currency", currency }).format(n);
 
   const refundOutcome = isEvent
-    ? refundPercent === 100
+    ? isFree
+      ? t.refundOutcomeFreeEvent()
+      : refundPercent === 100
       ? t.refundOutcome100Event(fmt(totalAmount))
       : t.refundOutcome0Event()
     : refundPercent === 100
@@ -125,6 +162,13 @@ const parentCancellationConfirmationEmailHtml = ({
       : refundPercent === 50
       ? t.refundOutcome50(fmt(halfAmount))
       : t.refundOutcome0();
+
+  // Green only when money actually goes back; a no-refund (or nothing-to-refund)
+  // outcome gets a neutral beige/grey box so it doesn't read as a positive result.
+  const refunded = refundPercent > 0 && !(isEvent && isFree);
+  const box = refunded
+    ? { bg: "#ECFDF5", border: "#6EE7B7", text: "#065F46" }
+    : { bg: "#F4EEE5", border: "#D9D2C5", text: "#5e6d5b" };
 
   return `
 <!DOCTYPE html>
@@ -185,6 +229,12 @@ const parentCancellationConfirmationEmailHtml = ({
                   <span style="font-size:15px;font-weight:600;color:#445446;">${t.formatLabel[format] || format}</span>
                 </td>
               </tr>
+              ${venue ? `<tr>
+                <td style="padding:12px 0;border-top:1px solid #c5ceba;">
+                  <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.location}</span><br>
+                  <span style="font-size:15px;font-weight:600;color:#445446;">${venue}</span>
+                </td>
+              </tr>` : ""}
               <tr>
                 <td style="padding-top:12px;border-top:1px solid #c5ceba;padding-bottom:0;">
                   <span style="font-size:11px;font-weight:600;text-transform:uppercase;color:#5e6d5b;letter-spacing:0.5px;">${t.labels.bookingRef}</span><br>
@@ -201,9 +251,9 @@ const parentCancellationConfirmationEmailHtml = ({
           </div>` : ""}
 
           <!-- Refund outcome -->
-          <div style="background:#ECFDF5;border:1px solid #6EE7B7;border-radius:8px;padding:16px;margin-bottom:28px;">
-            <p style="margin:0 0 6px;font-size:11px;font-weight:700;text-transform:uppercase;color:#065F46;letter-spacing:0.6px;">${t.refundOutcomeHeading}</p>
-            <p style="margin:0;font-size:13px;color:#065F46;line-height:1.6;">${refundOutcome} ${refundPercent > 0 ? t.refundNote : ""}</p>
+          <div style="background:${box.bg};border:1px solid ${box.border};border-radius:8px;padding:16px;margin-bottom:28px;">
+            <p style="margin:0 0 6px;font-size:11px;font-weight:700;text-transform:uppercase;color:${box.text};letter-spacing:0.6px;">${t.refundOutcomeHeading}</p>
+            <p style="margin:0;font-size:13px;color:${box.text};line-height:1.6;">${refundOutcome} ${refunded ? t.refundNote : ""}</p>
           </div>
 
           <!-- Find another expert -->

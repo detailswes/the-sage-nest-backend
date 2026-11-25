@@ -9,6 +9,7 @@ const webflowService = require("../services/webflow.service");
 const { createRefundWithFallback } = require("../utils/stripeRefund");
 const { getLegalDocLinks } = require("../utils/legalDocLinks");
 const { cascadesToServices } = require("../constants/format");
+const { refundTierPercent, refundTierLabel, isEventService } = require("../utils/refundPolicy");
 const {
   sendPasswordResetEmail,
   sendVerificationEmail,
@@ -1251,9 +1252,10 @@ function computeRefundPolicy(booking) {
     ? new Date(booking.cancelled_at)
     : new Date();
   const h = (new Date(booking.scheduled_at).getTime() - ref.getTime()) / 3_600_000;
-  const policyPercent = h >= 24 ? 100 : h >= 12 ? 50 : 0;
+  const isEvent = isEventService(booking.service);
+  const policyPercent = refundTierPercent({ isEvent, hoursUntil: h });
   const policyAmount  = parseFloat((total * policyPercent / 100).toFixed(2));
-  const tier = h >= 24 ? "full refund (>24 h)" : h >= 12 ? "50% refund (12–24 h)" : "no refund (<12 h)";
+  const tier = refundTierLabel({ isEvent, hoursUntil: h });
   return { policyPercent, policyAmount, tier, bookingTotal: total };
 }
 
@@ -1267,7 +1269,7 @@ async function manualRefund(req, res) {
       include: {
         expert: { select: { id: true, timezone: true, user: { select: { name: true, email: true, language: true } } } },
         parent: { select: { name: true, email: true, language: true, timezone: true } },
-        service: { select: { title: true } },
+        service: { select: { title: true, cluster: true } },
       },
     });
 
@@ -1538,7 +1540,7 @@ async function listAllBookings(req, res) {
         include: {
           parent:  { select: { id: true, name: true, email: true } },
           expert:  { select: { id: true, timezone: true, user: { select: { name: true, email: true } } } },
-          service: { select: { title: true } },
+          service: { select: { title: true, cluster: true } },
         },
       }),
       prisma.booking.count({ where }),
@@ -1588,7 +1590,7 @@ async function getBookingDetail(req, res) {
             stripe_account_id: true,
           },
         },
-        service: { select: { title: true, price: true, duration_minutes: true } },
+        service: { select: { title: true, cluster: true, price: true, duration_minutes: true } },
         late_notifications: {
           orderBy: { fired_at: 'desc' },
           select: {
@@ -1639,7 +1641,7 @@ async function adminCancelBooking(req, res) {
       include: {
         parent:  { select: { name: true, email: true, language: true, timezone: true } },
         expert:  { select: { timezone: true, user: { select: { name: true, email: true, language: true } } } },
-        service: { select: { title: true } },
+        service: { select: { title: true, cluster: true } },
       },
     });
     if (!booking) return res.status(404).json({ error: "Booking not found" });
@@ -1658,7 +1660,7 @@ async function adminCancelBooking(req, res) {
       const amount = parseFloat(booking.amount);
       const transferDone = booking.transfer_status === "completed";
       const hoursUntilSession = (booking.scheduled_at.getTime() - cancelledAt.getTime()) / (1000 * 60 * 60);
-      const tierAtCancellation = hoursUntilSession >= 24 ? 100 : hoursUntilSession >= 12 ? 50 : 0;
+      const tierAtCancellation = refundTierPercent({ isEvent: isEventService(booking.service), hoursUntil: hoursUntilSession });
       const refundPercent = Math.min(tierAtCancellation, booking.min_refund_percent);
       // Set by every branch where the refund email below does NOT go out, so the
       // parent still hears about the cancellation (and the calendar event is removed).
@@ -1798,6 +1800,7 @@ async function adminCancelBooking(req, res) {
           timezone:         booking.parent?.timezone || booking.expert?.timezone,
           language:         booking.parent?.language,
           refundOutcome:    parentCancelOutcome,
+          isEvent:          isEventService(booking.service),
           cancellationType: "admin_cancelled",
           adminReason:      reason.trim(),
         }).catch((e) =>
@@ -1858,6 +1861,7 @@ async function adminCancelBooking(req, res) {
           timezone:         booking.parent?.timezone || booking.expert?.timezone,
           language:         booking.parent?.language,
           refundOutcome:    "free",
+          isEvent:          isEventService(booking.service),
           cancellationType: "admin_cancelled",
           adminReason:      reason.trim(),
         }).catch((e) =>
@@ -2983,7 +2987,7 @@ async function suspendParent(req, res) {
           },
           include: {
             expert: { select: { timezone: true, user: { select: { name: true, email: true, language: true } } } },
-            service: { select: { title: true } },
+            service: { select: { title: true, cluster: true } },
           },
         },
       },
@@ -3024,6 +3028,7 @@ async function suspendParent(req, res) {
       parentName: user.name,
       free: !(parseFloat(booking.amount) > 0),
       serviceTitle: booking.service?.title,
+      isEvent: isEventService(booking.service),
       scheduledAt: booking.scheduled_at,
       refundIssued: false,
       manualRequired: false,
@@ -3069,10 +3074,11 @@ async function suspendParent(req, res) {
           cancelledBookings.push(bookingSummary(booking, { manualRequired: true }));
         } else if (booking.stripe_payment_intent_id) {
           // Funds not yet transferred — tiered refund, same rule as a parent
-          // cancelling directly: >=24h -> 100%, >=12h -> 50%, else 0%, floored
-          // by the worst tier this booking already reached via reschedule.
+          // cancelling directly (sessions: 24 h / 12 h tiers; events: 7-day rule —
+          // see utils/refundPolicy.js), floored by the worst tier this booking
+          // already reached via reschedule.
           const hoursUntilSession = (booking.scheduled_at.getTime() - Date.now()) / (1000 * 60 * 60);
-          const tierAtCancellation = hoursUntilSession >= 24 ? 100 : hoursUntilSession >= 12 ? 50 : 0;
+          const tierAtCancellation = refundTierPercent({ isEvent: isEventService(booking.service), hoursUntil: hoursUntilSession });
           const refundPercent = Math.min(tierAtCancellation, booking.min_refund_percent);
 
           let chargeId = booking.stripe_charge_id;
@@ -3236,6 +3242,7 @@ async function suspendParent(req, res) {
         timezone: user.timezone || b.expertTimezone,
         language: user.language,
         refundOutcome: b.manualRequired ? "review" : b.refundIssued ? "issued" : b.free ? "free" : "none",
+        isEvent: b.isEvent,
         cancellationType: "account_closure",
       }).catch((e) =>
         console.error(`[Email] Parent cancellation email failed for booking ${b.id}:`, e.message)
@@ -3519,7 +3526,7 @@ async function listTransactions(req, res) {
         include: {
           parent:  { select: { id: true, name: true, email: true } },
           expert:  { select: { id: true, user: { select: { name: true, email: true } } } },
-          service: { select: { title: true } },
+          service: { select: { title: true, cluster: true } },
         },
       }),
       prisma.booking.count({ where }),

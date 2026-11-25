@@ -12,6 +12,12 @@ const COPY = {
     },
     cancelledSession: "Cancelled Session",
     labels: { expert: "Specialist", service: "Service", date: "Date", time: "Time", bookingRef: "Booking Ref" },
+    event: {
+      cancelledSession: "Cancelled Event",
+      labels: { expert: "Hosted by", service: "Event", date: "Date", time: "Time", bookingRef: "Booking Ref" },
+      refundNone: "Under the Event Terms, no refund applies to this booking.",
+      refundFree: "This was a free event, so no payment was taken.",
+    },
     reasonLabel: "Reason",
     refundHeading: "Your payment",
     refund: {
@@ -36,6 +42,12 @@ const COPY = {
     },
     cancelledSession: "Sessione Cancellata",
     labels: { expert: "Specialista", service: "Servizio", date: "Data", time: "Orario", bookingRef: "Riferimento Prenotazione" },
+    event: {
+      cancelledSession: "Evento Cancellato",
+      labels: { expert: "Organizzato da", service: "Evento", date: "Data", time: "Orario", bookingRef: "Riferimento Prenotazione" },
+      refundNone: "In base ai Termini per gli eventi, per questa prenotazione non è previsto alcun rimborso.",
+      refundFree: "Si trattava di un evento gratuito, quindi non è stato addebitato alcun pagamento.",
+    },
     reasonLabel: "Motivo",
     refundHeading: "Il tuo pagamento",
     refund: {
@@ -81,9 +93,19 @@ const platformCancelledParentEmailHtml = ({
   refundOutcome = "review",
   cancellationType = "admin_cancelled",
   adminReason,
+  isEvent = false,
 }) => {
   const lang = language === "it" ? "it" : "en";
-  const t = COPY[lang];
+  const base = COPY[lang];
+  // Event bookings: event labels and the Event Terms instead of the session policy.
+  const t = isEvent
+    ? {
+        ...base,
+        cancelledSession: base.event.cancelledSession,
+        labels: base.event.labels,
+        refund: { ...base.refund, none: base.event.refundNone, free: base.event.refundFree },
+      }
+    : base;
   const parentFirstName = parentName?.split(" ")[0] || "there";
   const logoUrl = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
   const { dateStr, timeStr, tzLabel } = formatDateTime(scheduledAt, timezone, lang);

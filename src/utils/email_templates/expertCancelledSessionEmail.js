@@ -1,5 +1,6 @@
 const { formatDateTime } = require("../emailDateTimeFormat");
 const { formatBookingRef } = require("../bookingRef");
+const { expertsListingUrl } = require("../listingUrls");
 
 const COPY = {
   en: {
@@ -17,6 +18,23 @@ const COPY = {
       `A full refund of <strong>${amountStr}</strong> has been issued to your original payment method. Please allow 5–10 business days for it to appear, depending on your bank.`,
     freeHeading: "No payment to refund",
     freeBody: "This was a free booking, so no payment was taken and there is nothing to refund.",
+    event: {
+      subject: ({ serviceTitle, dateStr, isFree }) =>
+        isFree
+          ? `Your place has been cancelled — ${serviceTitle} on ${dateStr}`
+          : `Your place has been cancelled — full refund issued — ${serviceTitle} on ${dateStr}`,
+      title: "Event Place Cancelled – Sage Nest",
+      greeting: (parentFirstName, expertFirstName) =>
+        `Hi ${parentFirstName},<br><br>We're sorry to let you know that <strong>${expertFirstName}</strong> has had to cancel your place at an upcoming event.`,
+      cancelledSession: "Cancelled Event Booking",
+      labels: { expert: "Hosted by", service: "Event", date: "Date", time: "Time", bookingRef: "Booking Ref" },
+      freeBody: "This was a free event, so no payment was taken and there is nothing to refund.",
+      findHeading: "Browse Other Events",
+      findBody: "We know your time and your family's wellbeing matter. If you'd like to join another event, you can browse our upcoming events and find one that works for you.",
+      findButton: "Browse other events",
+      closing: (dashboardUrl) =>
+        `You can view the details of this cancellation in <a href="${dashboardUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">your dashboard</a> at any time. We're sorry again for the inconvenience.`,
+    },
     findHeading: "Find Another Expert",
     findBody: "We know your time and your family's wellbeing matter. If you'd like to book with another expert, you can browse available specialists and find a time that works for you.",
     findButton: "Find another expert",
@@ -42,6 +60,23 @@ const COPY = {
       `Ti abbiamo rimborsato l'intero importo di <strong>${amountStr}</strong> sul metodo di pagamento originale. L'accredito potrà richiedere dai 5 ai 10 giorni lavorativi, a seconda della tua banca.`,
     freeHeading: "Nessun pagamento da rimborsare",
     freeBody: "Si trattava di una prenotazione gratuita: non è stato effettuato alcun pagamento e non c'è nulla da rimborsare.",
+    event: {
+      subject: ({ serviceTitle, dateStr, isFree }) =>
+        isFree
+          ? `Il tuo posto è stato cancellato — ${serviceTitle} il ${dateStr}`
+          : `Il tuo posto è stato cancellato — rimborso integrale effettuato — ${serviceTitle} il ${dateStr}`,
+      title: "Posto all'Evento Cancellato – Sage Nest",
+      greeting: (parentFirstName, expertFirstName) =>
+        `Ciao ${parentFirstName},<br><br>ci dispiace informarti che <strong>${expertFirstName}</strong> ha dovuto cancellare il tuo posto a un prossimo evento.`,
+      cancelledSession: "Prenotazione Evento Cancellata",
+      labels: { expert: "Organizzato da", service: "Evento", date: "Data", time: "Orario", bookingRef: "Riferimento Prenotazione" },
+      freeBody: "Si trattava di un evento gratuito: non è stato effettuato alcun pagamento e non c'è nulla da rimborsare.",
+      findHeading: "Scopri Altri Eventi",
+      findBody: "Sappiamo quanto contino il tuo tempo e il benessere della tua famiglia. Se desideri partecipare a un altro evento, puoi consultare i prossimi eventi e scegliere quello più adatto a te.",
+      findButton: "Scopri altri eventi",
+      closing: (dashboardUrl) =>
+        `Puoi consultare i dettagli di questa cancellazione nella <a href="${dashboardUrl}" style="color:#445446;text-decoration:underline;font-weight:600;">tua dashboard</a> in qualsiasi momento. Ci scusiamo ancora per l'inconveniente.`,
+    },
     findHeading: "Trova un Altro Professionista",
     findBody: "Sappiamo quanto contino il tuo tempo e il benessere della tua famiglia. Se desideri prenotare con un altro professionista, puoi consultare gli specialisti disponibili e scegliere l'orario più adatto a te.",
     findButton: "Trova un altro professionista",
@@ -80,9 +115,12 @@ const expertCancelledSessionEmailHtml = ({
   clientUrl,
   contactEmail,
   supportEmail,
+  isEvent = false,
+  eventsListingUrl,
 }) => {
   const lang = language === "it" ? "it" : "en";
-  const t = COPY[lang];
+  // A single attendee removed from an event gets event wording + events CTA.
+  const t = isEvent ? { ...COPY[lang], ...COPY[lang].event } : COPY[lang];
   const locale = lang === "it" ? "it-IT" : "en-GB";
   const parentFirstName = parentName?.split(" ")[0] || "there";
   const expertFirstName = expertName?.split(" ")[0] || "";
@@ -91,7 +129,7 @@ const expertCancelledSessionEmailHtml = ({
   const amountStr = new Intl.NumberFormat(locale, { style: "currency", currency }).format(numericAmount);
   const logoUrl = `${clientUrl}/assets/images/Sage-Nest_Final.png`;
   const dashboardUrl = `${clientUrl}/dashboard/parent/upcoming`;
-  const findExpertUrl = `${clientUrl}/book`;
+  const findExpertUrl = isEvent ? (eventsListingUrl || expertsListingUrl(lang)) : expertsListingUrl(lang);
 
   const { dateStr, timeStr, tzLabel } = formatDateTime(scheduledAt, timezone, lang);
 
@@ -200,10 +238,11 @@ const expertCancelledSessionEmailHtml = ({
 </html>`;
 };
 
-const expertCancelledSessionEmailSubject = ({ language, serviceTitle, scheduledAt, timezone, amount }) => {
+const expertCancelledSessionEmailSubject = ({ language, serviceTitle, scheduledAt, timezone, amount, isEvent = false }) => {
   const lang = language === "it" ? "it" : "en";
   const { dateStr } = formatDateTime(scheduledAt, timezone, lang);
-  return COPY[lang].subject({ serviceTitle, dateStr, isFree: (Number(amount) || 0) === 0 });
+  const subject = isEvent ? COPY[lang].event.subject : COPY[lang].subject;
+  return subject({ serviceTitle, dateStr, isFree: (Number(amount) || 0) === 0 });
 };
 
 module.exports = { expertCancelledSessionEmailHtml, expertCancelledSessionEmailSubject };
