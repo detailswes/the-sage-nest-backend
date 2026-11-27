@@ -143,7 +143,8 @@ async function listExperts(req, res) {
     insurance: true,
     business_info: true,
     services: { orderBy: { sort_order: "asc" } },
-    _count: { select: { bookings: true } },
+    // Real bookings only — an unpaid PENDING_PAYMENT checkout hold isn't one (and the Bookings tab list excludes it too).
+    _count: { select: { bookings: { where: { status: { in: ["CONFIRMED", "COMPLETED", "CANCELLED", "REFUNDED"] } } } } },
   };
 
   const publicInclude = {
@@ -980,7 +981,8 @@ async function getExpertDetail(req, res) {
         business_info: true,
         services: { orderBy: { sort_order: "asc" }, include: { draft: true } },
         profile_draft: true,
-        _count: { select: { bookings: true } },
+        // Real bookings only — an unpaid PENDING_PAYMENT checkout hold isn't one (and the Bookings tab list excludes it too).
+    _count: { select: { bookings: { where: { status: { in: ["CONFIRMED", "COMPLETED", "CANCELLED", "REFUNDED"] } } } } },
       },
     });
     if (!expert) return res.status(404).json({ error: "Expert not found" });
