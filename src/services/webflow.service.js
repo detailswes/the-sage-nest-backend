@@ -1143,13 +1143,16 @@ async function deleteServiceFromWebflow(serviceId, webflowItemId) {
 // per the client:
 //   • Approved → created in Webflow as a DRAFT in both locales and never published by us —
 //     she adds images, topics, micro-hubs, co-hosts, etc. and publishes manually.
-//   • After creation we only touch fields the booking system owns — date/time, price, capacity,
+//   • After creation we only touch fields the booking system owns — date/time, price,
 //     format, venue, description (on approved edits) and spots left / sold-out (also on the
 //     5-min job) — in BOTH locales, publishing only the locales she already published.
 //     Of those, only fields whose app-side value CHANGED since the last push are sent
 //     (webflow_pushed_fields), so a hand edit in the CMS survives unrelated edits.
 //     Images, topics, micro-hubs, co-hosts, FAQ etc. are never touched.
-//   • Sold-out events stay visible (Spots Left 0 + the Sold out switch); cancelled/deactivated and past events are
+//   • Seat counts: the TOTAL capacity is never pushed (cleared if present), and "spots left"
+//     is only pushed when 1–5 remain (empty otherwise, so the page shows nothing). At 0 the
+//     Sold out switch is on — that, not a number, is what disables booking on the page.
+//   • Sold-out events stay visible (Sold out switch on); cancelled/deactivated and past events are
 //     archived (never deleted, so she can reuse the content).
 
 // Webflow field slugs in the Events collection (verified against the live collection schema).
@@ -1173,11 +1176,20 @@ const EVENT_FIELD = {
   spotsLeft:       'slots-left',
   bookingLink:     'booking-link',
   expertsProfession: 'experts-profession',
-  soldOut:         'sold-out', // Switch — must be added to the collection in Webflow
+  soldOut:         'sold-out-3', // Switch ("Sold out") — Webflow auto-suffixed the slug
 };
 
 const EVENT_BOOKED_STATUSES = ['PENDING', 'CONFIRMED', 'PENDING_PAYMENT'];
 
+// "Spots left" is only shown publicly when this few (or fewer) remain.
+const EVENT_SPOTS_VISIBLE_MAX = 5;
+
+// What the public page shows for a given remaining-spots count: the count itself when
+// 1..5, nothing otherwise (0 = sold out, shown via the switch; >5 = not shown by default).
+const visibleSpotsLeft = (n) => (n >= 1 && n <= EVENT_SPOTS_VISIBLE_MAX ? n : null);
+// Two counts look identical on the page when they map to the same bucket — lets the job skip
+// pushes while e.g. 20 → 12 spots are left (nothing visible changes).
+const spotsBucket = (n) => (n == null ? 'unknown' : n <= EVENT_SPOTS_VISIBLE_MAX ? n : 'hidden');
 const EVENT_FREE_LABEL     = { EN: 'Free',     IT: 'Gratuito' };
 
 let _eventSchema; // { at, value }
@@ -1245,17 +1257,25 @@ async function eventAvailability(service) {
 
 // Availability only — what the 5-minute job pushes, so routine ticks never overwrite
 // anything the client may have edited in the CMS.
-function buildEventAvailabilityFields({ spotsLeft, soldOut }) {
+function buildEventAvailabilityFields({ spotsLeft, soldOut }, localeKey, schema) {
+  const shown = soldOut ? null : visibleSpotsLeft(spotsLeft);
+  // The Sold out switch must exist in the Webflow collection. If it doesn't, fall back to
+  // pushing "0" so the page still has a signal to show "sold out" / disable booking from.
+  const hasSoldOutField = !schema || schema.fields.some(f => f.slug === EVENT_FIELD.soldOut);
+  const spotsValue = soldOut && !hasSoldOutField ? '0' : (shown === null ? null : String(shown));
   return {
-    // Plain number (0 when full) — the Sold out switch drives the badge, so the page
-    // shows "Sold out" exactly once.
-    [EVENT_FIELD.spotsLeft]: String(spotsLeft),
+    // Only when 1–5 remain; null clears it otherwise. At 0 the Sold out switch (below)
+    // drives the badge and disables booking, so the page shows "Sold out" exactly once.
+    [EVENT_FIELD.spotsLeft]: spotsValue,
+    // Total seats are never shown — null clears any value pushed before this rule.
+    [EVENT_FIELD.capacity]:  null,
     [EVENT_FIELD.soldOut]:   soldOut,
   };
 }
 
 // Fields that follow the booking system's own data (re-pushed on creation, approved edits and
-// expert edits, in both locales): date/time, price, capacity, format, venue, description.
+// expert edits, in both locales): date/time, price, format, venue, description. (Capacity is
+// deliberately absent — total seats are not shown; see buildEventAvailabilityFields.)
 function buildEventDetailFields(service, schema, localeKey) {
   const price    = Number(service.price);
   const online   = service.format === 'ONLINE';
@@ -1270,7 +1290,6 @@ function buildEventDetailFields(service, schema, localeKey) {
     [EVENT_FIELD.timeZoneLabel]: timeZoneLabel(service.expert?.timezone, service.event_starts_at),
     [EVENT_FIELD.free]:          price === 0,
     [EVENT_FIELD.priceLabel]:    eventPriceLabel(price, service.currency, localeKey),
-    [EVENT_FIELD.capacity]:      String(service.capacity ?? ''),
     [EVENT_FIELD.city]:          online ? 'Online' : (service.event_city || ''),
     [EVENT_FIELD.locationName]:  online ? '' : (service.event_venue_name || ''),
     [EVENT_FIELD.address]:       online ? '' : address,
@@ -1332,9 +1351,10 @@ async function syncEvent(serviceId, { source } = {}) {
   }
   if (service.review_status !== 'APPROVED') return;
 
-  // Job ticks: nothing to do unless availability changed since the last push.
+  // Job ticks: nothing to do unless what the page shows (1–5 left / sold out) changed since
+  // the last push — a drop from 20 to 12 spots changes nothing visible, so it isn't pushed.
   if (source === 'job' && service.webflow_item_id && !service.webflow_archived_at
-      && service.webflow_spots_left === availability.spotsLeft) return;
+      && spotsBucket(service.webflow_spots_left) === spotsBucket(availability.spotsLeft)) return;
 
   const slug    = service.webflow_slug || serviceSlug(service.title, service.id);
   const schema  = await getEventSchema();
@@ -1364,7 +1384,7 @@ async function syncEvent(serviceId, { source } = {}) {
         const fieldData = pruneToSchema({
           ...buildEventCreationFields(service, slug, localeKey || 'EN'),
           ...details,
-          ...buildEventAvailabilityFields(availability, localeKey || 'EN'),
+          ...buildEventAvailabilityFields(availability, localeKey || 'EN', schema),
         }, schema);
         itemId = await syncWithRetry(
           () => upsertWebflowItem(EVENTS_COLLECTION_ID, itemId, slug, fieldData, {
@@ -1391,7 +1411,7 @@ async function syncEvent(serviceId, { source } = {}) {
         if (source !== 'job') pushed[localeKey || 'default'] = details;
         const fieldData   = pruneToSchema({
           ...changed,
-          ...buildEventAvailabilityFields(availability, localeKey || 'EN'),
+          ...buildEventAvailabilityFields(availability, localeKey || 'EN', schema),
         }, schema);
         const state       = await eventVariantState(itemId, cmsLocaleId);
         await syncWithRetry(
